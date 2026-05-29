@@ -481,6 +481,56 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#important-opensubtitles-download-limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ⚠️ Important: OpenSubtitles Download Limits
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="⚠️ Important: OpenSubtitles Download Limits">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-issue" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The Issue
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#solutions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Solutions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#why-this-happens" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why This Happens
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#advanced-installation-usage" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -973,6 +1023,56 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#important-opensubtitles-download-limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ⚠️ Important: OpenSubtitles Download Limits
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="⚠️ Important: OpenSubtitles Download Limits">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-issue" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The Issue
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#solutions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Solutions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#why-this-happens" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why This Happens
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#advanced-installation-usage" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1150,38 +1250,65 @@ On the very first run, the system needs to download the speech recognition model
 <li><strong>Safe</strong>: Review matches before any files are renamed.</li>
 </ul>
 <hr />
+<h2 id="important-opensubtitles-download-limits">⚠️ Important: OpenSubtitles Download Limits</h2>
+<p><strong>Before using the app, please understand OpenSubtitles.com download limitations to avoid frustration.</strong></p>
+<h3 id="the-issue">The Issue</h3>
+<p>When you run MKV Episode Matcher, it automatically downloads reference subtitles for the entire season from OpenSubtitles.com. <strong>Free OpenSubtitles accounts have very low daily download limits (typically 5-20 downloads per day).</strong></p>
+<p>If you're trying to match a TV season with more episodes than your daily limit, you'll immediately see this error:
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>&quot;Download limit reached. Please upgrade your account or wait for your quota to reset (~24hrs)&quot;
+</code></pre></div></p>
+<h3 id="solutions">Solutions</h3>
+<p><strong>Option 1: Upgrade to OpenSubtitles VIP ($3/month)</strong>
+- Significantly higher download limits
+- Fastest and most reliable solution
+- <a href="https://www.opensubtitles.com/en/consumers">Upgrade here</a></p>
+<p><strong>Option 2: Build Your Cache Gradually (Free)</strong>
+- Run the matcher once per day until you have all subtitles
+- Each day you can download a few more episodes
+- Requires patience but eventually works</p>
+<p><strong>Option 3: Manual Subtitle Download</strong>
+- Download <code>.srt</code> files manually from any source
+- Place them in your cache directory: <code>~/.mkv-episode-matcher/cache/data/</code>
+- Use naming format: <code>{Show Name} - S{season:02d}E{episode:02d}.srt</code></p>
+<p><strong>Option 4: Switch to Engram (Recommended)</strong>
+- <a href="https://github.com/Jsakkos/engram">Engram</a> includes multiple subtitle sources
+- Better chance of success without hitting limits
+- More modern interface and faster matching</p>
+<h3 id="why-this-happens">Why This Happens</h3>
+<p>MKV Episode Matcher needs reference subtitles to compare against the audio it extracts from your video files. The app downloads all subtitles for a season upfront, which quickly exhausts free account limits.</p>
+<hr />
 <h2 id="advanced-installation-usage">🛠️ Advanced Installation &amp; Usage</h2>
 <p>For developers, Linux/macOS users, or those preferring the command line.</p>
 <h3 id="option-a-install-via-pip-cross-platform">Option A: Install via pip (Cross-platform)</h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Basic install</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>pip<span class="w"> </span>install<span class="w"> </span>mkv-episode-matcher<span class="o">[</span>cpu<span class="o">]</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="c1"># With CUDA support (NVIDIA GPU required)</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>pip<span class="w"> </span>install<span class="w"> </span>mkv-episode-matcher<span class="o">[</span>cu128<span class="o">]</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># Basic install</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>pip<span class="w"> </span>install<span class="w"> </span>mkv-episode-matcher<span class="o">[</span>cpu<span class="o">]</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="c1"># With CUDA support (NVIDIA GPU required)</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>pip<span class="w"> </span>install<span class="w"> </span>mkv-episode-matcher<span class="o">[</span>cu128<span class="o">]</span>
 </code></pre></div>
 <h3 id="option-b-run-from-source-development">Option B: Run from Source (Development)</h3>
 <p>We recommend using <a href="https://docs.astral.sh/uv/">uv</a> for dependency management.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/Jsakkos/mkv-episode-matcher.git
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="nb">cd</span><span class="w"> </span>mkv-episode-matcher
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="c1"># Install dependencies</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>uv<span class="w"> </span>sync<span class="w"> </span>--extra<span class="w"> </span>cpu
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="c1"># Launch Server</span>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>uv<span class="w"> </span>run<span class="w"> </span>mkv-match<span class="w"> </span>serve
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/Jsakkos/mkv-episode-matcher.git
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="nb">cd</span><span class="w"> </span>mkv-episode-matcher
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># Install dependencies</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>uv<span class="w"> </span>sync<span class="w"> </span>--extra<span class="w"> </span>cpu
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="c1"># Launch Server</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>uv<span class="w"> </span>run<span class="w"> </span>mkv-match<span class="w"> </span>serve
 </code></pre></div>
 <h3 id="cli-mode">CLI Mode</h3>
 <p>You can also use the Command Line Interface (CLI) for automation. Make sure to run the command from the root directory of the repository or your home directory, not the show directory.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Match a folder</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>mkv-match<span class="w"> </span>match<span class="w"> </span><span class="s2">&quot;C:\Path\To\Show&quot;</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># Match with subtitle download</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>mkv-match<span class="w"> </span>match<span class="w"> </span><span class="s2">&quot;C:\Path\To\Show&quot;</span><span class="w"> </span>--get-subs
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Match a folder</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>mkv-match<span class="w"> </span>match<span class="w"> </span><span class="s2">&quot;C:\Path\To\Show&quot;</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># Match with subtitle download</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>mkv-match<span class="w"> </span>match<span class="w"> </span><span class="s2">&quot;C:\Path\To\Show&quot;</span><span class="w"> </span>--get-subs
 </code></pre></div>
 <h3 id="building-the-executable">Building the Executable</h3>
 <p>To build the <code>.exe</code> yourself:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>uv<span class="w"> </span>sync<span class="w"> </span>--extra<span class="w"> </span>cpu
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>uv<span class="w"> </span>run<span class="w"> </span>pyinstaller<span class="w"> </span>mkv_match.spec
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>uv<span class="w"> </span>sync<span class="w"> </span>--extra<span class="w"> </span>cpu
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>uv<span class="w"> </span>run<span class="w"> </span>pyinstaller<span class="w"> </span>mkv_match.spec
 </code></pre></div></p>
 <hr />
 <h2 id="reference-subtitle-structure">Reference Subtitle Structure</h2>
@@ -1190,9 +1317,9 @@ On the very first run, the system needs to download the speech recognition model
 <p><strong>Naming Format:</strong>
 <code>{show_name} - S{season:02d}E{episode:02d}.srt</code></p>
 <p>Example:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>Show Name/
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>├── Show Name - S01E01.srt
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>├── Show Name - S01E02.srt
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>Show Name/
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>├── Show Name - S01E01.srt
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>├── Show Name - S01E02.srt
 </code></pre></div></p>
 <h2 id="contributing">Contributing</h2>
 <ol>
