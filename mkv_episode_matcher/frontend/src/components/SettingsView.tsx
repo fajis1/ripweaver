@@ -9,6 +9,18 @@ interface Config {
     open_subtitles_password?: string;
     open_subtitles_api_key?: string;
     tmdb_api_key?: string;
+    gemini_primary_api_key?: string;
+    gemini_paid_api_key?: string;
+    rip_output_root?: string;
+    transcode_output_root?: string;
+    jellyfin_tv_root?: string;
+    jellyfin_movie_root?: string;
+    makemkv_path?: string;
+    handbrake_path?: string;
+    ffmpeg_path?: string;
+    ffprobe_path?: string;
+    default_handbrake_profile: string;
+    automatic_processing_enabled: boolean;
     credential_status?: Record<string, {
         configured: boolean;
         management_url: string;
@@ -66,7 +78,7 @@ const SettingsView: React.FC = () => {
         }
     };
 
-    const handleChange = (field: keyof Config, value: string | number) => {
+    const handleChange = (field: keyof Config, value: string | number | boolean) => {
         if (!config) return;
         setConfig({ ...config, [field]: value });
     };
@@ -100,6 +112,18 @@ const SettingsView: React.FC = () => {
                                 className="w-full bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-lg px-4 py-2 text-white focus:outline-none focus:border-[var(--accent-primary)]"
                             />
                         </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4 bg-[var(--bg-tertiary)]/50 rounded-xl border border-[var(--border-color)]">
+                            {[
+                                ['gemini_primary_api_key', 'gemini-primary', 'Gemini primary API key'],
+                                ['gemini_paid_api_key', 'gemini-paid', 'Gemini paid/fallback API key'],
+                            ].map(([field, credential, label]) => (
+                                <label key={field} className="space-y-2">
+                                    <span className="text-sm font-medium text-muted">{label}</span>
+                                    <input type="password" value={(config[field as keyof Config] as string) || ''} onChange={(event) => handleChange(field as keyof Config, event.target.value)} placeholder={config.credential_status?.[credential]?.configured ? 'Configured — paste only to replace' : 'Not configured'} className="w-full bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-lg px-4 py-2 text-white" />
+                                    <a href={config.credential_status?.[credential]?.management_url || 'https://aistudio.google.com/app/apikey'} target="_blank" rel="noopener noreferrer" className="inline-block text-sm text-indigo-300 underline hover:text-white">Get or manage key</a>
+                                </label>
+                            ))}
+                        </div>
 
                         <div className="space-y-2">
                             <label className="text-sm font-medium text-muted">Confidence Threshold (0.0 - 1.0)</label>
@@ -114,6 +138,49 @@ const SettingsView: React.FC = () => {
                             />
                         </div>
                     </div>
+                </div>
+
+                <div className="space-y-4">
+                    <h3 className="text-xl font-semibold text-white border-b border-[var(--border-color)] pb-2">Media Pipeline Locations</h3>
+                    <p className="text-sm text-[var(--text-muted)]">Rips and encodes stay in staging. Verified outputs are placed into Jellyfin only after matching, collision review, and successful verification.</p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {[
+                            ['rip_output_root', 'MakeMKV rip staging root'],
+                            ['transcode_output_root', 'Encoded staging root'],
+                            ['jellyfin_tv_root', 'Jellyfin TV library root'],
+                            ['jellyfin_movie_root', 'Jellyfin movie library root'],
+                        ].map(([field, label]) => (
+                            <label key={field} className="space-y-2">
+                                <span className="text-sm font-medium text-muted">{label}</span>
+                                <input type="text" value={(config[field as keyof Config] as string) || ''} onChange={(event) => handleChange(field as keyof Config, event.target.value)} className="w-full bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-lg px-4 py-2 text-white" />
+                            </label>
+                        ))}
+                    </div>
+                </div>
+
+                <div className="space-y-4">
+                    <h3 className="text-xl font-semibold text-white border-b border-[var(--border-color)] pb-2">External Tools and Defaults</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {[
+                            ['makemkv_path', 'makemkvcon executable'],
+                            ['handbrake_path', 'HandBrakeCLI executable'],
+                            ['ffmpeg_path', 'FFmpeg executable'],
+                            ['ffprobe_path', 'FFprobe executable'],
+                        ].map(([field, label]) => (
+                            <label key={field} className="space-y-2">
+                                <span className="text-sm font-medium text-muted">{label}</span>
+                                <input type="text" value={(config[field as keyof Config] as string) || ''} onChange={(event) => handleChange(field as keyof Config, event.target.value)} className="w-full bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-lg px-4 py-2 text-white" />
+                            </label>
+                        ))}
+                        <label className="space-y-2">
+                            <span className="text-sm font-medium text-muted">Default HandBrake profile</span>
+                            <input type="text" value={config.default_handbrake_profile} onChange={(event) => handleChange('default_handbrake_profile', event.target.value)} className="w-full bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-lg px-4 py-2 text-white" />
+                        </label>
+                    </div>
+                    <label className="block rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100">
+                        <input type="checkbox" className="mr-3" checked={config.automatic_processing_enabled} onChange={(event) => handleChange('automatic_processing_enabled', event.target.checked)} />
+                        Automatically process inserted discs when the background watcher is installed and attached. This does not authorize overwrite, deletion, replacement, or ejection.
+                    </label>
                 </div>
 
                 {/* Integration Settings */}

@@ -11,6 +11,8 @@ SECRET_CONFIG_FIELDS = {
     "open_subtitles_api_key",
     "open_subtitles_username",
     "open_subtitles_password",
+    "gemini_primary_api_key",
+    "gemini_paid_api_key",
 }
 
 
@@ -74,6 +76,10 @@ class ConfigManager:
             "open_subtitles_api_key": environment.opensubtitles_api_key,
             "open_subtitles_username": environment.opensubtitles_username,
             "open_subtitles_password": environment.opensubtitles_password,
+            "makemkv_path": environment.makemkv_path,
+            "handbrake_path": environment.handbrake_path,
+            "ffmpeg_path": environment.ffmpeg_path,
+            "ffprobe_path": environment.ffprobe_path,
         }
         return {key: value for key, value in values.items() if value not in (None, "")}
 

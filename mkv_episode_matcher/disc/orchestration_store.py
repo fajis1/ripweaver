@@ -257,6 +257,17 @@ class OrchestrationStore:
             raise RipError("Orchestration job was not found")
         return self._decode_job(row)
 
+    def list_jobs(self, *, limit: int = 50) -> tuple[OrchestrationJob, ...]:
+        """Return recent path-redacted jobs for the local monitoring dashboard."""
+
+        if isinstance(limit, bool) or not 1 <= limit <= 200:
+            raise RipError("Orchestration job list limit is invalid")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return tuple(self._decode_job(row) for row in rows)
+
     def list_events(self, job_id: str) -> tuple[OrchestrationEvent, ...]:
         self.get_job(job_id)
         with self._connect() as connection:

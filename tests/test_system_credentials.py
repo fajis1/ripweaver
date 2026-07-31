@@ -44,24 +44,45 @@ def test_web_config_stores_submitted_secrets_without_returning_them(
     manager.load.return_value = Config(min_confidence=0.7)
     mock_get_manager.return_value = manager
 
-    result = update_config(
-        {
-            "min_confidence": 0.8,
-            "tmdb_api_key": "replacement-fake-tmdb",
-            "open_subtitles_api_key": "replacement-fake-os",
-        }
-    )
+    result = update_config({
+        "min_confidence": 0.8,
+        "tmdb_api_key": "replacement-fake-tmdb",
+        "open_subtitles_api_key": "replacement-fake-os",
+        "gemini_primary_api_key": "replacement-fake-gemini",
+        "rip_output_root": "D:/staging/rips",
+        "transcode_output_root": "D:/staging/encoded",
+        "jellyfin_tv_root": "D:/library/tv",
+        "jellyfin_movie_root": "D:/library/movies",
+        "automatic_processing_enabled": True,
+    })
     serialized = json.dumps(result, default=str)
 
     assert result["status"] == "success"
     assert "replacement-fake-tmdb" not in serialized
     assert "replacement-fake-os" not in serialized
+    assert "replacement-fake-gemini" not in serialized
     mock_store.assert_has_calls(
         [
             call("tmdb", "replacement-fake-tmdb"),
             call("opensubtitles-api", "replacement-fake-os"),
+            call("gemini-primary", "replacement-fake-gemini"),
         ],
         any_order=True,
     )
-    assert mock_store.call_count == 2
+    assert mock_store.call_count == 3
     manager.save.assert_called_once()
+    saved = manager.save.call_args.args[0]
+    assert saved.automatic_processing_enabled is True
+    assert saved.rip_output_root.as_posix() == "D:/staging/rips"
+
+
+@patch(
+    "mkv_episode_matcher.core.credentials.credential_is_configured",
+    return_value=True,
+)
+def test_public_config_includes_gemini_status_without_value(_mock_status):
+    result = _public_config(Config())
+
+    assert result["gemini_primary_api_key"] == ""
+    assert result["gemini_paid_api_key"] == ""
+    assert result["credential_status"]["gemini-primary"]["configured"] is True

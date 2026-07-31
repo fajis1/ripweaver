@@ -157,6 +157,12 @@ class OrchestrationEventResponse(BaseModel):
     details: dict[str, object]
 
 
+class OrchestrationJobListResponse(BaseModel):
+    automatic_processing_enabled: bool
+    watcher_attached: bool
+    jobs: list[OrchestrationJobResponse]
+
+
 class AuthorizeJobRequest(BaseModel):
     expected_plan_sha256: str
     confirm_authorization: bool = False
@@ -285,6 +291,22 @@ def get_rip_job(
         return _job_response(store.get_job(job_id))
     except RipError as exc:
         raise _store_error(exc) from exc
+
+
+@router.get("/jobs", response_model=OrchestrationJobListResponse)
+def list_rip_jobs(
+    store: Annotated[OrchestrationStore, Depends(get_orchestration_store)],
+) -> dict[str, object]:
+    """Return recent redacted jobs; this endpoint never discovers drives."""
+
+    from mkv_episode_matcher.core.config_manager import get_config_manager
+
+    automatic = get_config_manager().load().automatic_processing_enabled
+    return {
+        "automatic_processing_enabled": automatic,
+        "watcher_attached": False,
+        "jobs": [_job_response(job) for job in store.list_jobs()],
+    }
 
 
 @router.get(

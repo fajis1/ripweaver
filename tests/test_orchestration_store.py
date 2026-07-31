@@ -128,6 +128,18 @@ def test_restart_recovers_job_and_events(tmp_path):
     assert reopened.list_events(created.job_id)[0].event_type == "job_created"
 
 
+def test_recent_job_listing_is_path_redacted_and_newest_first(tmp_path):
+    preview, _report, _root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+    first = store.create_job(preview, idempotency_key="list-create-0001")
+    second = store.create_job(preview, idempotency_key="list-create-0002")
+
+    listed = store.list_jobs(limit=2)
+
+    assert {job.job_id for job in listed} == {first.job_id, second.job_id}
+    assert all("report_paths" not in str(job.preview) for job in listed)
+
+
 def test_concurrent_creation_retry_produces_one_job(tmp_path):
     preview, _report, _root = _preview(tmp_path)
     store = OrchestrationStore(tmp_path / "jobs.sqlite3")

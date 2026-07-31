@@ -74,6 +74,19 @@ class Config(BaseModel):
     )
     min_confidence: float = 0.7
 
+    # Local pipeline locations and unattended-operation policy. These values
+    # are non-secret and may be persisted in the local JSON configuration.
+    rip_output_root: Path | None = None
+    transcode_output_root: Path | None = None
+    jellyfin_tv_root: Path | None = None
+    jellyfin_movie_root: Path | None = None
+    makemkv_path: Path | None = None
+    handbrake_path: Path | None = None
+    ffmpeg_path: Path | None = None
+    ffprobe_path: Path | None = None
+    default_handbrake_profile: str = "balanced"
+    automatic_processing_enabled: bool = False
+
     # OpenSubtitles settings
     open_subtitles_api_key: str | None = None
     open_subtitles_username: str | None = None
@@ -81,7 +94,9 @@ class Config(BaseModel):
     open_subtitles_user_agent: str = "Oz 1.0.0"
 
     # Provider settings
-    asr_provider: Literal["whisper", "parakeet"] = "whisper"  # parakeet kept for migration
+    asr_provider: Literal["whisper", "parakeet"] = (
+        "whisper"  # parakeet kept for migration
+    )
     asr_model_name: str = "small"
     sub_provider: Literal["opensubtitles", "local"] = "opensubtitles"
 
@@ -100,8 +115,32 @@ class Config(BaseModel):
         return data
 
     @field_validator("show_dir")
+    @classmethod
     def validate_show_dir(cls, v):
         if v and not v.exists():
             raise ValueError(f"Show directory does not exist: {v}")
         return v
 
+    @field_validator(
+        "rip_output_root",
+        "transcode_output_root",
+        "jellyfin_tv_root",
+        "jellyfin_movie_root",
+        "makemkv_path",
+        "handbrake_path",
+        "ffmpeg_path",
+        "ffprobe_path",
+    )
+    @classmethod
+    def normalize_optional_path(cls, value):
+        if value in (None, ""):
+            return None
+        return Path(value)
+
+    @field_validator("default_handbrake_profile")
+    @classmethod
+    def validate_profile_name(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned or len(cleaned) > 80:
+            raise ValueError("HandBrake profile name is invalid")
+        return cleaned

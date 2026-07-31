@@ -320,6 +320,16 @@ be overwritten automatically. Jellyfin 12 adds episode-version grouping; older
 servers may display version-suffixed episodes separately, so version coexistence
 must remain an explicit conflict decision rather than an assumed safe merge.
 
+The Web UI configuration persists only non-secret pipeline settings: rip and
+encoded staging roots, Jellyfin TV/movie roots, external tool paths, the default
+HandBrake profile name, and whether unattended processing is requested. Gemini,
+TMDb, and OpenSubtitles values must continue to use the ignored `.env`; API
+responses expose configuration status and management links only. The monitoring
+dashboard may list path-redacted durable jobs and serialized downstream stages.
+It must report `watcher_attached: false` until a real background watcher with a
+combined immutable authorization is installed. Merely enabling the preference
+must never falsely claim that a disc is being scanned or processed.
+
 `POST /rip/special-features/execute` is the web execution boundary for an
 already reviewed special-feature binding. It repeats the exact bound-manifest
 digest and fresh saved-inventory validation, exact job-count confirmation,

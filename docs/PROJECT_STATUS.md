@@ -1185,3 +1185,29 @@ Focused verification:
   tests/test_handbrake_adapter.py tests/test_handbrake_batch_executor.py`
 - `uv run ruff check` on the modified organizer, HandBrake, pipeline adapter,
   and focused test modules.
+
+## Web settings and monitoring dashboard
+
+- The Web settings page now exposes separate rip staging, encoded staging,
+  Jellyfin television, and Jellyfin movie roots.
+- It also exposes MakeMKV, HandBrakeCLI, FFmpeg, and FFprobe paths plus the
+  default HandBrake profile name.
+- Gemini primary and fallback credentials are now accepted by the existing
+  secret-storage boundary and returned to the browser only as configured/not
+  configured status with the provider management link.
+- Riplex requires TMDb; its dvdcompare.net integration does not require another
+  user API key.
+- The pipeline page now polls recent durable rip jobs and serialized downstream
+  queue items, showing disc and rip/identify/transcode/organize stage icons.
+- The API explicitly reports whether automatic processing is requested and
+  whether a background watcher is actually attached. It currently reports the
+  watcher as unattached, so the UI cannot imply that an inserted disc is being
+  processed.
+
+Current limitation and exact next step:
+
+- Implement the separately tested background disc watcher and combined pipeline
+  authorization. It must bind tool paths, staging/library roots, HandBrake
+  profile, disc-context fallback, conflict policy, and parallel-drive limit.
+  Only then may `watcher_attached` become true and the automatic preference
+  initiate read-only inventory scans and authorized collision-safe rips.

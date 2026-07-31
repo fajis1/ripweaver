@@ -50,6 +50,13 @@ interface OrchestrationJob {
   plan_sha256: string;
   state: string;
   executor_attached: boolean;
+  preview?: RipPreview;
+}
+
+interface JobDashboard {
+  automatic_processing_enabled: boolean;
+  watcher_attached: boolean;
+  jobs: OrchestrationJob[];
 }
 
 interface PipelineQueueItem {
@@ -71,6 +78,11 @@ const formatBytes = (value: number | null) => {
   return `${(value / (1024 ** 3)).toFixed(2)} GiB`;
 };
 
+const pipelineStages = ['rip', 'identify', 'transcode', 'organize'] as const;
+const stageIcon: Record<string, string> = {
+  rip: '💿', identify: '🔎', transcode: '🎞️', organize: '📁', complete: '✅',
+};
+
 const RipPipelineView = () => {
   const [reportText, setReportText] = useState('');
   const [seriesName, setSeriesName] = useState('');
@@ -88,6 +100,7 @@ const RipPipelineView = () => {
   const [runDirectory, setRunDirectory] = useState('');
   const [confirmPhysicalRip, setConfirmPhysicalRip] = useState(false);
   const [pipelineQueue, setPipelineQueue] = useState<PipelineQueue | null>(null);
+  const [jobDashboard, setJobDashboard] = useState<JobDashboard | null>(null);
 
   useEffect(() => {
     if (!savedJob || !['queued', 'running', 'pause_requested'].includes(savedJob.state)) return;
@@ -100,8 +113,11 @@ const RipPipelineView = () => {
 
   useEffect(() => {
     const refresh = async () => {
-      const response = await fetch('/rip/pipeline/items');
-      if (response.ok) setPipelineQueue(await response.json());
+      const [pipelineResponse, jobsResponse] = await Promise.all([
+        fetch('/rip/pipeline/items'), fetch('/rip/jobs'),
+      ]);
+      if (pipelineResponse.ok) setPipelineQueue(await pipelineResponse.json());
+      if (jobsResponse.ok) setJobDashboard(await jobsResponse.json());
     };
     void refresh();
     const timer = window.setInterval(refresh, 3000);
@@ -333,6 +349,46 @@ const RipPipelineView = () => {
         </div>
       )}
 
+      {jobDashboard && (
+        <div className="glass-panel rounded-xl p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="font-bold text-white">Optical-disc automation</div>
+              <div className="text-sm text-[var(--text-muted)]">
+                {jobDashboard.automatic_processing_enabled ? 'Automatic processing requested' : 'Automatic processing disabled'} · {jobDashboard.watcher_attached ? 'watcher running' : 'watcher not attached'}
+              </div>
+            </div>
+            <span className={`px-3 py-1 rounded-full text-xs font-bold ${jobDashboard.watcher_attached ? 'bg-green-500/15 text-green-300' : 'bg-amber-500/15 text-amber-300'}`}>
+              {jobDashboard.watcher_attached ? 'LIVE' : 'SETUP REQUIRED'}
+            </span>
+          </div>
+          {!jobDashboard.watcher_attached && (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
+              No background disc watcher is attached. The server will not scan or rip a newly inserted disc automatically yet.
+            </div>
+          )}
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+            {jobDashboard.jobs.length === 0 ? (
+              <div className="text-sm text-[var(--text-muted)]">No durable disc jobs have been created.</div>
+            ) : jobDashboard.jobs.map((job) => (
+              <div key={job.job_id} className="rounded-xl border border-[var(--border-color)] bg-[var(--bg-primary)]/40 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-2xl">💿</span>
+                  <span className="font-mono text-xs text-[var(--text-muted)]">{job.job_id}</span>
+                  <span className="text-xs font-bold uppercase text-blue-300">{job.state.replaceAll('_', ' ')}</span>
+                </div>
+                <div className="mt-3 flex items-center justify-between text-xs">
+                  {pipelineStages.map((stage, index) => {
+                    const active = job.state === 'completed' || (stage === 'rip' && ['running', 'queued'].includes(job.state));
+                    return <div key={stage} className={`flex items-center ${active ? 'text-green-300' : 'text-[var(--text-muted)]'}`}><span className="mr-1">{stageIcon[stage]}</span>{stage}{index < pipelineStages.length - 1 ? <span className="ml-2">→</span> : null}</div>;
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {pipelineQueue && (
         <div className="glass-panel rounded-xl p-5 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -357,12 +413,15 @@ const RipPipelineView = () => {
               {pipelineQueue.items.map((item) => (
                 <div key={item.media_id} className="py-3 flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <div className="font-mono text-sm text-white">{item.media_id}</div>
+                    <div className="font-mono text-sm text-white"><span className="mr-2">{stageIcon[item.state === 'completed' ? 'complete' : item.stage] || '⏸️'}</span>{item.media_id}</div>
                     <div className="text-xs text-[var(--text-muted)]">
                       {item.stage} · {item.state.replaceAll('_', ' ')}
                       {item.review_code ? ` · ${item.review_code}` : ''}
                       {item.error_type ? ` · ${item.error_type}` : ''}
                     </div>
+                  </div>
+                  <div className="flex gap-1 text-xs">
+                    {pipelineStages.map((stage) => <span key={stage} className={`rounded px-2 py-1 ${stage === item.stage ? 'bg-indigo-500/20 text-indigo-200' : 'bg-white/5 text-[var(--text-muted)]'}`}>{stageIcon[stage]} {stage}</span>)}
                   </div>
                   {['failed', 'review_required'].includes(item.state) && (
                     <button type="button" className="btn btn-secondary" onClick={() => controlPipeline('resume', item.media_id)}>
