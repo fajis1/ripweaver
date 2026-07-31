@@ -120,6 +120,9 @@ class VerifiedMedia:
     video_codec: str
     audio_streams: int
     subtitle_streams: int
+    width: int
+    height: int
+    field_order: str
 
 
 @dataclass(frozen=True)
@@ -133,6 +136,9 @@ class HandBrakeResult:
     subtitle_streams: int
     process_log: Path
     event_log: Path
+    width: int | None = None
+    height: int | None = None
+    field_order: str = "unknown"
 
     def safe_report(self) -> dict[str, object]:
         report = asdict(self)
@@ -384,7 +390,7 @@ def _probe_media(
                 "-v",
                 "error",
                 "-show_entries",
-                "format=duration,size:stream=codec_type,codec_name",
+                "format=duration,size:stream=codec_type,codec_name,width,height,field_order",
                 "-of",
                 "json",
                 str(media.resolve()),
@@ -429,12 +435,22 @@ def _probe_media(
     ]
     if duration <= 0 or size <= 0 or len(videos) != 1 or not audio:
         raise HandBrakeError("Post-transcode media failed stream verification")
+    try:
+        width = int(videos[0]["width"])
+        height = int(videos[0]["height"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HandBrakeError("Post-transcode video dimensions are invalid") from exc
+    if width <= 0 or height <= 0:
+        raise HandBrakeError("Post-transcode video dimensions are invalid")
     return VerifiedMedia(
         duration_seconds=duration,
         size_bytes=size,
         video_codec=str(videos[0].get("codec_name") or ""),
         audio_streams=len(audio),
         subtitle_streams=len(subtitles),
+        width=width,
+        height=height,
+        field_order=str(videos[0].get("field_order") or "unknown").lower(),
     )
 
 
@@ -604,6 +620,9 @@ def execute_handbrake_job(
         subtitle_streams=verified.subtitle_streams,
         process_log=process_log,
         event_log=event_log,
+        width=verified.width,
+        height=verified.height,
+        field_order=verified.field_order,
     )
     _write_event(
         event_log,

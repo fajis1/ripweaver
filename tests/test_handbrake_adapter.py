@@ -306,7 +306,13 @@ def test_success_promotes_only_verified_partial_and_redacts_logs(
             json.dumps({
                 "format": {"duration": "60.0", "size": "7"},
                 "streams": [
-                    {"codec_type": "video", "codec_name": "hevc"},
+                    {
+                        "codec_type": "video",
+                        "codec_name": "hevc",
+                        "width": 1920,
+                        "height": 1080,
+                        "field_order": "progressive",
+                    },
                     {"codec_type": "audio", "codec_name": "ac3"},
                     {"codec_type": "audio", "codec_name": "aac"},
                     {"codec_type": "subtitle", "codec_name": "dvd_subtitle"},
@@ -333,6 +339,8 @@ def test_success_promotes_only_verified_partial_and_redacts_logs(
     assert not partial.exists()
     assert result.encoder == "vce_h265"
     assert result.audio_streams == 2
+    assert result.height == 1080
+    assert result.field_order == "progressive"
     process_log = result.process_log.read_text(encoding="utf-8")
     event_log = result.event_log.read_text(encoding="utf-8")
     assert str(job.source) not in process_log

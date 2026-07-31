@@ -1,4 +1,5 @@
 import json
+from pathlib import PurePosixPath
 
 import pytest
 
@@ -6,7 +7,9 @@ from mkv_episode_matcher.media.episode_catalog import EpisodeCatalogEntry
 from mkv_episode_matcher.media.organizer import (
     OrganizationPlanError,
     SequenceAssignment,
+    add_jellyfin_version_label,
     build_episode_filename,
+    jellyfin_resolution_label,
     load_sequence_assignments,
     plan_tv_organization,
     write_safe_organization_plan,
@@ -41,6 +44,23 @@ def test_filename_and_layout_stop_at_season_folder(tmp_path):
     )
     assert item.status == "proposed"
     assert plan.missing_directories == ("Test Series/Season 03",)
+
+
+def test_jellyfin_resolution_version_uses_required_suffix():
+    canonical = build_episode_filename(
+        "Test Series", "S03E01", "A Story", version_label="1080p"
+    )
+    assert canonical == "Test Series - S03E01 - A Story - 1080p.mkv"
+    assert jellyfin_resolution_label(576, "tt") == "576i"
+    assert jellyfin_resolution_label(2160, "progressive") == "2160p"
+    assert (
+        add_jellyfin_version_label(
+            PurePosixPath("Test Series/Season 03/Test Series - S03E01 - A Story.mkv"),
+            "720p",
+        )
+        .as_posix()
+        .endswith("Test Series - S03E01 - A Story - 720p.mkv")
+    )
 
 
 def test_exact_destination_collision_routes_to_review(tmp_path):

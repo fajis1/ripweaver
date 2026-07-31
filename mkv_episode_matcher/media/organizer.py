@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from mkv_episode_matcher.media.episode_catalog import EpisodeCatalogEntry
@@ -19,6 +19,7 @@ _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$")
 _EPISODE_ID = re.compile(r"^S(\d{2})E(\d{2,3})$")
 _INVALID_COMPONENT = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _WHITESPACE = re.compile(r"\s+")
+_VERSION_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{0,79}$")
 _WINDOWS_RESERVED = {
     "CON",
     "PRN",
@@ -79,6 +80,7 @@ def build_episode_filename(
     episode_id: str,
     episode_title: str,
     *,
+    version_label: str | None = None,
     maximum_characters: int = 240,
 ) -> str:
     """Build a canonical collision-checkable Jellyfin/Plex MKV filename."""
@@ -87,13 +89,46 @@ def build_episode_filename(
     title = sanitize_media_component(episode_title)
     if _EPISODE_ID.fullmatch(episode_id) is None:
         raise OrganizationPlanError("Episode assignment contains an invalid ID")
+    suffix = ""
+    if version_label is not None:
+        label = sanitize_media_component(version_label)
+        if _VERSION_LABEL.fullmatch(label) is None:
+            raise OrganizationPlanError("Jellyfin version label is invalid")
+        suffix = f" - {label}"
     fixed = f"{series} - {episode_id} - "
     extension = ".mkv"
-    available = maximum_characters - len(fixed) - len(extension)
+    available = maximum_characters - len(fixed) - len(suffix) - len(extension)
     if available < 1:
         raise OrganizationPlanError("Series name is too long for a safe filename")
     title = title[:available].rstrip(" .")
-    return f"{fixed}{title}{extension}"
+    return f"{fixed}{title}{suffix}{extension}"
+
+
+def jellyfin_resolution_label(height: int, field_order: str | None) -> str:
+    """Return Jellyfin's sortable resolution version label (for example 1080p)."""
+
+    if isinstance(height, bool) or not isinstance(height, int) or height <= 0:
+        raise OrganizationPlanError("Encoded video height is invalid")
+    normalized_order = str(field_order or "unknown").strip().lower()
+    scan = "i" if normalized_order not in {"", "unknown", "progressive"} else "p"
+    return f"{height}{scan}"
+
+
+def add_jellyfin_version_label(
+    relative_destination: PurePosixPath, version_label: str
+) -> PurePosixPath:
+    """Append Jellyfin's required space-hyphen-space version suffix safely."""
+
+    if relative_destination.is_absolute() or ".." in relative_destination.parts:
+        raise OrganizationPlanError("Library destination is unsafe")
+    if relative_destination.suffix.lower() != ".mkv":
+        raise OrganizationPlanError("Library destination is not an MKV")
+    label = sanitize_media_component(version_label)
+    if _VERSION_LABEL.fullmatch(label) is None:
+        raise OrganizationPlanError("Jellyfin version label is invalid")
+    return relative_destination.with_name(
+        f"{relative_destination.stem} - {label}{relative_destination.suffix}"
+    )
 
 
 def _assignments_from_group(group: object) -> list[SequenceAssignment]:
@@ -193,6 +228,16 @@ def _episode_conflicts(
     return "proposed", ()
 
 
+def inspect_episode_destination(
+    directory: Path, filename: str, episode_id: str
+) -> tuple[str, tuple[str, ...]]:
+    """Inspect names only and classify an exact or same-episode conflict."""
+
+    if _EPISODE_ID.fullmatch(episode_id) is None:
+        raise OrganizationPlanError("Episode assignment contains an invalid ID")
+    return _episode_conflicts(filename, episode_id, _existing_names(directory))
+
+
 def plan_tv_organization(
     assignments: tuple[SequenceAssignment, ...],
     catalog: tuple[EpisodeCatalogEntry, ...],
@@ -239,10 +284,10 @@ def plan_tv_organization(
         season_directory = library_root / series_component / season_name
         if not season_directory.exists():
             missing_directories.add((Path(series_component) / season_name).as_posix())
-        status, conflicts = _episode_conflicts(
+        status, conflicts = inspect_episode_destination(
+            season_directory,
             filename,
             assignment.episode_id,
-            _existing_names(season_directory),
         )
         items.append(
             OrganizationItem(

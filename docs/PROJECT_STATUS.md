@@ -1158,3 +1158,30 @@ profile and tool paths, encoded staging root, collision-checked library
 destinations, move/copy policy, and job count. Once that immutable plan is
 authorized, the server can attach the serialized worker and resume it safely
 after restart without asking for each ordinary stage transition.
+## Jellyfin resolution-version naming
+
+- Post-transcode FFprobe verification now retains encoded width, height, and
+  field order in the verified HandBrake result.
+- The downstream transcode contract carries those verified fields to the
+  organizer.
+- Final television placement appends Jellyfin's required version delimiter and
+  resolution label, such as ` - 1080p` or ` - 576i`, immediately before `.mkv`.
+- The label describes the encoded output rather than the source or requested
+  HandBrake profile.
+- Existing exact resolution destinations still stop for review and are never
+  overwritten automatically.
+- A different version of the same episode also stops by default. Organization
+  may place both resolution-labelled files only when the reviewed decision is
+  passed explicitly as `allow_version_coexistence`; the encoded staging file is
+  preserved while the item is held.
+- Jellyfin's stable documentation explicitly describes this convention for
+  movie versions. Jellyfin 12 adds episode-version support, while older servers
+  may show resolution-suffixed episodes separately; the future conflict-review
+  UI must therefore present version coexistence as an explicit user decision.
+
+Focused verification:
+
+- `uv run pytest tests/test_organizer.py tests/test_pipeline_adapters.py
+  tests/test_handbrake_adapter.py tests/test_handbrake_batch_executor.py`
+- `uv run ruff check` on the modified organizer, HandBrake, pipeline adapter,
+  and focused test modules.

@@ -310,6 +310,16 @@ pipeline authorization that binds the HandBrake profile, encoded root,
 destination library root, item/destination set, tool paths, and move/copy
 policy. Queue admission is not transcode or organization authorization.
 
+Post-transcode FFprobe verification must retain the encoded width, height, and
+field order. Final Jellyfin television placement appends the verified resolution
+as a version suffix using exactly ` - <height>p` or ` - <height>i` before the
+extension, for example `Series - S01E01 - Title - 1080p.mkv`. The suffix is
+derived from the encoded output, never a requested profile or source filename.
+An existing exact version destination remains a review conflict and must never
+be overwritten automatically. Jellyfin 12 adds episode-version grouping; older
+servers may display version-suffixed episodes separately, so version coexistence
+must remain an explicit conflict decision rather than an assumed safe merge.
+
 `POST /rip/special-features/execute` is the web execution boundary for an
 already reviewed special-feature binding. It repeats the exact bound-manifest
 digest and fresh saved-inventory validation, exact job-count confirmation,

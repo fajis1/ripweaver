@@ -13,7 +13,13 @@ from mkv_episode_matcher.media.handbrake import (
     execute_handbrake_job,
     partial_output_path,
 )
-from mkv_episode_matcher.media.organizer import build_episode_filename
+from mkv_episode_matcher.media.organizer import (
+    OrganizationPlanError,
+    add_jellyfin_version_label,
+    build_episode_filename,
+    inspect_episode_destination,
+    jellyfin_resolution_label,
+)
 from mkv_episode_matcher.pipeline_queue import (
     PipelineArtifact,
     PipelineQueueError,
@@ -210,6 +216,10 @@ class TranscodeStageAdapter:
                 "encoded_path": str(destination),
                 "encoded_size_bytes": result.output_bytes,
                 "library_relative": relative.as_posix(),
+                "episode_id": payload.get("episode_id"),
+                "encoded_width": result.width,
+                "encoded_height": result.height,
+                "encoded_field_order": result.field_order,
             },
         )
 
@@ -224,6 +234,7 @@ class OrganizeStageAdapter:
         contract_root: Path,
         confirm_organize: bool,
         copy_only: bool = False,
+        allow_version_coexistence: bool = False,
     ):
         if not confirm_organize:
             raise PipelineQueueError(
@@ -232,6 +243,7 @@ class OrganizeStageAdapter:
         self.library_root = library_root.resolve()
         self.contract_root = contract_root.resolve()
         self.copy_only = copy_only
+        self.allow_version_coexistence = allow_version_coexistence
 
     def __call__(self, item: QueuedPipelineItem) -> PipelineArtifact:
         payload = _load_contract(item, "verified-transcode-contract")
@@ -245,12 +257,28 @@ class OrganizeStageAdapter:
             raise PipelineQueueError("Library destination contract is unsafe")
         if not self.library_root.is_dir():
             raise PipelineQueueError("Library root is unavailable")
+        try:
+            resolution_label = jellyfin_resolution_label(
+                payload.get("encoded_height"), payload.get("encoded_field_order")
+            )
+            relative = add_jellyfin_version_label(relative, resolution_label)
+        except OrganizationPlanError as exc:
+            raise PipelineQueueError("Encoded resolution contract is invalid") from exc
         destination = (self.library_root / Path(*relative.parts)).resolve()
         try:
             destination.relative_to(self.library_root)
         except ValueError as exc:
             raise PipelineQueueError("Library destination escapes its root") from exc
-        if destination.exists():
+        episode_id = payload.get("episode_id")
+        try:
+            status, _conflicts = inspect_episode_destination(
+                destination.parent, destination.name, str(episode_id or "")
+            )
+        except OrganizationPlanError as exc:
+            raise PipelineQueueError("Episode destination contract is invalid") from exc
+        if status == "review-existing-destination" or (
+            status == "review-existing-episode" and not self.allow_version_coexistence
+        ):
             raise PipelineReviewRequiredError("library_collision")
         destination.parent.mkdir(parents=True, exist_ok=True)
         try:
