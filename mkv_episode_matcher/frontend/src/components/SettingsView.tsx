@@ -9,6 +9,10 @@ interface Config {
     open_subtitles_password?: string;
     open_subtitles_api_key?: string;
     tmdb_api_key?: string;
+    credential_status?: Record<string, {
+        configured: boolean;
+        management_url: string;
+    }>;
 }
 
 const SettingsView: React.FC = () => {
@@ -147,6 +151,7 @@ const SettingsView: React.FC = () => {
                                             type="password"
                                             value={config.open_subtitles_password || ''}
                                             onChange={(e) => handleChange('open_subtitles_password', e.target.value)}
+                                            placeholder={config.credential_status?.['opensubtitles-password']?.configured ? 'Configured — paste only to replace' : 'Not configured'}
                                             className="w-full bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-lg px-4 py-2 text-white focus:outline-none focus:border-[var(--accent-primary)]"
                                         />
                                     </div>
@@ -156,8 +161,17 @@ const SettingsView: React.FC = () => {
                                             type="password"
                                             value={config.open_subtitles_api_key || ''}
                                             onChange={(e) => handleChange('open_subtitles_api_key', e.target.value)}
+                                            placeholder={config.credential_status?.['opensubtitles-api']?.configured ? 'Configured — paste only to replace' : 'Not configured'}
                                             className="w-full bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-lg px-4 py-2 text-white focus:outline-none focus:border-[var(--accent-primary)]"
                                         />
+                                        <a
+                                            href={config.credential_status?.['opensubtitles-api']?.management_url || 'https://www.opensubtitles.com/en/consumers'}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="inline-block text-sm text-indigo-300 underline hover:text-white"
+                                        >
+                                            Get or manage an OpenSubtitles API key
+                                        </a>
                                     </div>
                                 </div>
                             </div>
@@ -170,8 +184,16 @@ const SettingsView: React.FC = () => {
                                 value={config.tmdb_api_key || ''}
                                 onChange={(e) => handleChange('tmdb_api_key', e.target.value)}
                                 className="w-full bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-lg px-4 py-2 text-white focus:outline-none focus:border-[var(--accent-primary)]"
-                                placeholder="For enhanced metadata..."
+                                placeholder={config.credential_status?.tmdb?.configured ? 'Configured — paste only to replace' : 'Not configured (optional)'}
                             />
+                            <a
+                                href={config.credential_status?.tmdb?.management_url || 'https://www.themoviedb.org/settings/api'}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-block text-sm text-indigo-300 underline hover:text-white"
+                            >
+                                Get or manage a TMDb API key
+                            </a>
                         </div>
                     </div>
                 </div>

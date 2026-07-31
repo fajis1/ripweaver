@@ -113,10 +113,24 @@ async def process_matching_job(job_id: str, request: MatchRequest, engine: Match
         })
         
     except Exception as e:
+        from mkv_episode_matcher.core.credentials import ApiCredentialError
+
+        credential_url = None
+        error_type = "service"
+        if isinstance(e, ApiCredentialError):
+            error_message = str(e)
+            credential_url = e.management_url
+            error_type = "credential"
+        else:
+            error_message = f"Matching failed ({type(e).__name__})."
         jobs[job_id]["status"] = "failed"
-        jobs[job_id]["error"] = str(e)
+        jobs[job_id]["error"] = error_message
+        jobs[job_id]["error_type"] = error_type
+        jobs[job_id]["credential_url"] = credential_url
         await manager.broadcast({
             "type": "job_failed",
             "job_id": job_id,
-            "error": str(e)
+            "error": error_message,
+            "error_type": error_type,
+            "credential_url": credential_url,
         })

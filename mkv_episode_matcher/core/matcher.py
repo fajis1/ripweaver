@@ -44,14 +44,28 @@ class MultiSegmentMatcher:
             # Clean transcription
             clean_trans = clean_text(transcription)
             if len(clean_trans) < 10:
-                logger.debug(f"Transcription too short at {start_time}s: {clean_trans}")
+                logger.info(
+                    "Chunk transcription unusable at {:.1f}s: "
+                    "characters={} words={}",
+                    start_time,
+                    len(clean_trans),
+                    len(clean_trans.split()),
+                )
                 return []
+            logger.debug(
+                "Chunk transcription metrics at {:.1f}s: characters={} words={}",
+                start_time,
+                len(clean_trans),
+                len(clean_trans.split()),
+            )
 
             # Emit matching phase
             if phase_callback:
                 phase_callback("comparing", f"🔍 Comparing against {len(reference_subs)} reference subtitles...")
 
             candidates = []
+            best_score = 0.0
+            best_episode = None
             for sub in reference_subs:
                 # Load text for this time window
                 # Note: SubtitleReader.extract_chunk reads file every time.
@@ -71,6 +85,9 @@ class MultiSegmentMatcher:
                     continue
 
                 score = self.asr.calculate_match_score(clean_trans, ref_text)
+                if score > best_score:
+                    best_score = score
+                    best_episode = sub.episode_info.s_e_format
                 if score > self.min_confidence:
                     candidates.append(
                         MatchCandidate(
@@ -80,6 +97,16 @@ class MultiSegmentMatcher:
                         )
                     )
 
+            if not candidates:
+                logger.info(
+                    "No candidate exceeded threshold at {:.1f}s: "
+                    "words={} best_episode={} best_score={:.3f} threshold={:.3f}",
+                    start_time,
+                    len(clean_trans.split()),
+                    best_episode or "none",
+                    best_score,
+                    self.min_confidence,
+                )
             return candidates
 
         except Exception as e:
@@ -138,7 +165,11 @@ class MultiSegmentMatcher:
 
             if not candidates:
                 empty_segments += 1
-                logger.debug(f"Empty transcription at {t:.1f}s (segment {i + 1})")
+                logger.debug(
+                    "No qualifying candidate at {:.1f}s (segment {})",
+                    t,
+                    i + 1,
+                )
                 # Continue trying more segments if we're still in primary checkpoints
                 # or if we haven't found any successful matches yet
                 if i < 3 or successful_segments == 0:

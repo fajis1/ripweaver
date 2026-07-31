@@ -1,0 +1,464 @@
+import json
+from unittest.mock import Mock, patch
+
+import pytest
+import requests
+
+from mkv_episode_matcher.core.credentials import (
+    ApiCredentialError,
+    ApiServiceError,
+    set_credential_recovery_handler,
+)
+from mkv_episode_matcher.media.episode_catalog import EpisodeCatalogEntry
+from mkv_episode_matcher.media.gemini_matcher import (
+    GeminiEpisodeRanker,
+    GeminiMatchError,
+    RequestsGeminiTransport,
+    TransportResponse,
+    UnmatchedFileEvidence,
+    build_gemini_request,
+    load_gemini_bundle,
+    plan_gemini_request,
+    write_safe_request_plan,
+)
+
+
+@pytest.fixture(autouse=True)
+def reset_recovery_handler():
+    set_credential_recovery_handler(None)
+    yield
+    set_credential_recovery_handler(None)
+
+
+@pytest.fixture
+def theatre_bundle():
+    files = (
+        UnmatchedFileEvidence(
+            "disc-03-title-000",
+            2923,
+            ("An evil goblin roamed the universe creating mischief.",),
+        ),
+        UnmatchedFileEvidence(
+            "disc-03-title-001",
+            2864,
+            ("Willie asks why he cannot stay up while on holiday.",),
+        ),
+    )
+    catalog = (
+        EpisodeCatalogEntry(
+            "S04E02",
+            4,
+            2,
+            "The Snow Queen",
+            "A wicked goblin separates two friends.",
+            2940,
+        ),
+        EpisodeCatalogEntry(
+            "S04E03",
+            4,
+            3,
+            "The Pied Piper of Hamelin",
+            "A piper is hired to rid Hamelin of rats.",
+            2880,
+        ),
+    )
+    return files, catalog
+
+
+def _payload(matches):
+    return {"output_text": json.dumps({"matches": matches})}
+
+
+class FakeTransport:
+    def __init__(self, *responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def send(self, **kwargs):
+        self.calls.append(kwargs)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+def test_request_is_path_free_and_schema_constrained(theatre_bundle):
+    files, catalog = theatre_bundle
+
+    request = build_gemini_request("gemini-test", files, catalog)
+    serialized = json.dumps(request)
+
+    assert request["response_format"]["mime_type"] == "application/json"
+    assert "S04E02" in serialized
+    assert "disc-03-title-000" in serialized
+    assert "G:\\" not in serialized
+    assert "api_key" not in serialized.lower()
+
+
+def test_request_plan_and_saved_report_omit_dialogue(
+    theatre_bundle,
+    tmp_path,
+):
+    files, catalog = theatre_bundle
+    plan = plan_gemini_request("gemini-test", files, catalog)
+    report = tmp_path / "plan.json"
+
+    write_safe_request_plan(report, plan)
+    serialized = report.read_text(encoding="utf-8")
+
+    assert "evil goblin" not in serialized.lower()
+    assert "transcript_excerpts" not in serialized
+    assert "disc-03-title-000" in serialized
+    with pytest.raises(GeminiMatchError, match="refusing overwrite"):
+        write_safe_request_plan(report, plan)
+
+
+def test_load_bundle_validates_transient_json(theatre_bundle, tmp_path):
+    files, catalog = theatre_bundle
+    path = tmp_path / "bundle.json"
+    path.write_text(
+        json.dumps({
+            "files": [item.__dict__ for item in files],
+            "episodes": [item.to_dict() for item in catalog],
+        }),
+        encoding="utf-8",
+    )
+
+    loaded_files, loaded_catalog = load_gemini_bundle(path)
+
+    assert loaded_files == files
+    assert loaded_catalog == catalog
+
+
+def test_theatre_regression_accepts_only_supplied_one_to_one_matches(
+    theatre_bundle,
+):
+    files, catalog = theatre_bundle
+    transport = FakeTransport(
+        TransportResponse(
+            200,
+            _payload([
+                {
+                    "file_id": "disc-03-title-000",
+                    "episode_id": "S04E02",
+                    "confidence": 0.96,
+                    "evidence": ["Goblin and friendship plot agree."],
+                },
+                {
+                    "file_id": "disc-03-title-001",
+                    "episode_id": "S04E03",
+                    "confidence": 0.98,
+                    "evidence": ["Willie holiday dialogue agrees."],
+                },
+            ]),
+        )
+    )
+
+    plan = GeminiEpisodeRanker(
+        model="gemini-test",
+        transport=transport,
+        sleep=lambda _seconds: None,
+    ).rank_with_key(
+        files,
+        catalog,
+        api_key="fake-test-key",
+        credential="gemini-primary",
+    )
+
+    assert [(item.file_id, item.episode_id) for item in plan.matches] == [
+        ("disc-03-title-000", "S04E02"),
+        ("disc-03-title-001", "S04E03"),
+    ]
+    assert "transcript" not in json.dumps(plan.safe_report()).lower()
+    assert transport.calls[0]["api_key"] == "fake-test-key"
+
+
+def test_full_theatre_aired_order_regression_is_preserved():
+    expected = (
+        ("disc-03-title-000", "S04E02", "The Snow Queen"),
+        ("disc-03-title-001", "S04E03", "The Pied Piper of Hamelin"),
+        ("disc-03-title-002", "S04E04", "Cinderella"),
+        ("disc-03-title-003", "S04E05", "Puss in Boots"),
+        ("disc-04-title-000", "S03E05", "Snow White and the Seven Dwarfs"),
+        ("disc-04-title-001", "S03E06", "Beauty and the Beast"),
+        (
+            "disc-04-title-002",
+            "S03E07",
+            "The Boy Who Left Home to Find Out About the Shivers",
+        ),
+        ("disc-04-title-003", "S04E01", "The Three Little Pigs"),
+        ("disc-05-title-000", "S03E01", "Goldilocks and the Three Bears"),
+        ("disc-05-title-001", "S03E02", "The Princess and the Pea"),
+        ("disc-05-title-002", "S03E03", "Pinocchio"),
+        ("disc-05-title-003", "S03E04", "Thumbelina"),
+    )
+    files = tuple(
+        UnmatchedFileEvidence(file_id, 3000, (f"Evidence for {title}.",))
+        for file_id, _episode_id, title in expected
+    )
+    catalog = tuple(
+        EpisodeCatalogEntry(
+            episode_id,
+            int(episode_id[1:3]),
+            int(episode_id[4:]),
+            title,
+            f"Overview for {title}.",
+            3000,
+        )
+        for _file_id, episode_id, title in expected
+    )
+    transport = FakeTransport(
+        TransportResponse(
+            200,
+            _payload([
+                {
+                    "file_id": file_id,
+                    "episode_id": episode_id,
+                    "confidence": 0.95,
+                    "evidence": ["Title and plot agree."],
+                }
+                for file_id, episode_id, _title in expected
+            ]),
+        )
+    )
+
+    plan = GeminiEpisodeRanker(
+        model="gemini-test",
+        transport=transport,
+        max_retries=0,
+    ).rank_with_key(
+        files,
+        catalog,
+        api_key="fake-key",
+        credential="gemini-primary",
+    )
+
+    assert {(item.file_id, item.episode_id) for item in plan.matches} == {
+        (file_id, episode_id) for file_id, episode_id, _title in expected
+    }
+
+
+@pytest.mark.parametrize(
+    "matches, message",
+    [
+        (
+            [
+                {
+                    "file_id": "disc-03-title-000",
+                    "episode_id": "S99E99",
+                    "confidence": 0.9,
+                    "evidence": ["Invented candidate."],
+                },
+                {
+                    "file_id": "disc-03-title-001",
+                    "episode_id": "S04E03",
+                    "confidence": 0.9,
+                    "evidence": ["Allowed candidate."],
+                },
+            ],
+            "outside the catalogue",
+        ),
+        (
+            [
+                {
+                    "file_id": "disc-03-title-000",
+                    "episode_id": "S04E02",
+                    "confidence": 0.9,
+                    "evidence": ["First assignment."],
+                },
+                {
+                    "file_id": "disc-03-title-001",
+                    "episode_id": "S04E02",
+                    "confidence": 0.9,
+                    "evidence": ["Duplicate assignment."],
+                },
+            ],
+            "more than once",
+        ),
+    ],
+)
+def test_semantic_validation_rejects_untrusted_assignments(
+    theatre_bundle,
+    matches,
+    message,
+):
+    files, catalog = theatre_bundle
+    ranker = GeminiEpisodeRanker(
+        model="gemini-test",
+        transport=FakeTransport(TransportResponse(200, _payload(matches))),
+    )
+
+    with pytest.raises(GeminiMatchError, match=message):
+        ranker.rank_with_key(
+            files,
+            catalog,
+            api_key="fake-test-key",
+            credential="gemini-primary",
+        )
+
+
+def test_rejected_key_raises_recoverable_credential_error(theatre_bundle):
+    files, catalog = theatre_bundle
+    ranker = GeminiEpisodeRanker(
+        model="gemini-test",
+        transport=FakeTransport(TransportResponse(401, {})),
+        max_retries=0,
+    )
+
+    with pytest.raises(ApiCredentialError) as raised:
+        ranker.rank_with_key(
+            files,
+            catalog,
+            api_key="fake-old-key",
+            credential="gemini-primary",
+        )
+
+    assert raised.value.credential == "gemini-primary"
+    assert raised.value.status_code == 401
+
+
+def test_rate_limit_retries_with_backoff_then_stops(theatre_bundle):
+    files, catalog = theatre_bundle
+    sleeps = []
+    transport = FakeTransport(
+        TransportResponse(429, {}),
+        TransportResponse(429, {}),
+        TransportResponse(429, {}),
+    )
+    ranker = GeminiEpisodeRanker(
+        model="gemini-test",
+        transport=transport,
+        max_retries=2,
+        sleep=sleeps.append,
+    )
+
+    with pytest.raises(ApiServiceError, match="rate or quota"):
+        ranker.rank_with_key(
+            files,
+            catalog,
+            api_key="fake-key",
+            credential="gemini-primary",
+        )
+
+    assert sleeps == [1, 2]
+    assert len(transport.calls) == 3
+
+
+def test_network_timeout_is_bounded(theatre_bundle):
+    files, catalog = theatre_bundle
+    transport = FakeTransport(
+        requests.Timeout("private request detail"),
+        requests.Timeout("private request detail"),
+    )
+    ranker = GeminiEpisodeRanker(
+        model="gemini-test",
+        transport=transport,
+        max_retries=1,
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(ApiServiceError, match="network failure: Timeout") as raised:
+        ranker.rank_with_key(
+            files,
+            catalog,
+            api_key="fake-key",
+            credential="gemini-primary",
+        )
+
+    assert "private request detail" not in str(raised.value)
+
+
+@patch("mkv_episode_matcher.media.gemini_matcher.load_environment_settings")
+def test_configured_keys_recover_rejected_primary_once(
+    mock_settings,
+    theatre_bundle,
+):
+    files, catalog = theatre_bundle
+    mock_settings.side_effect = [
+        Mock(gemini_primary_api_key="fake-old", gemini_paid_api_key=None),
+        Mock(gemini_primary_api_key="fake-new", gemini_paid_api_key=None),
+    ]
+    transport = FakeTransport(
+        TransportResponse(401, {}),
+        TransportResponse(
+            200,
+            _payload([
+                {
+                    "file_id": item.file_id,
+                    "episode_id": episode.episode_id,
+                    "confidence": 0.9,
+                    "evidence": ["Allowed evidence."],
+                }
+                for item, episode in zip(files, catalog, strict=True)
+            ]),
+        ),
+    )
+    set_credential_recovery_handler(lambda _error: True)
+
+    plan = GeminiEpisodeRanker(
+        model="gemini-test",
+        transport=transport,
+        max_retries=0,
+    ).rank_with_configured_keys(files, catalog)
+
+    assert len(plan.matches) == 2
+    assert [call["api_key"] for call in transport.calls] == [
+        "fake-old",
+        "fake-new",
+    ]
+
+
+@patch("mkv_episode_matcher.media.gemini_matcher.load_environment_settings")
+def test_configured_keys_fall_back_to_paid_on_service_failure(
+    mock_settings,
+    theatre_bundle,
+):
+    files, catalog = theatre_bundle
+    mock_settings.side_effect = [
+        Mock(gemini_primary_api_key="fake-primary", gemini_paid_api_key="fake-paid"),
+        Mock(gemini_primary_api_key="fake-primary", gemini_paid_api_key="fake-paid"),
+    ]
+    transport = FakeTransport(
+        TransportResponse(503, {}),
+        TransportResponse(
+            200,
+            _payload([
+                {
+                    "file_id": item.file_id,
+                    "episode_id": episode.episode_id,
+                    "confidence": 0.9,
+                    "evidence": ["Allowed evidence."],
+                }
+                for item, episode in zip(files, catalog, strict=True)
+            ]),
+        ),
+    )
+
+    plan = GeminiEpisodeRanker(
+        model="gemini-test",
+        transport=transport,
+        max_retries=0,
+    ).rank_with_configured_keys(files, catalog)
+
+    assert len(plan.matches) == 2
+    assert [call["api_key"] for call in transport.calls] == [
+        "fake-primary",
+        "fake-paid",
+    ]
+
+
+@patch("mkv_episode_matcher.media.gemini_matcher.requests.post")
+def test_requests_transport_uses_header_not_url(mock_post):
+    mock_post.return_value = Mock(
+        status_code=200,
+        json=lambda: {"output_text": "{}"},
+    )
+
+    RequestsGeminiTransport().send(
+        api_key="fake-secret-key",
+        body={"model": "test"},
+        timeout_seconds=10,
+    )
+
+    assert "fake-secret-key" not in mock_post.call_args.args[0]
+    assert mock_post.call_args.kwargs["headers"]["x-goog-api-key"] == "fake-secret-key"

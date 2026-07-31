@@ -1,0 +1,172 @@
+{
+  "mode": "special-feature-catalog",
+  "catalog_id": "parent-trap-2005-r1-disc2-v1",
+  "release_id": "upc-786936286960",
+  "release": {
+    "title": "The Parent Trap / The Parent Trap II",
+    "edition": "2-Movie Collection",
+    "release_year": 2005,
+    "region": "1",
+    "media_type": "DVD",
+    "disc_role": "special-features"
+  },
+  "sources": [
+    {
+      "source_id": "dvdizzy-2005-review",
+      "source_type": "review",
+      "locator": "https://dvdizzy.com/parenttrap-2moviecollection.html"
+    },
+    {
+      "source_id": "moviemet-vault-review",
+      "source_type": "review",
+      "locator": "https://moviemet.com/review/parent-trap-dvd-review"
+    },
+    {
+      "source_id": "freelibrary-record",
+      "source_type": "database",
+      "locator": "https://catalog.freelibrary.org/Record/1590130"
+    }
+  ],
+  "features": [
+    {
+      "feature_id": "caught-in-the-act",
+      "title": "Caught in the Act: The Making of The Parent Trap",
+      "feature_type": "behind the scenes",
+      "runtime_seconds": 1123,
+      "source_ids": ["dvdizzy-2005-review"]
+    },
+    {
+      "feature_id": "music-magic-sherman-brothers",
+      "title": "Music Magic: The Sherman Brothers",
+      "feature_type": "featurette",
+      "runtime_seconds": 882,
+      "source_ids": ["dvdizzy-2005-review", "moviemet-vault-review"]
+    },
+    {
+      "feature_id": "lets-get-together",
+      "title": "Let's Get Together",
+      "feature_type": "other",
+      "runtime_seconds": 95,
+      "source_ids": ["dvdizzy-2005-review"]
+    },
+    {
+      "feature_id": "whos-the-twin",
+      "title": "Lost Treasures: Who's the Twin?",
+      "feature_type": "featurette",
+      "runtime_seconds": 360,
+      "source_ids": ["dvdizzy-2005-review", "moviemet-vault-review"]
+    },
+    {
+      "feature_id": "disney-studio-album-1961",
+      "title": "1961 Disney Studio Album",
+      "feature_type": "featurette",
+      "runtime_seconds": 220,
+      "source_ids": ["dvdizzy-2005-review"]
+    },
+    {
+      "feature_id": "trailers-tv-spots",
+      "title": "Trailers & TV Spots",
+      "feature_type": "trailer",
+      "runtime_seconds": 300,
+      "source_ids": ["dvdizzy-2005-review"]
+    },
+    {
+      "feature_id": "disney-legend-hayley-mills",
+      "title": "Disney Legend: Hayley Mills",
+      "feature_type": "featurette",
+      "runtime_seconds": 1352,
+      "source_ids": ["dvdizzy-2005-review"]
+    },
+    {
+      "feature_id": "seeing-double",
+      "title": "Seeing Double",
+      "feature_type": "behind the scenes",
+      "runtime_seconds": 557,
+      "source_ids": ["dvdizzy-2005-review"]
+    },
+    {
+      "feature_id": "title-makers",
+      "title": "The Title Makers",
+      "feature_type": "featurette",
+      "runtime_seconds": 1037,
+      "source_ids": ["dvdizzy-2005-review"]
+    },
+    {
+      "feature_id": "kimball-swift",
+      "title": "Kimball & Swift: The Disney Years",
+      "feature_type": "interview",
+      "runtime_seconds": 1052,
+      "source_ids": ["dvdizzy-2005-review"]
+    },
+    {
+      "feature_id": "production-gallery-video",
+      "title": "Production Gallery",
+      "feature_type": "other",
+      "runtime_seconds": 97,
+      "source_ids": ["dvdizzy-2005-review"]
+    },
+    {
+      "feature_id": "screenplay-excerpt",
+      "title": "Screenplay Excerpt",
+      "feature_type": "other",
+      "runtime_seconds": 420,
+      "source_ids": ["dvdizzy-2005-review"]
+    },
+    {
+      "feature_id": "sound-studio-girlfriend",
+      "title": "Sound Studio: The Girlfriend",
+      "feature_type": "scene",
+      "runtime_seconds": 142,
+      "representation": "multi-audio-title",
+      "source_ids": ["dvdizzy-2005-review"]
+    },
+    {
+      "feature_id": "sound-studio-twins-revenge",
+      "title": "Sound Studio: Twin's Revenge",
+      "feature_type": "scene",
+      "runtime_seconds": 148,
+      "representation": "multi-audio-title",
+      "source_ids": ["dvdizzy-2005-review"]
+    },
+    {
+      "feature_id": "production-stills",
+      "title": "Production Stills",
+      "feature_type": "other",
+      "runtime_seconds": null,
+      "representation": "still-gallery",
+      "source_ids": ["dvdizzy-2005-review"]
+    },
+    {
+      "feature_id": "production-art",
+      "title": "Production Art",
+      "feature_type": "other",
+      "runtime_seconds": null,
+      "representation": "still-gallery",
+      "source_ids": ["dvdizzy-2005-review"]
+    },
+    {
+      "feature_id": "biographies",
+      "title": "Biographies",
+      "feature_type": "other",
+      "runtime_seconds": null,
+      "representation": "menu-bound",
+      "source_ids": ["dvdizzy-2005-review"]
+    },
+    {
+      "feature_id": "advertising-documents",
+      "title": "Advertising and Documents",
+      "feature_type": "other",
+      "runtime_seconds": null,
+      "representation": "menu-bound",
+      "source_ids": ["dvdizzy-2005-review"]
+    },
+    {
+      "feature_id": "audio-archives",
+      "title": "Audio Archives",
+      "feature_type": "other",
+      "runtime_seconds": null,
+      "representation": "audio-only",
+      "source_ids": ["dvdizzy-2005-review"]
+    }
+  ]
+}

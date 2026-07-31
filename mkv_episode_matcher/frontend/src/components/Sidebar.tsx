@@ -13,6 +13,7 @@ interface SidebarProps {
 const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, systemStatus }) => {
     const menuItems = [
         { id: 'dashboard', label: 'Dashboard', icon: '📺' },
+        { id: 'rip-pipeline', label: 'Disc Pipeline', icon: '💿' },
         { id: 'settings', label: 'Settings', icon: '⚙️' },
         { id: 'help', label: 'Help', icon: '❓' },
     ];

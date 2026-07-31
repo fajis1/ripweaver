@@ -14,7 +14,10 @@ from rich.panel import Panel
 
 from mkv_episode_matcher.core.config_manager import get_config_manager
 from mkv_episode_matcher.subtitle_utils import find_existing_subtitle, sanitize_filename
-from mkv_episode_matcher.tmdb_client import fetch_season_details
+from mkv_episode_matcher.tmdb_client import (
+    fetch_episode_details,
+    fetch_season_details,
+)
 
 console = Console()
 
@@ -179,7 +182,6 @@ def get_subtitles(show_id, seasons: set[int], config=None, max_retries=3):
         config = get_config_manager().load()
     show_dir = config.show_dir
     series_name = sanitize_filename(normalize_path(show_dir).name)
-    tmdb_api_key = config.tmdb_api_key
     open_subtitles_api_key = config.open_subtitles_api_key
     open_subtitles_user_agent = config.open_subtitles_user_agent
     open_subtitles_username = config.open_subtitles_username
@@ -187,7 +189,7 @@ def get_subtitles(show_id, seasons: set[int], config=None, max_retries=3):
 
     if not all([
         show_dir,
-        tmdb_api_key,
+        config.tmdb_api_key,
         open_subtitles_api_key,
         open_subtitles_user_agent,
         open_subtitles_username,
@@ -200,7 +202,9 @@ def get_subtitles(show_id, seasons: set[int], config=None, max_retries=3):
         subtitles = OpenSubtitles(open_subtitles_user_agent, open_subtitles_api_key)
         subtitles.login(open_subtitles_username, open_subtitles_password)
     except Exception as e:
-        logger.error(f"Failed to log in to OpenSubtitles: {e}")
+        logger.error(
+            f"Failed to log in to OpenSubtitles: {type(e).__name__}"
+        )
         return
 
     for season in seasons:
@@ -228,10 +232,7 @@ def get_subtitles(show_id, seasons: set[int], config=None, max_retries=3):
             )
 
             # get the episode info from TMDB
-            url = f"https://api.themoviedb.org/3/tv/{show_id}/season/{season}/episode/{episode}?api_key={tmdb_api_key}"
-            response = requests.get(url)
-            response.raise_for_status()
-            episode_data = response.json()
+            episode_data = fetch_episode_details(show_id, season, episode)
             episode_id = episode_data["id"]
 
             # search for the subtitle

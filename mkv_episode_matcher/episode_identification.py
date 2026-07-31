@@ -12,6 +12,7 @@ from rich import print
 from rich.console import Console
 
 from mkv_episode_matcher.asr_models import get_cached_model
+from mkv_episode_matcher.core.utils import safe_cache_component
 from mkv_episode_matcher.utils import extract_season_episode
 
 console = Console()
@@ -184,7 +185,9 @@ class EpisodeMatcher:
             logger.debug("Returning cached reference files")
             return self.reference_files_cache[cache_key]
 
-        reference_dir = self.cache_dir / "data" / self.show_name
+        reference_dir = (
+            self.cache_dir / "data" / safe_cache_component(self.show_name)
+        )
         patterns = [
             f"S{season_number:02d}E",
             f"S{season_number}E",

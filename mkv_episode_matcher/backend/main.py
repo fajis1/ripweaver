@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from loguru import logger
-from mkv_episode_matcher.backend.routers import scan, match, system
+from mkv_episode_matcher.backend.routers import match, rip, scan, system
 from mkv_episode_matcher import __version__
 import mimetypes
 import sys
@@ -32,6 +32,7 @@ app.include_router(websocket.router)
 app.include_router(scan.router)
 app.include_router(match.router)
 app.include_router(system.router)
+app.include_router(rip.router)
 
 # Fix MIME types on Windows - Validated Middleware Approach
 @app.middleware("http")

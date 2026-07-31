@@ -85,6 +85,10 @@ async def browse_directory(path: Optional[str] = None):
 async def test_subtitle_connection():
     """Test OpenSubtitles API connection and credentials."""
     from mkv_episode_matcher.core.config_manager import get_config_manager
+    from mkv_episode_matcher.core.credentials import (
+        CREDENTIAL_SPECS,
+        looks_like_authentication_error,
+    )
 
     cm = get_config_manager()
     config = cm.load()
@@ -96,10 +100,15 @@ async def test_subtitle_connection():
         "connection_ok": False,
         "login_ok": False,
         "error": None,
+        "error_type": None,
+        "credential_url": CREDENTIAL_SPECS[
+            "opensubtitles-api"
+        ].management_url,
     }
 
     if not config.open_subtitles_api_key:
         result["error"] = "OpenSubtitles API key not configured"
+        result["error_type"] = "credential"
         return result
 
     try:
@@ -115,7 +124,14 @@ async def test_subtitle_connection():
             client.login(config.open_subtitles_username, config.open_subtitles_password)
             result["login_ok"] = True
     except Exception as e:
-        result["error"] = str(e)
+        if looks_like_authentication_error(e):
+            result["error"] = "OpenSubtitles credentials were rejected"
+            result["error_type"] = "credential"
+        else:
+            result["error"] = (
+                f"OpenSubtitles connection failed: {type(e).__name__}"
+            )
+            result["error_type"] = "service"
 
     return result
 

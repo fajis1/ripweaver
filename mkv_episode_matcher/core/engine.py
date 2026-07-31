@@ -36,6 +36,18 @@ from mkv_episode_matcher.core.providers.subtitles import (
 )
 
 
+def remap_subtitle_season(subtitles, target_season: int):
+    """Copy references while translating provider season numbering."""
+
+    remapped = []
+    for subtitle in subtitles:
+        copied = subtitle.model_copy(deep=True)
+        if copied.episode_info is not None:
+            copied.episode_info.season = target_season
+        remapped.append(copied)
+    return remapped
+
+
 class CacheManager:
     """Enhanced caching system with memory bounds and LRU eviction."""
 
@@ -201,26 +213,33 @@ class MatchEngineV2:
         show_name = None
         season = None
 
-        # Heuristic 1: Standard folder structure (Show/Season X/file.mkv)
+        # Heuristic 1: Standard folder structure. Search ancestors so safe
+        # per-disc/per-title staging can live below Show/Season X.
         try:
-            parent_name = video_file.parent.name
-            if "season" in parent_name.lower():
-                # Extract season number
+            for ancestor in video_file.parents:
+                parent_name = ancestor.name
+                if "season" not in parent_name.lower():
+                    continue
                 s_match = re.search(r"(\d+)", parent_name)
                 if s_match:
                     season = int(s_match.group(1))
-                    show_name = video_file.parent.parent.name
+                    show_name = ancestor.parent.name
+                    break
         except Exception:
             pass
 
-        # Heuristic 2: Season folder with S## pattern
+        # Heuristic 2: Ancestor season folder with an S## pattern.
         if not season:
             try:
-                parent_name = video_file.parent.name
-                s_match = re.search(r"[Ss](\d{1,2})", parent_name)
-                if s_match:
-                    season = int(s_match.group(1))
-                    show_name = video_file.parent.parent.name
+                for ancestor in video_file.parents:
+                    s_match = re.fullmatch(
+                        r"[Ss](\d{1,2})",
+                        ancestor.name,
+                    )
+                    if s_match:
+                        season = int(s_match.group(1))
+                        show_name = ancestor.parent.name
+                        break
             except Exception:
                 pass
 
@@ -274,11 +293,19 @@ class MatchEngineV2:
         return False
 
     def _group_files_by_series(
-        self, files: list[Path], season_override: int | None
+        self,
+        files: list[Path],
+        season_override: int | None,
+        show_name_override: str | None = None,
     ) -> dict[tuple[str, int], list[Path]]:
         """Group files by series and season for batch processing."""
         groups = {}
         skipped = []
+        normalized_show_override = (
+            re.sub(r"\s+", " ", show_name_override).strip()
+            if show_name_override
+            else None
+        )
 
         for video_file in files:
             # Check if file is already processed
@@ -289,6 +316,8 @@ class MatchEngineV2:
 
             show_name, season = self._detect_context(video_file)
 
+            if normalized_show_override:
+                show_name = normalized_show_override
             if season_override:
                 season = season_override
 
@@ -394,9 +423,11 @@ class MatchEngineV2:
         json_output: bool = False,
         confidence_threshold: float = None,
         tmdb_id: int | None = None,
+        show_name_override: str | None = None,
         progress_callback=None,
         phase_callback=None,
         files_override: list[Path] | None = None,
+        reference_season: int | None = None,
     ) -> tuple[list[MatchResult], list]:
         """
         Process path for MKV files with enhanced workflow and progress tracking.
@@ -410,9 +441,12 @@ class MatchEngineV2:
             json_output: If True, suppress rich console output for JSON mode
             confidence_threshold: Minimum confidence score for matches
             tmdb_id: Manually specify the TMDB Show ID to avoid auto-detection issues
+            show_name_override: Canonical show name for files in staging paths
             progress_callback: Optional callback(current, total)
             files_override: Optional list of specific files to process (skips validation/scanning)
             phase_callback: Optional callback(phase, message) for phase updates
+            reference_season: Provider season to translate to the desired
+                output season
 
         Returns:
             Tuple of (successful matches, failed matches)
@@ -434,7 +468,11 @@ class MatchEngineV2:
             return []
 
         # Group files by series for batch processing
-        file_groups = self._group_files_by_series(files, season_override)
+        file_groups = self._group_files_by_series(
+            files,
+            season_override,
+            show_name_override,
+        )
 
         if not json_output:
             self.console.print(
@@ -471,7 +509,21 @@ class MatchEngineV2:
                     phase_callback("downloading_subtitles", f"Downloading subtitles for {show_name} Season {season}")
 
                 # Get subtitles for this series/season (pass video files for Subliminal)
-                subs = self._get_subtitles_with_fallback(show_name, season, group_files, tmdb_id)
+                provider_season = reference_season or season
+                subs = self._get_subtitles_with_fallback(
+                    show_name,
+                    provider_season,
+                    group_files,
+                    tmdb_id,
+                )
+                if subs and provider_season != season:
+                    logger.info(
+                        "Remapping provider season S{:02d} references to "
+                        "output season S{:02d}",
+                        provider_season,
+                        season,
+                    )
+                    subs = remap_subtitle_season(subs, season)
 
                 if not subs:
                     if not json_output:

@@ -10,8 +10,34 @@ from unittest.mock import Mock, patch
 import pytest
 
 from mkv_episode_matcher.core.config_manager import ConfigManager
-from mkv_episode_matcher.core.engine import CacheManager, MatchEngineV2
-from mkv_episode_matcher.core.models import Config, EpisodeInfo, MatchResult
+from mkv_episode_matcher.core.engine import (
+    CacheManager,
+    MatchEngineV2,
+    remap_subtitle_season,
+)
+from mkv_episode_matcher.core.models import (
+    Config,
+    EpisodeInfo,
+    MatchResult,
+    SubtitleFile,
+)
+
+
+def test_remap_subtitle_season_copies_without_mutating_cache(tmp_path):
+    original = SubtitleFile(
+        path=tmp_path / "global-S05E07.srt",
+        episode_info=EpisodeInfo(
+            series_name="DreamWorks Dragons",
+            season=5,
+            episode=7,
+        ),
+    )
+
+    remapped = remap_subtitle_season([original], 3)
+
+    assert remapped[0].episode_info.season == 3
+    assert remapped[0].episode_info.episode == 7
+    assert original.episode_info.season == 5
 
 
 class TestCacheManager:
@@ -67,10 +93,11 @@ class TestConfigManagerV2:
             assert config_path.exists()
             assert config.asr_provider == "whisper"
 
-    def test_config_save_load(self):
+    def test_config_save_load(self, monkeypatch):
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = Path(tmp_dir) / "config.json"
             cm = ConfigManager(config_path)
+            monkeypatch.setenv("TMDB_API_KEY", "environment-key")
 
             # Create custom config
             config = Config(
@@ -82,7 +109,8 @@ class TestConfigManagerV2:
 
             assert loaded_config.asr_provider == "whisper"
             assert loaded_config.min_confidence == 0.8
-            assert loaded_config.tmdb_api_key == "test_key"
+            assert loaded_config.tmdb_api_key == "environment-key"
+            assert "test_key" not in config_path.read_text(encoding="utf-8")
 
     def test_legacy_config_migration(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -105,8 +133,7 @@ class TestConfigManagerV2:
             cm = ConfigManager(config_path)
             config = cm.load()
 
-            assert config.tmdb_api_key == "legacy_key"
-            assert config.tmdb_api_key == "legacy_key"
+            assert config.tmdb_api_key is None
             assert str(config.show_dir) == str(show_dir)
 
     def test_invalid_json_handling(self):
@@ -266,6 +293,51 @@ class TestMatchEngineV2:
                 assert isinstance(show_name, str)
                 assert isinstance(season, int)
                 assert len(group_files) > 0
+
+    @patch("mkv_episode_matcher.core.engine.get_asr_provider")
+    def test_group_generic_staging_with_explicit_context(self, mock_asr, tmp_path):
+        """Explicit metadata makes ordinal staging paths matcher-ready."""
+        mock_asr.return_value = Mock()
+        config = Config(cache_dir=tmp_path / "cache", sub_provider="local")
+        engine = MatchEngineV2(config)
+        staged_file = tmp_path / "disc-02" / "title-000" / "A1_t00.mkv"
+        staged_file.parent.mkdir(parents=True)
+        staged_file.touch()
+
+        groups = engine._group_files_by_series(
+            [staged_file],
+            season_override=1,
+            show_name_override="  Dragons:  Race to the Edge  ",
+        )
+
+        assert groups == {("Dragons: Race to the Edge", 1): [staged_file]}
+
+    @patch("mkv_episode_matcher.core.engine.get_asr_provider")
+    def test_detects_context_above_isolated_disc_staging(
+        self,
+        mock_asr,
+        tmp_path,
+    ):
+        """Safe nested rip folders still inherit Show/Season context."""
+        mock_asr.return_value = Mock()
+        config = Config(cache_dir=tmp_path / "cache", sub_provider="local")
+        engine = MatchEngineV2(config)
+        staged_file = (
+            tmp_path
+            / "TV Shows"
+            / "Dragons Race to the Edge"
+            / "Season 01"
+            / "Disc 02 [disc-02]"
+            / "title-000"
+            / "A1_t00.mkv"
+        )
+        staged_file.parent.mkdir(parents=True)
+        staged_file.touch()
+
+        assert engine._detect_context(staged_file) == (
+            "Dragons Race to the Edge",
+            1,
+        )
 
 
 class TestIntegrationUseCases:

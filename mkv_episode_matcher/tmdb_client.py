@@ -1,11 +1,18 @@
 # tmdb_client.py
 import time
+from collections.abc import Callable
 from functools import wraps
 from threading import Lock
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 import requests
 from loguru import logger
+
+from mkv_episode_matcher.core.credentials import (
+    ApiCredentialError,
+    ApiServiceError,
+    request_credential_recovery,
+)
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -26,19 +33,24 @@ def retry_network_operation(
                     return func(*args, **kwargs)
                 except (requests.RequestException, ConnectionError, TimeoutError) as e:
                     last_exception = e
+                    safe_error = type(e).__name__
                     if attempt == max_retries:
                         logger.error(
-                            f"Max retries ({max_retries}) exceeded for {func.__name__}: {e}"
+                            f"Max retries ({max_retries}) exceeded for "
+                            f"{func.__name__}: {safe_error}"
                         )
                         raise e
 
                     logger.warning(
-                        f"Network retry {attempt + 1}/{max_retries + 1} for {func.__name__}: {e}"
+                        f"Network retry {attempt + 1}/{max_retries + 1} for "
+                        f"{func.__name__}: {safe_error}"
                     )
                     time.sleep(delay)
                     delay = min(delay * 2, 30)  # Cap at 30 seconds
 
-            raise last_exception
+            if last_exception is not None:
+                raise last_exception
+            raise RuntimeError("Network retry loop ended without an exception")
 
         return wrapper  # type: ignore
 
@@ -48,6 +60,7 @@ def retry_network_operation(
 from mkv_episode_matcher.core.config_manager import get_config_manager
 
 BASE_IMAGE_URL = "https://image.tmdb.org/t/p/original"
+BASE_API_URL = "https://api.themoviedb.org/3"
 
 
 class RateLimitedRequest:
@@ -97,6 +110,54 @@ class RateLimitedRequest:
 rate_limited_request = RateLimitedRequest(rate_limit=30, period=1)
 
 
+def _tmdb_get_json(path: str, **parameters: Any) -> dict:
+    """Request TMDb JSON, recovering once from a missing or rejected key."""
+
+    for attempt in range(2):
+        config = get_config_manager().load()
+        api_key = config.tmdb_api_key
+        if not api_key:
+            error = ApiCredentialError("tmdb", "not configured")
+            if attempt == 0 and request_credential_recovery(error):
+                continue
+            raise error
+
+        try:
+            response = requests.get(
+                f"{BASE_API_URL}{path}",
+                params={**parameters, "api_key": api_key},
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            raise ApiServiceError(
+                "TMDb",
+                None,
+                f"network failure: {type(exc).__name__}",
+            ) from exc
+        if response.status_code in (401, 403):
+            error = ApiCredentialError(
+                "tmdb",
+                "rejected by the provider",
+                status_code=response.status_code,
+            )
+            if attempt == 0 and request_credential_recovery(error):
+                continue
+            raise error
+        if response.status_code == 429:
+            raise ApiServiceError("TMDb", 429, "rate limit reached; retry later")
+        if response.status_code >= 500:
+            raise ApiServiceError(
+                "TMDb", response.status_code, "provider is temporarily unavailable"
+            )
+        if response.status_code >= 400:
+            raise ApiServiceError(
+                "TMDb", response.status_code, "request was not accepted"
+            )
+        return response.json()
+
+    raise ApiCredentialError("tmdb", "replacement key was not accepted")
+
+
 @retry_network_operation(max_retries=3, base_delay=1.0)
 def fetch_show_id(show_name: str) -> str | None:
     """
@@ -108,14 +169,9 @@ def fetch_show_id(show_name: str) -> str | None:
     Returns:
         str: The TMDb ID of the show, or None if not found.
     """
-    config = get_config_manager().load()
-    tmdb_api_key = config.tmdb_api_key
-    url = f"https://api.themoviedb.org/3/search/tv?query={show_name}&api_key={tmdb_api_key}"
-    response = requests.get(url)
-    if response.status_code == 200:
-        results = response.json().get("results", [])
-        if results:
-            return str(results[0]["id"])
+    results = _tmdb_get_json("/search/tv", query=show_name).get("results", [])
+    if results:
+        return str(results[0]["id"])
     return None
 
 
@@ -131,19 +187,17 @@ def fetch_show_details(show_id: int) -> dict | None:
         dict: Show details including 'name', 'number_of_seasons', etc.
         None: If request fails or API key not configured
     """
-    config = get_config_manager().load()
-    if not config.tmdb_api_key:
-        logger.warning("TMDB API key not configured")
-        return None
-
-    url = f"https://api.themoviedb.org/3/tv/{show_id}?api_key={config.tmdb_api_key}"
-
     try:
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        return response.json()
+        return _tmdb_get_json(f"/tv/{show_id}")
+    except ApiCredentialError:
+        raise
     except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to fetch show details for ID {show_id}: {e}")
+        logger.error(
+            f"Failed to fetch show details for ID {show_id}: {type(e).__name__}"
+        )
+        return None
+    except ApiServiceError as e:
+        logger.error(str(e))
         return None
 
 
@@ -160,23 +214,36 @@ def fetch_season_details(show_id: str, season_number: int) -> int:
         int: The total number of episodes in the season, or 0 if the API request failed.
     """
     logger.info(f"Fetching season details for Season {season_number}...")
-    config = get_config_manager().load()
-    tmdb_api_key = config.tmdb_api_key
-    url = f"https://api.themoviedb.org/3/tv/{show_id}/season/{season_number}?api_key={tmdb_api_key}"
     try:
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        season_data = response.json()
+        season_data = _tmdb_get_json(f"/tv/{show_id}/season/{season_number}")
         total_episodes = len(season_data.get("episodes", []))
         return total_episodes
+    except ApiCredentialError:
+        raise
     except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to fetch season details for Season {season_number}: {e}")
+        logger.error(
+            f"Failed to fetch season details for Season {season_number}: "
+            f"{type(e).__name__}"
+        )
+        return 0
+    except ApiServiceError as e:
+        logger.error(str(e))
         return 0
     except KeyError:
         logger.error(
             f"Missing 'episodes' key in response JSON data for Season {season_number}"
         )
         return 0
+
+
+def fetch_episode_details(
+    show_id: str, season_number: int, episode_number: int
+) -> dict:
+    """Fetch one episode without putting the TMDb key in a URL string."""
+
+    return _tmdb_get_json(
+        f"/tv/{show_id}/season/{season_number}/episode/{episode_number}"
+    )
 
 
 @retry_network_operation(max_retries=3, base_delay=1.0)
@@ -193,12 +260,15 @@ def get_number_of_seasons(show_id: str) -> int:
     Raises:
     - requests.HTTPError: If there is an error while making the API request.
     """
-    config = get_config_manager().load()
-    tmdb_api_key = config.tmdb_api_key
-    url = f"https://api.themoviedb.org/3/tv/{show_id}?api_key={tmdb_api_key}"
-    response = requests.get(url, timeout=30)
-    response.raise_for_status()
-    show_data = response.json()
+    show_data = _tmdb_get_json(f"/tv/{show_id}")
     num_seasons = show_data.get("number_of_seasons", 0)
     logger.info(f"Found {num_seasons} seasons")
     return num_seasons
+
+
+def fetch_aired_episode_catalog(show_id: int):
+    """Fetch a path-free, aired-order episode catalogue for unmatched planning."""
+
+    from mkv_episode_matcher.media.episode_catalog import build_tmdb_aired_catalog
+
+    return build_tmdb_aired_catalog(show_id, _tmdb_get_json)

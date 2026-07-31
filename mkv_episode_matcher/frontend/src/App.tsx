@@ -4,6 +4,7 @@ import FileBrowser from './components/FileBrowser';
 import FileReviewGrid from './components/FileReviewGrid';
 import SettingsView from './components/SettingsView';
 import OnboardingModal from './components/OnboardingModal';
+import RipPipelineView from './components/RipPipelineView';
 
 interface ScannedFile {
   path: string;
@@ -27,6 +28,8 @@ interface JobStatus {
   results?: JobResult[];
   failures?: string[];
   error?: string;
+  error_type?: 'credential' | 'service';
+  credential_url?: string;
   progress?: { current: number; total: number; filename: string };
   phase?: { name: string; message: string };
 }
@@ -174,7 +177,12 @@ function App() {
             setActivityLog(prev => [...prev.slice(-50), { time: timestamp, message: `✅ Completed! ${msg.results?.length || 0} matched, ${msg.failures?.length || 0} failed`, type: 'success' }]);
           }
           else if (msg.type === 'job_failed' && msg.job_id === jobId) {
-            setJobStatus({ status: 'failed', error: msg.error });
+            setJobStatus({
+              status: 'failed',
+              error: msg.error,
+              error_type: msg.error_type,
+              credential_url: msg.credential_url
+            });
             setActivityLog(prev => [...prev.slice(-50), { time: timestamp, message: `❌ Failed: ${msg.error}`, type: 'warning' }]);
           }
           else if (msg.type === 'phase_update' && msg.job_id === jobId) {
@@ -205,6 +213,10 @@ function App() {
   // Render content based on view
   // Render content based on view
   const renderContent = () => {
+    if (currentView === 'rip-pipeline') {
+      return <RipPipelineView />;
+    }
+
     if (currentView === 'settings') {
       return <SettingsView />;
     }
@@ -317,12 +329,9 @@ function App() {
               <div className="flex-shrink-0 p-4 bg-[var(--bg-tertiary)]/50 rounded-xl border border-[var(--border-color)] mb-4">
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-4">
-                    <div className={`w-3 h-3 rounded-full 
-                       ${jobStatus?.status === 'completed' ? 'bg-green-500' :
-                        jobStatus?.status === 'processing' ? 'bg-indigo-500 animate-pulse' :
-                          jobStatus?.status === 'failed' ? 'bg-red-500' : 'bg-gray-500'}
-                       ring-4 ring-white/5
-                     `}></div>
+                    <div className={`w-3 h-3 rounded-full ${jobStatus?.status === 'completed' ? 'bg-green-500' :
+                      jobStatus?.status === 'processing' ? 'bg-indigo-500 animate-pulse' :
+                        jobStatus?.status === 'failed' ? 'bg-red-500' : 'bg-gray-500'} ring-4 ring-white/5`}></div>
                     <div>
                       <div className="font-bold text-white text-sm uppercase tracking-wider">
                         {jobStatus?.status || 'INITIALIZING'}
@@ -362,6 +371,33 @@ function App() {
 
               {/* Results List */}
               <div className="flex-1 overflow-auto space-y-3 pr-2">
+                {jobStatus?.status === 'failed' && (
+                  <div className="p-5 bg-red-500/10 rounded-xl border border-red-500/20">
+                    <div className="text-red-300 font-bold">Matching stopped safely</div>
+                    <div className="text-sm text-red-200/80 mt-2">{jobStatus.error}</div>
+                    {jobStatus.error_type === 'credential' && (
+                      <div className="flex flex-wrap gap-3 mt-4">
+                        <button
+                          className="btn btn-primary"
+                          onClick={() => setCurrentView('settings')}
+                        >
+                          Paste replacement key
+                        </button>
+                        {jobStatus.credential_url && (
+                          <a
+                            className="btn btn-secondary"
+                            href={jobStatus.credential_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            Get or manage key
+                          </a>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {jobStatus?.results?.map((res, idx) => (
                   <div key={idx} className="group p-4 bg-[var(--bg-tertiary)]/30 hover:bg-[var(--bg-tertiary)]/60 rounded-xl border border-[var(--border-color)] hover:border-[var(--accent-primary)]/30 transition-all">
                     <div className="flex justify-between items-start">

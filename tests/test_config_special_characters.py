@@ -1,4 +1,4 @@
-"""Test cases for config handling of special characters in passwords."""
+"""Test cases for environment-based handling of credential characters."""
 
 import tempfile
 from pathlib import Path
@@ -32,40 +32,55 @@ class TestConfigSpecialCharacters:
             "show_dir": show_dir,
         }
 
-    def _test_password_storage(self, password, temp_config_file, mock_config_data):
-        """Helper to test password storage and retrieval."""
+    def _test_password_loading(
+        self, password, temp_config_file, mock_config_data, monkeypatch
+    ):
+        """Verify environment secrets load without being written to JSON."""
         cm = ConfigManager(config_path=temp_config_file)
+        monkeypatch.setenv("OPENSUBTITLES_PASSWORD", password)
 
         config_data = mock_config_data.copy()
-        config_data["open_subtitles_password"] = password
+        config_data["open_subtitles_password"] = "must-not-be-persisted"
 
         config = Config(**config_data)
         cm.save(config)
 
         loaded = cm.load()
-        assert loaded.open_subtitles_password == password
+        expected = password or None
+        assert loaded.open_subtitles_password == expected
+        assert "must-not-be-persisted" not in temp_config_file.read_text(
+            encoding="utf-8"
+        )
 
-    def test_password_with_percent_symbol(self, temp_config_file, mock_config_data):
+    def test_password_with_percent_symbol(
+        self, temp_config_file, mock_config_data, monkeypatch
+    ):
         """Test that passwords containing % symbol don't cause interpolation errors."""
         password = "H7z*X$X29JdJ^#%Q"  # gitguardian:ignore
-        self._test_password_storage(password, temp_config_file, mock_config_data)
+        self._test_password_loading(
+            password, temp_config_file, mock_config_data, monkeypatch
+        )
 
     def test_password_with_multiple_percent_symbols(
-        self, temp_config_file, mock_config_data
+        self, temp_config_file, mock_config_data, monkeypatch
     ):
         """Test that passwords with multiple % symbols work correctly."""
         password = "password%with%multiple%percent%signs"
-        self._test_password_storage(password, temp_config_file, mock_config_data)
+        self._test_password_loading(
+            password, temp_config_file, mock_config_data, monkeypatch
+        )
 
     def test_password_with_interpolation_like_syntax(
-        self, temp_config_file, mock_config_data
+        self, temp_config_file, mock_config_data, monkeypatch
     ):
         """Test that passwords resembling interpolation syntax are handled correctly."""
         password = "%(section)s_password_%(option)s"
-        self._test_password_storage(password, temp_config_file, mock_config_data)
+        self._test_password_loading(
+            password, temp_config_file, mock_config_data, monkeypatch
+        )
 
     def test_password_with_various_special_characters(
-        self, temp_config_file, mock_config_data
+        self, temp_config_file, mock_config_data, monkeypatch
     ):
         """Test that passwords with various special characters work correctly."""
         special_passwords = [
@@ -78,24 +93,29 @@ class TestConfigSpecialCharacters:
         ]
 
         for password in special_passwords:
-            self._test_password_storage(password, temp_config_file, mock_config_data)
+            self._test_password_loading(
+                password, temp_config_file, mock_config_data, monkeypatch
+            )
 
-    def test_empty_password(self, temp_config_file, mock_config_data):
+    def test_empty_password(self, temp_config_file, mock_config_data, monkeypatch):
         """Test that empty passwords are handled correctly."""
-        self._test_password_storage("", temp_config_file, mock_config_data)
+        self._test_password_loading(
+            "", temp_config_file, mock_config_data, monkeypatch
+        )
 
-    def test_config_persistence(self, temp_config_file, mock_config_data):
-        """Test that config values persist correctly across multiple operations."""
+    def test_environment_persistence(
+        self, temp_config_file, mock_config_data, monkeypatch
+    ):
+        """Test that an environment secret remains available across loads."""
         password = "persistent%password#123"
+        monkeypatch.setenv("OPENSUBTITLES_PASSWORD", password)
 
-        # Save
         cm = ConfigManager(config_path=temp_config_file)
         config_data = mock_config_data.copy()
-        config_data["open_subtitles_password"] = password
+        config_data["open_subtitles_password"] = "must-not-be-persisted"
         config = Config(**config_data)
         cm.save(config)
 
-        # Load multiple times
         for _ in range(3):
             loaded = cm.load()
             assert loaded.open_subtitles_password == password

@@ -1,8 +1,36 @@
-from fastapi import APIRouter, Depends
-from mkv_episode_matcher.backend.dependencies import get_engine
+from fastapi import APIRouter
+
 from mkv_episode_matcher import __version__
 
 router = APIRouter(prefix="/system", tags=["System"])
+
+
+def _public_config(config):
+    """Return configuration and credential status without secret values."""
+
+    from mkv_episode_matcher.core.config_manager import SECRET_CONFIG_FIELDS
+    from mkv_episode_matcher.core.credentials import (
+        CREDENTIAL_SPECS,
+        credential_is_configured,
+    )
+
+    result = config.model_dump(exclude=SECRET_CONFIG_FIELDS)
+    result.update({field: "" for field in SECRET_CONFIG_FIELDS})
+    result["credential_status"] = {
+        name: {
+            "configured": credential_is_configured(spec.name),
+            "management_url": spec.management_url,
+        }
+        for name, spec in CREDENTIAL_SPECS.items()
+        if name in {
+            "tmdb",
+            "opensubtitles-api",
+            "opensubtitles-username",
+            "opensubtitles-password",
+        }
+    }
+    return result
+
 
 @router.get("/status")
 def get_system_status():
@@ -24,23 +52,58 @@ def get_system_status():
 def get_config():
     """Get current configuration."""
     from mkv_episode_matcher.core.config_manager import get_config_manager
+
     manager = get_config_manager()
-    return manager.load().model_dump()
+    return _public_config(manager.load())
+
 
 @router.post("/config")
 def update_config(config_data: dict):
-    """Update configuration."""
-    from mkv_episode_matcher.core.config_manager import get_config_manager
+    """Update non-secret configuration and locally store submitted credentials."""
+    from mkv_episode_matcher.core.config_manager import (
+        SECRET_CONFIG_FIELDS,
+        get_config_manager,
+    )
+    from mkv_episode_matcher.core.credentials import store_credential
     from mkv_episode_matcher.core.models import Config
-    
+
+    credential_fields = {
+        "tmdb_api_key": "tmdb",
+        "open_subtitles_api_key": "opensubtitles-api",
+        "open_subtitles_username": "opensubtitles-username",
+        "open_subtitles_password": "opensubtitles-password",
+    }
     manager = get_config_manager()
-    # Validate and update
     try:
-        new_config = Config(**config_data)
+        submitted = dict(config_data)
+        submitted.pop("credential_status", None)
+        credential_updates = {
+            credential_fields[field]: submitted.pop(field)
+            for field in SECRET_CONFIG_FIELDS
+            if isinstance(submitted.get(field), str) and submitted[field]
+        }
+        for field in SECRET_CONFIG_FIELDS:
+            submitted.pop(field, None)
+
+        current = manager.load().model_dump(exclude=SECRET_CONFIG_FIELDS)
+        current.update(submitted)
+        new_config = Config(**current)
+
+        for credential, value in credential_updates.items():
+            store_credential(credential, value)
         manager.save(new_config)
-        return {"status": "success", "config": new_config.model_dump()}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+        return {
+            "status": "success",
+            "config": _public_config(manager.load()),
+        }
+    except Exception as error:
+        return {
+            "status": "error",
+            "message": (
+                "Configuration was not saved "
+                f"({type(error).__name__})."
+            ),
+        }
 
 @router.get("/config/validate")
 def validate_config():

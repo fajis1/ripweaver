@@ -1,3 +1,4 @@
+import hashlib
 import os
 import re
 import shutil
@@ -6,6 +7,31 @@ from pathlib import Path
 
 import chardet
 from loguru import logger
+
+
+def safe_cache_component(value: str, max_length: int = 100) -> str:
+    """Return a stable Windows-safe directory name without changing identity."""
+    normalized = re.sub(r"\s+", " ", value).strip()
+    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", normalized).strip(" .")
+    if not safe:
+        safe = "unnamed"
+
+    reserved = {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        *(f"COM{number}" for number in range(1, 10)),
+        *(f"LPT{number}" for number in range(1, 10)),
+    }
+    if safe.split(".", 1)[0].upper() in reserved:
+        safe = f"_{safe}"
+
+    changed = safe != normalized or len(safe) > max_length
+    if changed:
+        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:8]
+        safe = f"{safe[: max_length - 9]}-{digest}"
+    return safe[:max_length]
 
 
 def detect_file_encoding(file_path: Path) -> str:
@@ -151,9 +177,16 @@ def get_video_duration(video_file: Path) -> float:
 
 
 def extract_audio_chunk(
-    video_file: Path, start_time: float, duration: float, output_path: Path
+    video_file: Path,
+    start_time: float,
+    duration: float,
+    output_path: Path,
+    *,
+    audio_stream_index: int | None = None,
 ) -> Path:
     """Extract audio chunk using ffmpeg."""
+    if audio_stream_index is not None and audio_stream_index < 0:
+        raise ValueError("Audio stream index must not be negative")
     ffmpeg = get_ffmpeg_path()
     video_path = os.fspath(video_file)
     output_file_path = os.fspath(output_path)
@@ -166,6 +199,10 @@ def extract_audio_chunk(
         str(duration),
         "-i",
         video_path,
+    ]
+    if audio_stream_index is not None:
+        cmd.extend(["-map", f"0:{audio_stream_index}"])
+    cmd.extend([
         "-vn",
         "-sn",
         "-dn",
@@ -177,7 +214,7 @@ def extract_audio_chunk(
         "1",
         "-y",
         output_file_path,
-    ]
+    ])
 
     logger.debug(f"Running ffmpeg command: {' '.join(cmd)}")
 
