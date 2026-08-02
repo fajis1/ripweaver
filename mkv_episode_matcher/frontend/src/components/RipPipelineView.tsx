@@ -94,6 +94,7 @@ interface DriveSlot {
   has_disc: boolean;
   disc_label: string | null;
   current_job_id?: string | null;
+  current_disc_fingerprint?: string | null;
 }
 
 interface DriveDashboard {

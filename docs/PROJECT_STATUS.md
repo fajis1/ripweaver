@@ -2343,3 +2343,14 @@ added to queue events or durable public history records.
   the inventory fingerprint plus title index. Focused drive, eject, preparation,
   and API tests plus frontend lint, TypeScript, and production build checks
   passed; no physical disc or media file was accessed.
+- Disc identity is never derived from an optical-drive index. The index is only
+  a temporary hardware address for a MakeMKV command. Durable identity is the
+  full inventory fingerprint, which already includes the disc label and every
+  title's index and size (therefore the title count and aggregate disc-title
+  size), with runtime retained as an additional discriminator. Windows volume
+  changes now invalidate all process-local dashboard bindings—even when a new
+  disc reuses the same label—and only a new full inventory may bind a job again.
+  On 2026-08-02 the owner requested a clean identity baseline; the three local
+  control databases and prior pipeline contracts were moved to a recoverable,
+  credential-free application-data backup. No media, Jellyfin output, settings,
+  profiles, credentials, or logs were removed.

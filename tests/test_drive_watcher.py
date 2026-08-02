@@ -139,13 +139,42 @@ def test_current_job_binding_is_cleared_when_tray_disc_changes():
         lambda *_args, **_kwargs: next(results), native_discovery=lambda: ()
     )
     watcher.refresh(Path("makemkvcon64.exe"))
-    watcher.bind_current_job(0, "rip-0123456789abcdef0123456789abcdef")
+    watcher.bind_current_job(
+        0,
+        "rip-0123456789abcdef0123456789abcdef",
+        "fedcba9876543210",
+    )
 
     assert watcher.snapshot().drives[0].current_job_id is not None
+    assert watcher.snapshot().drives[0].current_disc_fingerprint == "fedcba9876543210"
 
     watcher.refresh(Path("makemkvcon64.exe"))
 
     assert watcher.snapshot().drives[0].current_job_id is None
+    assert watcher.snapshot().drives[0].current_disc_fingerprint is None
+
+
+def test_volume_change_invalidates_disc_identity_even_when_label_is_reused():
+    watcher = DriveWatcher(
+        lambda *_args, **_kwargs: _result(
+            'DRV:0,2,999,1,"hardware","same label","D:"\n'
+        ),
+        native_discovery=lambda: (),
+    )
+    watcher.refresh(Path("makemkvcon64.exe"))
+    watcher.bind_current_job(
+        0,
+        "rip-0123456789abcdef0123456789abcdef",
+        "fedcba9876543210",
+    )
+
+    watcher.invalidate_current_disc_bindings()
+    watcher.refresh(Path("makemkvcon64.exe"))
+
+    drive = watcher.snapshot().drives[0]
+    assert drive.disc_label == "same label"
+    assert drive.current_job_id is None
+    assert drive.current_disc_fingerprint is None
 
 
 @pytest.mark.parametrize("timeout", [0, 4, 121])

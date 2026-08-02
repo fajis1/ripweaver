@@ -169,6 +169,10 @@ def start_windows_drive_events() -> bool:
         return True
 
     def refresh() -> None:
+        # A volume event means the media occupying a tray may have changed.
+        # Clear every ephemeral attachment before rediscovery; durable identity
+        # is rebuilt only by a full title inventory, never from the tray index.
+        _drive_watcher.invalidate_current_disc_bindings()
         config = get_config_manager().load()
         executable = resolve_makemkv_path(config.makemkv_path)
         snapshot = _drive_watcher.refresh(executable, timeout_seconds=30)

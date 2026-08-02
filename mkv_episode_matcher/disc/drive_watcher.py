@@ -28,6 +28,7 @@ class PublicDriveStatus:
     has_disc: bool
     disc_label: str | None = None
     current_job_id: str | None = None
+    current_disc_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -99,12 +100,16 @@ class DriveWatcher:
         with self._lock:
             return self._device_names.get(drive_index)
 
-    def bind_current_job(self, drive_index: int, job_id: str) -> None:
-        """Bind one ephemeral job only to the disc currently in this process."""
+    def bind_current_job(
+        self, drive_index: int, job_id: str, disc_fingerprint: str
+    ) -> None:
+        """Attach an inventoried disc identity to its current hardware location."""
 
         with self._lock:
             if not re.fullmatch(r"rip-[0-9a-f]{32}", job_id):
                 raise ValueError("Current rip job ID is invalid")
+            if not re.fullmatch(r"[0-9a-f]{16}", disc_fingerprint):
+                raise ValueError("Current disc fingerprint is invalid")
             if not any(
                 drive.drive_index == drive_index and drive.has_disc
                 for drive in self._snapshot.drives
@@ -113,9 +118,29 @@ class DriveWatcher:
             self._snapshot = replace(
                 self._snapshot,
                 drives=tuple(
-                    replace(drive, current_job_id=job_id)
+                    replace(
+                        drive,
+                        current_job_id=job_id,
+                        current_disc_fingerprint=disc_fingerprint,
+                    )
                     if drive.drive_index == drive_index
                     else drive
+                    for drive in self._snapshot.drives
+                ),
+            )
+
+    def invalidate_current_disc_bindings(self) -> None:
+        """Forget tray attachments after a Windows volume-change event."""
+
+        with self._lock:
+            self._snapshot = replace(
+                self._snapshot,
+                drives=tuple(
+                    replace(
+                        drive,
+                        current_job_id=None,
+                        current_disc_fingerprint=None,
+                    )
                     for drive in self._snapshot.drives
                 ),
             )
@@ -151,6 +176,17 @@ class DriveWatcher:
                         current_job_id=next(
                             (
                                 previous.current_job_id
+                                for previous in self._snapshot.drives
+                                if previous.drive_index == drive.index
+                                and previous.has_disc
+                                and previous.disc_label
+                                == _public_disc_label(drive.disc_name)
+                            ),
+                            None,
+                        ),
+                        current_disc_fingerprint=next(
+                            (
+                                previous.current_disc_fingerprint
                                 for previous in self._snapshot.drives
                                 if previous.drive_index == drive.index
                                 and previous.has_disc
@@ -202,6 +238,7 @@ class DriveWatcher:
                         has_disc=False,
                         disc_label=None,
                         current_job_id=None,
+                        current_disc_fingerprint=None,
                     )
                     parsed_device_names[drive_index] = device_name
                     used_indexes.add(drive_index)
@@ -212,6 +249,7 @@ class DriveWatcher:
                         has_disc=False,
                         disc_label=None,
                         current_job_id=None,
+                        current_disc_fingerprint=None,
                     )
                     for drive in self._snapshot.drives
                 }

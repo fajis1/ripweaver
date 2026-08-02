@@ -794,7 +794,18 @@ def prepare_drive_pipeline(
             output_root=config.rip_output_root,
             media_contexts={disc_id: context},
         )
-        watcher.bind_current_job(request.drive_index, job.job_id)
+        disc_fingerprint = next(
+            (
+                part
+                for preview_job in preview.jobs
+                for part in Path(preview_job.staging_destination).parts
+                if re.fullmatch(r"[0-9a-f]{16}", part)
+            ),
+            None,
+        )
+        if disc_fingerprint is None:
+            raise RipError("Prepared disc identity is unavailable")
+        watcher.bind_current_job(request.drive_index, job.job_id, disc_fingerprint)
         return _job_response(job, public_store)
     except (PreflightError, RipError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
