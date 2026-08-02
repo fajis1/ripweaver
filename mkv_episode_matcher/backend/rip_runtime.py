@@ -25,6 +25,18 @@ class RipExecutionRegistry:
         with self._lock:
             self._active.pop(job_id, None)
 
+    def has_active_executor(self) -> bool:
+        """Return whether any MakeMKV rip executor is currently attached."""
+
+        with self._lock:
+            return bool(self._active)
+
+    def is_job_active(self, job_id: str) -> bool:
+        """Return whether the exact orchestration job owns a live executor."""
+
+        with self._lock:
+            return job_id in self._active
+
     def request_marker(self, job_id: str, marker_name: str) -> None:
         if marker_name not in {"PAUSE", "STOP"}:
             raise RipError("Rip control marker is invalid")

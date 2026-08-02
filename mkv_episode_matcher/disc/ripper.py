@@ -99,8 +99,7 @@ def validate_job(job: RipJob) -> None:
         if (
             output_name.name != job.output_basename
             or output_name.suffix.lower() != ".mkv"
-            or re.fullmatch(r"[A-Za-z0-9._-]{1,180}", job.output_basename)
-            is None
+            or re.fullmatch(r"[A-Za-z0-9._-]{1,180}", job.output_basename) is None
         ):
             raise RipError("Rip output filename is not a safe MKV basename")
 
@@ -125,9 +124,7 @@ def resolve_final_output(output_root: Path, job: RipJob) -> Path | None:
     if job.final_relative_dir is None:
         return None
     root = output_root.resolve()
-    destination = (
-        root / job.final_relative_dir / str(job.output_basename)
-    ).resolve()
+    destination = (root / job.final_relative_dir / str(job.output_basename)).resolve()
     try:
         destination.relative_to(root)
     except ValueError as exc:
@@ -212,6 +209,32 @@ def progress_fraction(line: str) -> float | None:
     return max(0.0, min(1.0, current / maximum))
 
 
+def sample_output_throughput(
+    root: Path,
+    previous: tuple[float, int],
+    scope: str,
+    on_event: Callable[[str, str], None] | None,
+    *,
+    interval_seconds: float = 2.0,
+) -> tuple[float, int]:
+    """Emit path-free staged MKV growth throughput at a bounded interval."""
+
+    now = time.monotonic()
+    if now - previous[0] < interval_seconds:
+        return previous
+    try:
+        size = sum(
+            path.stat().st_size for path in root.rglob("*.mkv") if path.is_file()
+        )
+    except OSError:
+        return previous
+    elapsed = now - previous[0]
+    delta = max(0, size - previous[1])
+    if on_event is not None and previous[1] > 0 and delta > 0:
+        on_event("throughput", f"{scope}: {delta / elapsed / (1024**2):.2f} MiB/s")
+    return now, size
+
+
 class JsonlRipLog:
     """Append-only structured event log with no command or source paths."""
 
@@ -276,7 +299,7 @@ def _verify_output(destination: Path, estimated_bytes: int | None) -> tuple[Path
     return outputs[0], output_bytes
 
 
-def run_rip_job(
+def run_rip_job(  # noqa: C901 - guarded external-process state machine
     executable: Path,
     output_root: Path,
     job: RipJob,
@@ -347,11 +370,15 @@ def run_rip_job(
     warnings = 0
     fatal_message: str | None = None
     last_progress = -1
+    throughput_sample = (time.monotonic(), 0)
     deadline = time.monotonic() + timeout_seconds
     stream_finished = False
 
     try:
         while not stream_finished or process.poll() is None:
+            throughput_sample = sample_output_throughput(
+                destination, throughput_sample, job.job_id, on_event
+            )
             if (cancel_file is not None and cancel_file.exists()) or (
                 cancel_event is not None and cancel_event.is_set()
             ):
@@ -400,6 +427,8 @@ def run_rip_job(
             fraction = progress_fraction(line)
             if fraction is not None:
                 percent = round(fraction * 100)
+                if last_progress >= 0 and percent + 25 < last_progress:
+                    last_progress = -1
                 if percent >= last_progress + 5 or percent == 100:
                     last_progress = percent
                     event_log.write(
@@ -534,7 +563,7 @@ def run_rip_queue(
         return results
 
 
-def run_parallel_rip_queue(
+def run_parallel_rip_queue(  # noqa: C901 - bounded parallel drive coordinator
     executable: Path,
     output_root: Path,
     jobs: Iterable[RipJob],

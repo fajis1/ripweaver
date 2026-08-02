@@ -18,6 +18,42 @@ from mkv_episode_matcher.disc.ripper import (
     resolve_final_output,
     resolve_job_output,
 )
+from mkv_episode_matcher.disc.title_selector import load_title_plan
+
+
+def _has_episode_selection(report_paths: list[Path], drive_index: int) -> bool:
+    """Recheck the saved report only to label an automatic fallback preview."""
+
+    for ordinal, report_path in enumerate(report_paths, start=1):
+        try:
+            payload = json.loads(report_path.read_text(encoding="utf-8"))
+            if payload.get("drive", {}).get("index") != drive_index:
+                continue
+            plan = load_title_plan(report_path, report_id=f"disc-{ordinal:02d}")
+        except (OSError, ValueError, TypeError):
+            return True
+        return any(decision.selected for decision in plan.decisions)
+    return True
+
+
+def _selection_mode(
+    report_paths: list[Path],
+    media_contexts: dict[str, MediaContext],
+    *,
+    disc_id: str,
+    drive_index: int,
+) -> str:
+    context = media_contexts.get(disc_id)
+    hint = context.content_hint if context is not None else None
+    if context is not None and context.special_feature_catalog_id is not None:
+        return "reviewed-special-features"
+    if hint == "extras":
+        return "bonus-features"
+    if hint == "mixed":
+        return "mixed"
+    if hint is None and not _has_episode_selection(report_paths, drive_index):
+        return "automatic-bonus-fallback"
+    return "episode"
 
 
 @dataclass(frozen=True)
@@ -29,6 +65,7 @@ class RipPreviewDrive:
     estimated_bytes: int
     minimum_length_seconds: int | None
     reason: str
+    selection_mode: str
 
 
 @dataclass(frozen=True)
@@ -40,6 +77,12 @@ class RipPreviewJob:
     staging_destination: str
     final_destination: str | None
     collision_status: str
+    display_name: str | None = None
+    extras_folder: str | None = None
+    identification_status: str | None = None
+    prior_outcome_name: str | None = None
+    prior_library_relative: str | None = None
+    prior_episode_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +110,39 @@ def _manifest_sha256(manifest: RipManifest) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def compatible_manifest_sha256s(manifest: RipManifest) -> frozenset[str]:
+    """Return current and known-safe legacy digests for one exact manifest."""
+
+    current = _manifest_sha256(manifest)
+    identity = manifest.to_dict()
+    identity.pop("created_at", None)
+    legacy_defaults = {
+        "selected_title_indexes": None,
+        "special_feature_catalog_id": None,
+        "special_feature_release_id": None,
+        "special_feature_library_title": None,
+        "special_feature_library_year": None,
+        "special_feature_assignments": (),
+        "episode_assignments": (),
+        "existing_output_policy": "preserve",
+    }
+    contexts = identity.get("media_contexts", [])
+    if not all(
+        isinstance(context, dict)
+        and all(context.get(key) == default for key, default in legacy_defaults.items())
+        for context in contexts
+    ):
+        return frozenset({current})
+    for context in contexts:
+        for key in legacy_defaults:
+            context.pop(key, None)
+    legacy_payload = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    legacy = hashlib.sha256(legacy_payload).hexdigest()
+    return frozenset({current, legacy})
 
 
 def _collision_status(
@@ -119,21 +195,38 @@ def build_rip_preview(
             strategy = "per-title"
             cutoff = None
             reason = "no-exact-runtime-cutoff"
+        disc_id = drive_jobs[0].job_id.rsplit("-title-", 1)[0]
         drives.append(
             RipPreviewDrive(
-                disc_id=drive_jobs[0].job_id.rsplit("-title-", 1)[0],
+                disc_id=disc_id,
                 drive_index=drive_index,
                 strategy=strategy,
                 title_count=len(drive_jobs),
                 estimated_bytes=sum(job.estimated_bytes or 0 for job in drive_jobs),
                 minimum_length_seconds=cutoff,
                 reason=reason,
+                selection_mode=_selection_mode(
+                    report_paths,
+                    media_contexts,
+                    disc_id=disc_id,
+                    drive_index=drive_index,
+                ),
             )
         )
 
     jobs: list[RipPreviewJob] = []
     collision_count = 0
     for job in manifest.jobs:
+        disc_id = job.job_id.rsplit("-title-", 1)[0]
+        context = media_contexts.get(disc_id)
+        assignment = next(
+            (
+                item
+                for item in (context.special_feature_assignments if context else ())
+                if item.get("title_index") == job.title_index
+            ),
+            None,
+        )
         if output_root is None:
             staging = Path(job.relative_output_dir)
             final = (
@@ -164,6 +257,25 @@ def build_rip_preview(
                     else None
                 ),
                 collision_status=collision,
+                display_name=(
+                    str(assignment["matched_title"])
+                    if assignment and assignment.get("matched_title")
+                    else None
+                ),
+                extras_folder=(
+                    str(assignment["jellyfin_folder"])
+                    if assignment and assignment.get("jellyfin_folder")
+                    else None
+                ),
+                identification_status=(
+                    "catalogue-match"
+                    if assignment
+                    and assignment.get("classification") == "matched-feature"
+                    and assignment.get("fallback_name_policy") == "none"
+                    else "evidence-required"
+                    if assignment
+                    else None
+                ),
             )
         )
 

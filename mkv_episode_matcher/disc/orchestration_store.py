@@ -25,6 +25,7 @@ JOB_STATES = {
     "paused",
     "failed",
     "completed",
+    "cancelled",
 }
 _IDEMPOTENCY_PATTERN = re.compile(r"[A-Za-z0-9._:-]{8,128}")
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
@@ -287,6 +288,49 @@ class OrchestrationStore:
             for row in rows
         )
 
+    def record_progress(self, job_id: str, kind: str, message: str) -> None:
+        """Persist one path-free MakeMKV progress sample for dashboard polling."""
+
+        if kind not in {"progress", "throughput"}:
+            return
+        pattern = (
+            r"(?P<scope>batch|[A-Za-z0-9._-]+): (?P<value>\d{1,3})%"
+            if kind == "progress"
+            else r"(?P<scope>batch|[A-Za-z0-9._-]+): (?P<value>\d+(?:\.\d{1,2})?) MiB/s"
+        )
+        match = re.fullmatch(pattern, message)
+        if match is None:
+            raise RipError("Rip progress event is invalid")
+        value = float(match.group("value"))
+        if kind == "progress" and not 0 <= value <= 100:
+            raise RipError("Rip progress percentage is invalid")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT state FROM jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+            if row is None or row["state"] not in {"running", "pause_requested"}:
+                connection.rollback()
+                return
+            timestamp = self._now()
+            connection.execute(
+                "UPDATE jobs SET updated_at = ? WHERE job_id = ?", (timestamp, job_id)
+            )
+            self._append_event(
+                connection,
+                job_id=job_id,
+                event_type=f"rip_{kind}",
+                from_state=row["state"],
+                to_state=row["state"],
+                details={
+                    "scope": match.group("scope"),
+                    ("percent" if kind == "progress" else "mib_per_second"): (
+                        int(value) if kind == "progress" else value
+                    ),
+                },
+            )
+            connection.commit()
+
     def command_result(
         self,
         job_id: str,
@@ -432,6 +476,52 @@ class OrchestrationStore:
             details={"executor_attached": False},
         )
 
+    def return_to_review(
+        self,
+        job_id: str,
+        *,
+        idempotency_key: str,
+    ) -> OrchestrationJob:
+        """Remove an unclaimed job from the queue without changing its plan."""
+
+        return self._transition(
+            job_id,
+            action="return-to-review",
+            idempotency_key=idempotency_key,
+            allowed_from={"queued", "authorized"},
+            to_state="awaiting_review",
+            event_type="job_returned_to_review",
+            details={"media_changed": False},
+            executor_attached=False,
+        )
+
+    def cancel(
+        self,
+        job_id: str,
+        *,
+        idempotency_key: str,
+    ) -> OrchestrationJob:
+        """Cancel a job that has no attached physical executor."""
+
+        return self._transition(
+            job_id,
+            action="cancel",
+            idempotency_key=idempotency_key,
+            allowed_from={
+                "awaiting_review",
+                "authorized",
+                "queued",
+                "running",
+                "pause_requested",
+                "paused",
+                "failed",
+            },
+            to_state="cancelled",
+            event_type="job_cancelled",
+            details={"media_changed": False},
+            executor_attached=False,
+        )
+
     def pause(
         self,
         job_id: str,
@@ -515,9 +605,23 @@ class OrchestrationStore:
         *,
         idempotency_key: str,
         error_type: str,
+        error_category: str = "unknown",
+        failed_drive_indexes: tuple[int, ...] = (),
+        completed_job_ids: tuple[str, ...] = (),
     ) -> OrchestrationJob:
         if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", error_type) is None:
             raise RipError("Dispatcher error type is invalid")
+        if re.fullmatch(r"[a-z][a-z0-9_]{0,31}", error_category) is None:
+            raise RipError("Dispatcher error category is invalid")
+        if any(
+            not isinstance(index, int) or index < 0 for index in failed_drive_indexes
+        ):
+            raise RipError("Failed drive index is invalid")
+        if any(
+            re.fullmatch(r"[A-Za-z0-9._:-]{1,160}", item) is None
+            for item in completed_job_ids
+        ):
+            raise RipError("Completed rip job ID is invalid")
         return self._transition(
             job_id,
             action="fail",
@@ -525,7 +629,31 @@ class OrchestrationStore:
             allowed_from={"queued", "running", "pause_requested"},
             to_state="failed",
             event_type="job_failed",
-            details={"error_type": error_type},
+            details={
+                "error_type": error_type,
+                "error_category": error_category,
+                "failed_drive_indexes": list(failed_drive_indexes),
+                "completed_job_ids": list(completed_job_ids),
+            },
+            executor_attached=False,
+        )
+
+    def retry_failed(
+        self,
+        job_id: str,
+        *,
+        idempotency_key: str,
+    ) -> OrchestrationJob:
+        """Queue only the unfinished portion; dispatch performs fresh validation."""
+
+        return self._transition(
+            job_id,
+            action="retry",
+            idempotency_key=idempotency_key,
+            allowed_from={"failed"},
+            to_state="queued",
+            event_type="job_retry_queued",
+            details={"executor_attached": False, "requires_fresh_run_directory": True},
             executor_attached=False,
         )
 

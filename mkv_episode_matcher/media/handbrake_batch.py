@@ -13,6 +13,7 @@ from mkv_episode_matcher.media.handbrake import (
     HandBrakeCapabilities,
     HandBrakeError,
     HandBrakeProfile,
+    encoder_requires_vcn,
     validate_handbrake_profile,
 )
 from mkv_episode_matcher.media.organizer import sanitize_media_component
@@ -227,8 +228,10 @@ def plan_handbrake_batch(
         validate_handbrake_profile(profile)
     except HandBrakeError as exc:
         raise HandBrakeBatchError(str(exc)) from exc
-    if not capabilities.vcn_available or profile.encoder not in capabilities.encoders:
-        raise HandBrakeBatchError("Requested AMD VCN encoder is not available")
+    if (
+        encoder_requires_vcn(profile.encoder) and not capabilities.vcn_available
+    ) or profile.encoder not in capabilities.encoders:
+        raise HandBrakeBatchError("Requested HandBrake encoder is not available")
 
     source_root, resolved_sources = _validate_sources(targets, sources)
     resolved_output_root = output_root.resolve()

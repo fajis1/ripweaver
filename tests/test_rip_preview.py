@@ -16,8 +16,11 @@ from mkv_episode_matcher.backend.routers.rip import (
 )
 from mkv_episode_matcher.disc.orchestration_store import OrchestrationStore
 from mkv_episode_matcher.disc.private_bindings import PrivateBindingStore
-from mkv_episode_matcher.disc.rip_manifest import MediaContext
-from mkv_episode_matcher.disc.rip_preview import build_rip_preview
+from mkv_episode_matcher.disc.rip_manifest import MediaContext, build_rip_manifest
+from mkv_episode_matcher.disc.rip_preview import (
+    build_rip_preview,
+    compatible_manifest_sha256s,
+)
 from tests.test_rip_manifest import (
     _inventory,
     _make_batch_names,
@@ -92,6 +95,20 @@ def test_preview_keeps_ineligible_inventory_on_per_title_strategy(tmp_path):
     assert preview.drives[0].reason == "no-exact-runtime-cutoff"
 
 
+def test_preview_labels_automatic_bonus_fallback(tmp_path):
+    report = _write_report(
+        tmp_path,
+        "bonus.json",
+        _inventory(3, "Bonus Disc", [99, 144, 360, 540, 900]),
+    )
+    contexts = {"disc-01": MediaContext(disc_id="disc-01", series_name="Unmatched")}
+
+    preview = build_rip_preview([report], contexts)
+
+    assert preview.drives[0].selection_mode == "automatic-bonus-fallback"
+    assert [job.title_index for job in preview.jobs] == [2, 3]
+
+
 def test_preview_digest_is_stable_across_replanning(tmp_path):
     report = _report(tmp_path)
 
@@ -99,6 +116,35 @@ def test_preview_digest_is_stable_across_replanning(tmp_path):
     second = build_rip_preview([report], _contexts())
 
     assert first.plan_sha256 == second.plan_sha256
+
+
+def test_default_only_legacy_context_digest_remains_compatible(tmp_path):
+    report = _report(tmp_path)
+    manifest = build_rip_manifest([report], _contexts())
+
+    assert len(compatible_manifest_sha256s(manifest)) == 2
+
+    missing_only = build_rip_manifest(
+        [report],
+        {
+            "disc-01": MediaContext(
+                disc_id="disc-01",
+                series_name="Series",
+                season=1,
+                existing_output_policy="missing-only",
+            )
+        },
+    )
+    assert len(compatible_manifest_sha256s(missing_only)) == 1
+
+
+def test_preview_response_accepts_legacy_drive_without_selection_mode(tmp_path):
+    payload = build_rip_preview([_report(tmp_path)], _contexts()).to_dict()
+    del payload["drives"][0]["selection_mode"]
+
+    response = RipPreviewResponse.model_validate(payload)
+
+    assert response.drives[0].selection_mode == "episode"
 
 
 def test_api_exposes_preview_without_execution_route(tmp_path):

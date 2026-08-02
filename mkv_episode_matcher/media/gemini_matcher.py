@@ -35,6 +35,10 @@ class GeminiMatchError(RuntimeError):
     """Raised when a Gemini match cannot be trusted or completed safely."""
 
 
+class GeminiResponseError(GeminiMatchError):
+    """Raised when a provider response does not satisfy the match schema."""
+
+
 @dataclass(frozen=True)
 class UnmatchedFileEvidence:
     file_id: str
@@ -62,6 +66,23 @@ class GeminiReviewPlan:
             "model": self.model,
             "matches": [asdict(match) for match in self.matches],
         }
+
+
+@dataclass(frozen=True)
+class GeminiDescriptiveResult:
+    file_id: str
+    content_kind: str
+    suggested_title: str
+    year: int | None
+    confidence: float
+    evidence: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class GeminiDescriptivePlan:
+    mode: str
+    model: str
+    matches: tuple[GeminiDescriptiveResult, ...]
 
 
 @dataclass(frozen=True)
@@ -109,6 +130,45 @@ class _ResponseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     matches: list[_MatchModel]
+
+
+class _DescriptiveMatchModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    file_id: str
+    content_kind: str = Field(pattern=r"^(movie|tv_episode|extra|menu|unknown)$")
+    suggested_title: str = Field(min_length=1, max_length=160)
+    year: int | None = Field(default=None, ge=1888, le=2200)
+    confidence: float = Field(ge=0.0, le=1.0)
+    evidence: list[str] = Field(min_length=1, max_length=4)
+
+    @field_validator("file_id")
+    @classmethod
+    def validate_file_id(cls, value: str) -> str:
+        if _FILE_ID.fullmatch(value) is None:
+            raise ValueError("invalid file ID")
+        return value
+
+    @field_validator("suggested_title")
+    @classmethod
+    def validate_title(cls, value: str) -> str:
+        cleaned = " ".join(value.split()).strip(" .")
+        if not cleaned or _WINDOWS_PATH.search(cleaned):
+            raise ValueError("suggested title is invalid")
+        if any(character in '<>:"/\\|?*' for character in cleaned):
+            raise ValueError("suggested title contains unsafe filename characters")
+        return cleaned
+
+    @field_validator("evidence")
+    @classmethod
+    def validate_evidence(cls, values: list[str]) -> list[str]:
+        return _MatchModel.validate_evidence(values)
+
+
+class _DescriptiveResponseModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    matches: list[_DescriptiveMatchModel]
 
 
 @dataclass(frozen=True)
@@ -161,8 +221,8 @@ def _validate_file_evidence(item: UnmatchedFileEvidence) -> None:
         raise GeminiMatchError("Unmatched evidence contains an invalid file ID")
     if item.duration_seconds <= 0:
         raise GeminiMatchError("Unmatched evidence duration must be positive")
-    if not 1 <= len(item.transcript_excerpts) <= 3:
-        raise GeminiMatchError("Each file requires one to three excerpts")
+    if len(item.transcript_excerpts) > 3:
+        raise GeminiMatchError("Each file permits up to three excerpts")
     for excerpt in item.transcript_excerpts:
         if not excerpt.strip() or len(excerpt) > 600:
             raise GeminiMatchError("Transcript excerpts must contain 1-600 characters")
@@ -213,12 +273,20 @@ def build_gemini_request(
         }
         for item in catalog
     ]
+    runtime_only = any(not item.transcript_excerpts for item in files)
     prompt = {
         "task": (
             "Rank each file against only the supplied aired-order episode "
             "candidates. Use dialogue, names, plot, runtime, and disc-wide "
-            "one-to-one consistency. Use null when evidence is insufficient. "
-            "Never invent an episode ID or filename."
+            "one-to-one consistency. "
+            + (
+                "Some files have no usable dialogue. For those files make the best "
+                "provisional one-to-one choice from runtime and the remaining names; "
+                "do not use null merely because dialogue is absent. "
+                if runtime_only
+                else "Use null when evidence is insufficient. "
+            )
+            + "Never invent an episode ID or filename."
         ),
         "files": evidence_payload,
         "allowed_episodes": catalog_payload,
@@ -232,7 +300,9 @@ def build_gemini_request(
                     "type": "object",
                     "properties": {
                         "file_id": {"type": "string"},
-                        "episode_id": {"type": ["string", "null"]},
+                        "episode_id": {
+                            "type": "string" if runtime_only else ["string", "null"]
+                        },
                         "confidence": {
                             "type": "number",
                             "minimum": 0,
@@ -246,6 +316,85 @@ def build_gemini_request(
                     "required": [
                         "file_id",
                         "episode_id",
+                        "confidence",
+                        "evidence",
+                    ],
+                    "additionalProperties": False,
+                },
+            }
+        },
+        "required": ["matches"],
+        "additionalProperties": False,
+    }
+    return {
+        "model": model.strip(),
+        "input": json.dumps(prompt, ensure_ascii=True, separators=(",", ":")),
+        "response_format": {
+            "type": "text",
+            "mime_type": "application/json",
+            "schema": schema,
+        },
+    }
+
+
+def build_descriptive_gemini_request(
+    model: str,
+    files: tuple[UnmatchedFileEvidence, ...],
+    *,
+    release_hint: str,
+) -> dict:
+    """Build a path-free request for provisional catalogue-free classification."""
+
+    if not files or len(files) > 20:
+        raise GeminiMatchError("Descriptive Gemini evidence count is invalid")
+    for item in files:
+        _validate_file_evidence(item)
+    hint = " ".join(release_hint.split())[:200]
+    if not hint or _WINDOWS_PATH.search(hint):
+        raise GeminiMatchError("Descriptive release hint is invalid")
+    prompt = {
+        "task": (
+            "Classify each optical-disc title as movie, tv_episode, extra, menu, "
+            "or unknown. Produce a short filesystem-safe descriptive title using "
+            "only the supplied release hint, runtime, and dialogue evidence. "
+            "Feature-length titles must not be labeled as extras merely because "
+            "the disc also contains bonus material. Results are provisional; do "
+            "not invent an exact episode number or claim certainty unsupported by "
+            "the evidence."
+        ),
+        "release_hint": hint,
+        "files": [
+            {
+                "file_id": item.file_id,
+                "duration_seconds": round(item.duration_seconds, 3),
+                "transcript_excerpts": list(item.transcript_excerpts),
+            }
+            for item in files
+        ],
+    }
+    schema = {
+        "type": "object",
+        "properties": {
+            "matches": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "file_id": {"type": "string"},
+                        "content_kind": {
+                            "type": "string",
+                            "enum": ["movie", "tv_episode", "extra", "menu", "unknown"],
+                        },
+                        "suggested_title": {"type": "string"},
+                        "year": {"type": ["integer", "null"]},
+                        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                        "evidence": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": [
+                        "file_id",
+                        "content_kind",
+                        "suggested_title",
+                        "year",
                         "confidence",
                         "evidence",
                     ],
@@ -408,6 +557,49 @@ def _parse_and_validate_response(
     return tuple(results)
 
 
+def _parse_provider_response(
+    payload: dict,
+    files: tuple[UnmatchedFileEvidence, ...],
+    catalog: tuple[EpisodeCatalogEntry, ...],
+) -> tuple[GeminiMatchResult, ...]:
+    try:
+        return _parse_and_validate_response(payload, files, catalog)
+    except GeminiMatchError as exc:
+        raise GeminiResponseError(str(exc)) from exc
+
+
+def _parse_descriptive_response(
+    payload: dict,
+    files: tuple[UnmatchedFileEvidence, ...],
+) -> tuple[GeminiDescriptiveResult, ...]:
+    try:
+        parsed = _DescriptiveResponseModel.model_validate_json(_output_text(payload))
+    except (ValidationError, ValueError) as exc:
+        raise GeminiResponseError("Gemini returned invalid descriptive output") from exc
+    expected = {item.file_id for item in files}
+    returned = [item.file_id for item in parsed.matches]
+    if set(returned) != expected or len(returned) != len(expected):
+        raise GeminiResponseError(
+            "Gemini descriptive response did not cover each supplied file once"
+        )
+    return tuple(
+        sorted(
+            (
+                GeminiDescriptiveResult(
+                    file_id=item.file_id,
+                    content_kind=item.content_kind,
+                    suggested_title=item.suggested_title,
+                    year=item.year,
+                    confidence=item.confidence,
+                    evidence=tuple(item.evidence),
+                )
+                for item in parsed.matches
+            ),
+            key=lambda item: item.file_id,
+        )
+    )
+
+
 class GeminiEpisodeRanker:
     """Bounded Gemini client returning a review plan only."""
 
@@ -478,7 +670,7 @@ class GeminiEpisodeRanker:
                     response.status_code,
                     "request was not accepted",
                 )
-            matches = _parse_and_validate_response(response.payload, files, catalog)
+            matches = _parse_provider_response(response.payload, files, catalog)
             return GeminiReviewPlan(
                 mode="gemini-unmatched-review-plan",
                 model=self.model,
@@ -493,7 +685,7 @@ class GeminiEpisodeRanker:
     ) -> GeminiReviewPlan:
         """Try primary then paid key, with one interactive auth recovery each."""
 
-        service_errors: list[ApiServiceError] = []
+        provider_errors: list[ApiServiceError | GeminiResponseError] = []
         for credential, field in (
             ("gemini-primary", "gemini_primary_api_key"),
             ("gemini-paid", "gemini_paid_api_key"),
@@ -518,8 +710,101 @@ class GeminiEpisodeRanker:
                             continue
                     break
                 except ApiServiceError as exc:
-                    service_errors.append(exc)
+                    provider_errors.append(exc)
                     break
-        if service_errors:
-            raise service_errors[-1]
+                except GeminiResponseError as exc:
+                    provider_errors.append(exc)
+                    break
+        if provider_errors:
+            raise provider_errors[-1]
+        raise ApiCredentialError("gemini-primary", "not configured or accepted")
+
+
+class GeminiDescriptiveRanker(GeminiEpisodeRanker):
+    """Bounded catalogue-free classifier producing provisional safe names."""
+
+    def describe_with_key(
+        self,
+        files: tuple[UnmatchedFileEvidence, ...],
+        *,
+        release_hint: str,
+        api_key: str,
+        credential: CredentialName,
+    ) -> GeminiDescriptivePlan:
+        if credential not in ("gemini-primary", "gemini-paid"):
+            raise ValueError("Gemini credential name is invalid")
+        if not api_key:
+            raise ApiCredentialError(credential, "not configured")
+        body = build_descriptive_gemini_request(
+            self.model, files, release_hint=release_hint
+        )
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = self.transport.send(
+                    api_key=api_key,
+                    body=body,
+                    timeout_seconds=self.timeout_seconds,
+                )
+            except (requests.RequestException, ConnectionError, TimeoutError) as exc:
+                if attempt >= self.max_retries:
+                    raise ApiServiceError(
+                        "Gemini", None, f"network failure: {type(exc).__name__}"
+                    ) from exc
+                self.sleep(2**attempt)
+                continue
+            if response.status_code in (401, 403):
+                raise ApiCredentialError(
+                    credential,
+                    "rejected by the provider",
+                    status_code=response.status_code,
+                )
+            if response.status_code == 429 or response.status_code >= 500:
+                if attempt < self.max_retries:
+                    self.sleep(2**attempt)
+                    continue
+                reason = (
+                    "rate or quota limit reached; retry later"
+                    if response.status_code == 429
+                    else "provider is temporarily unavailable"
+                )
+                raise ApiServiceError("Gemini", response.status_code, reason)
+            if response.status_code >= 400:
+                raise ApiServiceError(
+                    "Gemini", response.status_code, "request was not accepted"
+                )
+            return GeminiDescriptivePlan(
+                mode="gemini-descriptive-review-plan",
+                model=self.model,
+                matches=_parse_descriptive_response(response.payload, files),
+            )
+        raise ApiServiceError("Gemini", None, "retry loop ended unexpectedly")
+
+    def describe_with_configured_keys(
+        self,
+        files: tuple[UnmatchedFileEvidence, ...],
+        *,
+        release_hint: str,
+    ) -> GeminiDescriptivePlan:
+        provider_errors: list[ApiServiceError | GeminiResponseError] = []
+        for credential, field in (
+            ("gemini-primary", "gemini_primary_api_key"),
+            ("gemini-paid", "gemini_paid_api_key"),
+        ):
+            settings = load_environment_settings()
+            api_key = getattr(settings, field)
+            if not api_key:
+                continue
+            try:
+                return self.describe_with_key(
+                    files,
+                    release_hint=release_hint,
+                    api_key=api_key,
+                    credential=credential,
+                )
+            except ApiCredentialError:
+                continue
+            except (ApiServiceError, GeminiResponseError) as exc:
+                provider_errors.append(exc)
+        if provider_errors:
+            raise provider_errors[-1]
         raise ApiCredentialError("gemini-primary", "not configured or accepted")

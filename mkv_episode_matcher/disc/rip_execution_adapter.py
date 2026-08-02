@@ -10,11 +10,15 @@ from mkv_episode_matcher.disc.rip_dispatcher import (
     BoundRipDispatch,
     DispatchOutcome,
 )
-from mkv_episode_matcher.disc.rip_orchestrator import run_parallel_auto_rip_queue
+from mkv_episode_matcher.disc.rip_orchestrator import (
+    ParallelRipError,
+    run_parallel_auto_rip_queue,
+)
 from mkv_episode_matcher.disc.ripper import RipError, RipResult
 
 QueueRunner = Callable[..., list[RipResult]]
 CompletionSink = Callable[[BoundRipDispatch, list[RipResult]], None]
+ProgressSink = Callable[[str, str], None]
 
 
 def _is_relative_to(path: Path, parent: Path) -> bool:
@@ -44,10 +48,12 @@ class ProductionRipExecutor:
         *,
         queue_runner: QueueRunner = run_parallel_auto_rip_queue,
         completion_sink: CompletionSink | None = None,
+        progress_sink: ProgressSink | None = None,
     ):
         self.options = options
         self.queue_runner = queue_runner
         self.completion_sink = completion_sink
+        self.progress_sink = progress_sink
 
     def _validate(self, bound: BoundRipDispatch) -> tuple[Path, Path]:
         executable = self.options.makemkv_executable.resolve()
@@ -71,16 +77,22 @@ class ProductionRipExecutor:
     def __call__(self, bound: BoundRipDispatch) -> DispatchOutcome:
         executable, run_directory = self._validate(bound)
         expected_ids = {job.job_id for job in bound.manifest.jobs}
-        results = self.queue_runner(
-            executable,
-            bound.output_root,
-            bound.manifest.jobs,
-            run_directory,
-            batch_plans=bound.batch_plans,
-            timeout_seconds=self.options.timeout_seconds,
-            cancel_file=run_directory / "STOP",
-            max_drives=self.options.max_drives,
-        )
+        try:
+            results = self.queue_runner(
+                executable,
+                bound.output_root,
+                bound.manifest.jobs,
+                run_directory,
+                batch_plans=bound.batch_plans,
+                timeout_seconds=self.options.timeout_seconds,
+                cancel_file=run_directory / "STOP",
+                max_drives=self.options.max_drives,
+                on_event=self.progress_sink,
+            )
+        except ParallelRipError as exc:
+            if self.completion_sink is not None and exc.completed_results:
+                self.completion_sink(bound, list(exc.completed_results))
+            raise
         result_ids = [result.job_id for result in results]
         if len(result_ids) != len(expected_ids) or set(result_ids) != expected_ids:
             raise RipError("Rip orchestrator returned an unexpected result set")

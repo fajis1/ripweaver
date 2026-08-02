@@ -11,11 +11,13 @@ from mkv_episode_matcher.core.credentials import (
 )
 from mkv_episode_matcher.media.episode_catalog import EpisodeCatalogEntry
 from mkv_episode_matcher.media.gemini_matcher import (
+    GeminiDescriptiveRanker,
     GeminiEpisodeRanker,
     GeminiMatchError,
     RequestsGeminiTransport,
     TransportResponse,
     UnmatchedFileEvidence,
+    build_descriptive_gemini_request,
     build_gemini_request,
     load_gemini_bundle,
     plan_gemini_request,
@@ -28,6 +30,113 @@ def reset_recovery_handler():
     set_credential_recovery_handler(None)
     yield
     set_credential_recovery_handler(None)
+
+
+def test_runtime_only_evidence_requests_a_provisional_best_choice():
+    request = build_gemini_request(
+        "gemini-test",
+        (UnmatchedFileEvidence("disc-title-001", 95.0, ()),),
+        (EpisodeCatalogEntry("feature-1", 0, 1, "Feature One", "", 97.0),),
+    )
+    prompt = json.loads(request["input"])
+    assert prompt["files"][0]["transcript_excerpts"] == []
+    assert "best provisional" in prompt["task"]
+    assert (
+        request["response_format"]["schema"]["properties"]["matches"]["items"][
+            "properties"
+        ]["episode_id"]["type"]
+        == "string"
+    )
+
+
+def test_descriptive_request_is_path_free_and_classifies_mixed_titles():
+    files = (
+        UnmatchedFileEvidence("title-000", 7727, ("Two sisters meet at camp.",)),
+        UnmatchedFileEvidence("title-003", 321, ("A short behind the scenes clip.",)),
+    )
+
+    request = build_descriptive_gemini_request(
+        "gemini-test", files, release_hint="Parent Trap 1961 Parent Trap II"
+    )
+    serialized = json.dumps(request)
+
+    assert "movie" in serialized
+    assert "extra" in serialized
+    assert "G:\\" not in serialized
+    assert "api_key" not in serialized.lower()
+
+
+def test_descriptive_ranker_validates_safe_provisional_results():
+    files = (
+        UnmatchedFileEvidence("title-000", 7727, ("Two sisters meet at camp.",)),
+        UnmatchedFileEvidence("title-003", 321, ("A short production clip.",)),
+    )
+    transport = FakeTransport(
+        TransportResponse(
+            200,
+            _payload([
+                {
+                    "file_id": "title-000",
+                    "content_kind": "movie",
+                    "suggested_title": "The Parent Trap",
+                    "year": 1961,
+                    "confidence": 0.91,
+                    "evidence": ["Feature runtime and dialogue agree."],
+                },
+                {
+                    "file_id": "title-003",
+                    "content_kind": "extra",
+                    "suggested_title": "Parent Trap Production Featurette",
+                    "year": None,
+                    "confidence": 0.66,
+                    "evidence": ["Short production-focused material."],
+                },
+            ]),
+        )
+    )
+
+    plan = GeminiDescriptiveRanker(
+        model="gemini-test", transport=transport, max_retries=0
+    ).describe_with_key(
+        files,
+        release_hint="Parent Trap 1961 Parent Trap II",
+        api_key="fake-key",
+        credential="gemini-primary",
+    )
+
+    assert [(item.content_kind, item.suggested_title) for item in plan.matches] == [
+        ("movie", "The Parent Trap"),
+        ("extra", "Parent Trap Production Featurette"),
+    ]
+
+
+def test_descriptive_ranker_rejects_unsafe_title():
+    files = (UnmatchedFileEvidence("title-000", 300, ("Evidence.",)),)
+    transport = FakeTransport(
+        TransportResponse(
+            200,
+            _payload([
+                {
+                    "file_id": "title-000",
+                    "content_kind": "extra",
+                    "suggested_title": "..\\private\\title",
+                    "year": None,
+                    "confidence": 0.8,
+                    "evidence": ["Unsafe title test."],
+                }
+            ]),
+        )
+    )
+
+    with pytest.raises(GeminiMatchError, match="invalid descriptive output"):
+        GeminiDescriptiveRanker(
+            model="gemini-test", transport=transport, max_retries=0
+        ).describe_with_key(
+            files,
+            release_hint="Example release",
+            api_key="fake-key",
+            credential="gemini-primary",
+        )
 
 
 @pytest.fixture
@@ -420,6 +529,45 @@ def test_configured_keys_fall_back_to_paid_on_service_failure(
     ]
     transport = FakeTransport(
         TransportResponse(503, {}),
+        TransportResponse(
+            200,
+            _payload([
+                {
+                    "file_id": item.file_id,
+                    "episode_id": episode.episode_id,
+                    "confidence": 0.9,
+                    "evidence": ["Allowed evidence."],
+                }
+                for item, episode in zip(files, catalog, strict=True)
+            ]),
+        ),
+    )
+
+    plan = GeminiEpisodeRanker(
+        model="gemini-test",
+        transport=transport,
+        max_retries=0,
+    ).rank_with_configured_keys(files, catalog)
+
+    assert len(plan.matches) == 2
+    assert [call["api_key"] for call in transport.calls] == [
+        "fake-primary",
+        "fake-paid",
+    ]
+
+
+@patch("mkv_episode_matcher.media.gemini_matcher.load_environment_settings")
+def test_configured_keys_fall_back_to_paid_on_invalid_provider_response(
+    mock_settings,
+    theatre_bundle,
+):
+    files, catalog = theatre_bundle
+    mock_settings.side_effect = [
+        Mock(gemini_primary_api_key="fake-primary", gemini_paid_api_key="fake-paid"),
+        Mock(gemini_primary_api_key="fake-primary", gemini_paid_api_key="fake-paid"),
+    ]
+    transport = FakeTransport(
+        TransportResponse(200, {"unexpected": "response"}),
         TransportResponse(
             200,
             _payload([

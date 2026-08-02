@@ -7,6 +7,7 @@ from mkv_episode_matcher.disc.batch_ripper import (
     plan_single_open_batch,
 )
 from mkv_episode_matcher.disc.rip_orchestrator import (
+    ParallelRipError,
     run_auto_rip_queue,
     run_parallel_auto_rip_queue,
 )
@@ -117,7 +118,7 @@ def test_parallel_batch_failure_does_not_cancel_other_drive(tmp_path):
         completed.append(job.job_id)
         return _result(job)
 
-    with pytest.raises(RipError, match="isolated batch failure"):
+    with pytest.raises(ParallelRipError, match="isolated batch failure") as caught:
         run_parallel_auto_rip_queue(
             Path("makemkvcon64.exe"),
             tmp_path,
@@ -129,3 +130,7 @@ def test_parallel_batch_failure_does_not_cancel_other_drive(tmp_path):
         )
 
     assert completed == [unaffected.job_id]
+    assert [item.job_id for item in caught.value.completed_results] == [
+        unaffected.job_id
+    ]
+    assert caught.value.drive_failures == {0: "RipError"}

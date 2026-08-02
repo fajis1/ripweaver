@@ -5,6 +5,9 @@ import FileReviewGrid from './components/FileReviewGrid';
 import SettingsView from './components/SettingsView';
 import OnboardingModal from './components/OnboardingModal';
 import RipPipelineView from './components/RipPipelineView';
+import RecentActivityView from './components/RecentActivityView';
+import LogsView from './components/LogsView';
+import SystemCleanupView from './components/SystemCleanupView';
 
 interface ScannedFile {
   path: string;
@@ -37,7 +40,9 @@ interface JobStatus {
 type WorkflowState = 'IDLE' | 'SCANNING' | 'REVIEW' | 'PROCESSING' | 'DONE';
 
 function App() {
-  const [currentView, setCurrentView] = useState('dashboard');
+  // Disc processing is the primary workflow. The legacy folder matcher remains
+  // available from the Library Scan navigation item.
+  const [currentView, setCurrentView] = useState('rip-pipeline');
   const [workflowState, setWorkflowState] = useState<WorkflowState>('IDLE');
   const [scannedFiles, setScannedFiles] = useState<ScannedFile[]>([]);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -214,11 +219,31 @@ function App() {
   // Render content based on view
   const renderContent = () => {
     if (currentView === 'rip-pipeline') {
-      return <RipPipelineView />;
+      return <RipPipelineView onOpenSettings={() => setCurrentView('settings')} />;
+    }
+
+    if (currentView === 'pipeline-queue') {
+      return <RipPipelineView queueOnly onOpenSettings={() => setCurrentView('settings')} onOpenDashboard={() => setCurrentView('rip-pipeline')} />;
+    }
+
+    if (currentView === 'pipeline-errors') {
+      return <RipPipelineView attentionOnly onOpenSettings={() => setCurrentView('settings')} onOpenDashboard={() => setCurrentView('rip-pipeline')} />;
     }
 
     if (currentView === 'settings') {
       return <SettingsView />;
+    }
+
+    if (currentView === 'recent-activity') {
+      return <RecentActivityView onOpenDashboard={() => setCurrentView('rip-pipeline')} />;
+    }
+
+    if (currentView === 'logs') {
+      return <LogsView />;
+    }
+
+    if (currentView === 'system-cleanup') {
+      return <SystemCleanupView />;
     }
 
     if (currentView === 'help') {
@@ -249,6 +274,15 @@ function App() {
                 <h4 className="font-bold text-white mb-2">4. Match</h4>
                 <p className="text-sm text-muted">Start the process. The AI will listen to the audio, find the episode, and rename the file.</p>
               </div>
+            </div>
+            <div className="mt-8 border-t border-[var(--border-color)] pt-6">
+              <h3 className="text-xl font-bold text-white">Credits &amp; Attributions</h3>
+              <a href="https://www.themoviedb.org" target="_blank" rel="noopener noreferrer" className="mt-4 inline-block">
+                <img src="https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg" alt="TMDB" className="h-16 w-auto" />
+              </a>
+              <p className="mt-3 text-sm text-[var(--text-muted)]">This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
+              <p className="mt-3 text-sm text-[var(--text-muted)]">RipWeaver is based on MKV Episode Matcher by Jonathan Sakkos and incorporates selected ideas or adapted behavior from Riplex by AnyCredit5518. It can use independent OpenSubtitles.com and Google Gemini services and user-installed MakeMKV, HandBrake, FFmpeg, and Jellyfin tools.</p>
+              <p className="mt-3 text-sm"><a className="text-blue-300 hover:underline" href="https://github.com/fajis1/ripweaver/blob/main/THIRD_PARTY_NOTICES.md" target="_blank" rel="noopener noreferrer">Third-party notices and license details</a></p>
             </div>
           </div>
         </div>

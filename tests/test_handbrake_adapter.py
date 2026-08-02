@@ -14,10 +14,12 @@ from mkv_episode_matcher.media.handbrake import (
     HandBrakeProfile,
     _is_process_interruption,
     _redact,
+    _source_audio_channels,
     build_handbrake_command,
     execute_handbrake_job,
     inspect_handbrake_capabilities,
     partial_output_path,
+    select_audio_track,
     validate_handbrake_job,
 )
 
@@ -121,6 +123,7 @@ def test_command_forces_vcn_and_preserves_surround_compatibility(tmp_path):
     assert command[command.index("--ab") + 1] == "256,0"
     assert "--comb-detect" in command
     assert "--decomb" in command
+    assert command[command.index("--subtitle-lang-list") + 1] == "eng"
     assert "--all-subtitles" in command
     assert "--preset-import-gui" not in command
     assert "--overwrite" not in command
@@ -213,6 +216,157 @@ def test_command_can_keep_original_surround_first(tmp_path):
     assert command[command.index("--ab") + 1] == "0,256"
 
 
+def test_command_uses_layout_specific_bitrates(tmp_path):
+    handbrake, _ = _tools(tmp_path)
+    job = _job(
+        tmp_path,
+        profile=HandBrakeProfile(
+            audio_preference="5.1",
+            audio_bitrate_stereo=192,
+            audio_bitrate_5_1=576,
+            stereo_first=False,
+        ),
+    )
+
+    command = build_handbrake_command(handbrake, job)
+
+    assert command[command.index("--audio") + 1] == "1,1"
+    assert command[command.index("--aencoder") + 1] == "av_aac,av_aac"
+    assert command[command.index("--mixdown") + 1] == "5point1,dpl2"
+    assert command[command.index("--ab") + 1] == "576,192"
+
+
+def test_profile_rejects_invalid_layout_bitrate(tmp_path):
+    with pytest.raises(HandBrakeError, match="layout bitrate"):
+        validate_handbrake_job(
+            _job(tmp_path, profile=HandBrakeProfile(audio_bitrate_7_1=1056))
+        )
+
+
+@pytest.mark.parametrize(
+    ("primary", "secondary", "encoders", "mixdowns", "bitrates"),
+    [
+        ("stereo", "5.1", "av_aac,av_aac", "dpl2,5point1", "192,576"),
+        ("highest", "stereo", "copy,av_aac", "none,dpl2", "0,192"),
+    ],
+)
+def test_command_respects_explicit_primary_and_secondary_audio_order(
+    tmp_path, primary, secondary, encoders, mixdowns, bitrates
+):
+    handbrake, _ = _tools(tmp_path)
+    profile = HandBrakeProfile(
+        audio_primary_layout=primary,
+        audio_secondary_layout=secondary,
+        audio_bitrate_stereo=192,
+        audio_bitrate_5_1=576,
+    )
+
+    command = build_handbrake_command(handbrake, _job(tmp_path, profile=profile))
+
+    assert command[command.index("--aencoder") + 1] == encoders
+    assert command[command.index("--mixdown") + 1] == mixdowns
+    assert command[command.index("--ab") + 1] == bitrates
+
+
+def test_profile_rejects_duplicate_explicit_audio_layouts(tmp_path):
+    with pytest.raises(HandBrakeError, match="distinct"):
+        validate_handbrake_job(
+            _job(
+                tmp_path,
+                profile=HandBrakeProfile(
+                    audio_primary_layout="stereo",
+                    audio_secondary_layout="stereo",
+                ),
+            )
+        )
+
+
+def test_command_can_select_all_english_subtitles_and_mark_first_default(tmp_path):
+    handbrake, _ = _tools(tmp_path)
+    job = _job(
+        tmp_path,
+        profile=HandBrakeProfile(subtitle_default="first"),
+    )
+
+    command = build_handbrake_command(handbrake, job)
+
+    assert command[command.index("--subtitle-lang-list") + 1] == "eng"
+    assert "--all-subtitles" in command
+    assert command[command.index("--subtitle-default") + 1] == "1"
+
+
+def test_command_can_limit_resolution_and_set_frame_rate(tmp_path):
+    handbrake, _ = _tools(tmp_path)
+    job = _job(
+        tmp_path,
+        profile=HandBrakeProfile(resolution_policy="720p", frame_rate_policy="23.976"),
+    )
+
+    command = build_handbrake_command(handbrake, job)
+
+    assert command[command.index("--maxHeight") + 1] == "720"
+    assert command[command.index("--rate") + 1] == "23.976"
+    assert "--pfr" in command
+    assert "--vfr" not in command
+
+
+def test_resolution_policy_selects_matching_quality_value(tmp_path):
+    handbrake, _ = _tools(tmp_path)
+    job = _job(
+        tmp_path,
+        profile=HandBrakeProfile(resolution_policy="1080p", quality_1080p=23.5),
+    )
+
+    command = build_handbrake_command(handbrake, job)
+
+    assert command[command.index("--quality") + 1] == "23.5"
+
+
+@pytest.mark.parametrize(
+    ("selection", "expected"),
+    [
+        ("first_matching", "--first-subtitle"),
+        ("all", "--all-subtitles"),
+        ("none", "none"),
+    ],
+)
+def test_subtitle_selection_policies(tmp_path, selection, expected):
+    handbrake, _ = _tools(tmp_path)
+    job = _job(tmp_path, profile=HandBrakeProfile(subtitle_selection=selection))
+    command = build_handbrake_command(handbrake, job)
+
+    if expected == "none":
+        assert command[command.index("--subtitle") + 1] == "none"
+    else:
+        assert expected in command
+
+
+def test_command_can_keep_preferred_pair_followed_by_every_other_audio(tmp_path):
+    handbrake, _ = _tools(tmp_path)
+    job = _job(
+        tmp_path,
+        profile=HandBrakeProfile(
+            audio_track=2,
+            additional_audio="all",
+        ),
+    )
+
+    command = build_handbrake_command(handbrake, job, source_audio_track_count=4)
+
+    assert command[command.index("--audio") + 1] == "2,2,1,3,4"
+    assert command[command.index("--aencoder") + 1] == "av_aac,copy,copy,copy,copy"
+    assert command[command.index("--mixdown") + 1] == "dpl2,none,none,none,none"
+    assert command[command.index("--ab") + 1] == "256,0,0,0,0"
+
+
+def test_all_audio_requires_known_source_track_count(tmp_path):
+    handbrake, _ = _tools(tmp_path)
+    job = _job(tmp_path, profile=HandBrakeProfile(additional_audio="all"))
+
+    with pytest.raises(HandBrakeError, match="requires source audio metadata"):
+        build_handbrake_command(handbrake, job)
+
+
 def test_command_can_preserve_interlacing_when_profile_explicitly_disables_decomb(
     tmp_path,
 ):
@@ -228,9 +382,62 @@ def test_command_can_preserve_interlacing_when_profile_explicitly_disables_decom
     assert "--decomb" not in command
 
 
-def test_rejects_cpu_encoder_even_if_preset_name_suggests_amd(tmp_path):
-    with pytest.raises(HandBrakeError, match="AMD VCN"):
-        validate_handbrake_job(_job(tmp_path, profile=HandBrakeProfile(encoder="x264")))
+def test_rejects_unknown_encoder(tmp_path):
+    with pytest.raises(HandBrakeError, match="video encoder"):
+        validate_handbrake_job(
+            _job(tmp_path, profile=HandBrakeProfile(encoder="not-an-encoder"))
+        )
+
+
+@pytest.mark.parametrize(
+    ("preference", "channels", "expected"),
+    [
+        ("default", (2, 6, 8), 1),
+        ("stereo", (6, 2), 2),
+        ("2.1", (2, 3, 6), 2),
+        ("5.1", (2, 6, 8), 2),
+        ("7.1", (2, 6, 8), 3),
+        ("highest", (2, 8, 6), 2),
+        ("5.1", (2, 8), 2),
+    ],
+)
+def test_audio_layout_preference_resolves_per_source(preference, channels, expected):
+    assert select_audio_track(preference, channels) == expected
+
+
+def test_audio_layout_preference_rejects_missing_metadata():
+    with pytest.raises(HandBrakeError, match="cannot be resolved"):
+        select_audio_track("5.1", ())
+
+
+def test_source_audio_channels_uses_fixed_ffprobe_metadata_query(tmp_path, monkeypatch):
+    ffprobe = tmp_path / "ffprobe.exe"
+    source = tmp_path / "source.mkv"
+    ffprobe.write_bytes(b"synthetic")
+    source.write_bytes(b"synthetic")
+    run = Mock(
+        return_value=subprocess.CompletedProcess(
+            args=(),
+            returncode=0,
+            stdout=json.dumps({"streams": [{"channels": 2}, {"channels": 6}]}),
+            stderr="",
+        )
+    )
+    monkeypatch.setattr("mkv_episode_matcher.media.handbrake.subprocess.run", run)
+
+    assert _source_audio_channels(ffprobe, source) == (2, 6)
+    command = run.call_args.args[0]
+    assert command[1:-1] == (
+        "-v",
+        "error",
+        "-select_streams",
+        "a",
+        "-show_entries",
+        "stream=channels:stream_tags=language",
+        "-of",
+        "json",
+    )
+    assert command[-1] == str(source.resolve())
 
 
 def test_capability_parser_requires_explicit_vcn_signal(tmp_path, monkeypatch):
@@ -363,6 +570,10 @@ def test_failed_encode_preserves_partial_and_never_creates_final(
                 0,
                 "vce_h265",
                 "vcn: is available",
+            )
+        if "-show_entries" in command:
+            return subprocess.CompletedProcess(
+                command, 0, '{"streams":[{"height":480}]}', ""
             )
         partial.write_bytes(b"incomplete")
         return subprocess.CompletedProcess(command, 3, "", "failed")

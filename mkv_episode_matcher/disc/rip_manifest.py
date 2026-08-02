@@ -21,6 +21,7 @@ from mkv_episode_matcher.disc.title_selector import (
     TitlePlanError,
     load_title_plan,
     normalize_title,
+    select_bonus_titles,
 )
 
 
@@ -39,6 +40,50 @@ class MediaContext:
     disc_number: int | None = None
     volume_number: int | None = None
     tmdb_id: int | None = None
+    content_hint: str | None = None
+    handbrake_profile_id: str | None = None
+    staging_attempt: str | None = None
+    selected_title_indexes: tuple[int, ...] | None = None
+    special_feature_catalog_id: str | None = None
+    special_feature_release_id: str | None = None
+    special_feature_library_title: str | None = None
+    special_feature_library_year: int | None = None
+    special_feature_assignments: tuple[dict[str, object], ...] = ()
+    episode_assignments: tuple[dict[str, object], ...] = ()
+    existing_output_policy: str = "preserve"
+
+
+def media_context_from_dict(value: dict[str, object]) -> MediaContext:
+    """Restore immutable tuple fields from a serialized private context."""
+
+    normalized = dict(value)
+    indexes = normalized.get("selected_title_indexes")
+    if indexes is not None:
+        if not isinstance(indexes, list | tuple):
+            raise RipError("Media context selected title indexes are invalid")
+        normalized["selected_title_indexes"] = tuple(indexes)
+    assignments = normalized.get("special_feature_assignments", ())
+    if not isinstance(assignments, list | tuple) or not all(
+        isinstance(item, dict) for item in assignments
+    ):
+        raise RipError("Media context special-feature assignments are invalid")
+    normalized["special_feature_assignments"] = tuple(assignments)
+    episode_assignments = normalized.get("episode_assignments", ())
+    if not isinstance(episode_assignments, list | tuple) or not all(
+        isinstance(item, dict) for item in episode_assignments
+    ):
+        raise RipError("Media context episode assignments are invalid")
+    normalized["episode_assignments"] = tuple(episode_assignments)
+    if normalized.get("existing_output_policy", "preserve") not in {
+        "preserve",
+        "missing-only",
+        "replace-after-verification",
+    }:
+        raise RipError("Media context existing-output policy is invalid")
+    try:
+        return MediaContext(**normalized)
+    except TypeError as exc:
+        raise RipError("Media context structure is invalid") from exc
 
 
 @dataclass(frozen=True)
@@ -212,7 +257,24 @@ def _safe_media_component(value: str) -> str:
     return cleaned[:100]
 
 
-def load_media_contexts(path: Path) -> dict[str, MediaContext]:
+def _disc_label_slug(payload: dict[str, Any]) -> str | None:
+    """Return a readable, filename-safe label without weakening job identity."""
+
+    drive = payload.get("drive")
+    value = drive.get("disc_name") if isinstance(drive, dict) else None
+    if not isinstance(value, str):
+        return None
+    words = re.findall(r"[A-Za-z0-9]+", value)
+    if not words:
+        return None
+    pretty = "-".join(
+        word if word.isdigit() or re.fullmatch(r"[IVXLCDM]+", word) else word.title()
+        for word in words
+    )
+    return pretty[:80].rstrip("-") or None
+
+
+def load_media_contexts(path: Path) -> dict[str, MediaContext]:  # noqa: C901
     """Load a reviewed, credential-free disc-to-series mapping."""
 
     try:
@@ -227,7 +289,7 @@ def load_media_contexts(path: Path) -> dict[str, MediaContext]:
         if not isinstance(disc_id, str) or not isinstance(value, dict):
             raise RipError("Media context entries must map disc IDs to objects")
         try:
-            context = MediaContext(disc_id=disc_id, **value)
+            context = media_context_from_dict({"disc_id": disc_id, **value})
         except TypeError as exc:
             raise RipError(f"Media context for {disc_id} is invalid") from exc
         if re.fullmatch(r"disc-\d{2}", context.disc_id) is None:
@@ -236,6 +298,28 @@ def load_media_contexts(path: Path) -> dict[str, MediaContext]:
             raise RipError(f"Media context for {disc_id} has no series name")
         if context.season is not None and not 0 <= context.season <= 99:
             raise RipError(f"Media context for {disc_id} has an invalid season")
+        if context.content_hint not in {None, "tv", "movie", "extras", "mixed"}:
+            raise RipError(f"Media context for {disc_id} has an invalid content hint")
+        if (
+            context.handbrake_profile_id is not None
+            and re.fullmatch(r"[a-z][a-z0-9-]{1,47}", context.handbrake_profile_id)
+            is None
+        ):
+            raise RipError(
+                f"Media context for {disc_id} has an invalid HandBrake profile"
+            )
+        if context.selected_title_indexes is not None and (
+            not context.selected_title_indexes
+            or any(
+                not isinstance(index, int) or isinstance(index, bool) or index < 0
+                for index in context.selected_title_indexes
+            )
+            or len(set(context.selected_title_indexes))
+            != len(context.selected_title_indexes)
+        ):
+            raise RipError(
+                f"Media context for {disc_id} has invalid selected title indexes"
+            )
         for field_name, value_number in (
             ("disc number", context.disc_number),
             ("volume number", context.volume_number),
@@ -249,18 +333,24 @@ def load_media_contexts(path: Path) -> dict[str, MediaContext]:
     return contexts
 
 
-def _context_final_dir(context: MediaContext) -> str:
+def _context_final_dir(context: MediaContext) -> str | None:
+    if context.special_feature_catalog_id is not None or context.content_hint in {
+        "movie",
+        "extras",
+        "mixed",
+    }:
+        return None
     series = _safe_media_component(context.series_name)
     if context.season is not None:
         return f"TV Shows/{series}/Season {context.season:02d}"
     return f"TV Shows/{series}/Unmatched"
 
 
-def build_rip_manifest(
+def build_rip_manifest(  # noqa: C901
     report_paths: list[Path],
     media_contexts: dict[str, MediaContext] | None = None,
 ) -> RipManifest:
-    """Select unambiguous episode titles from explicit saved inventories."""
+    """Select reviewed episode or conservative bonus titles from saved data."""
 
     if not report_paths:
         raise RipError("At least one preflight inventory is required")
@@ -282,6 +372,7 @@ def build_rip_manifest(
 
         disc_id = f"disc-{ordinal:02d}"
         fingerprint = _inventory_fingerprint(payload)
+        disc_label_slug = _disc_label_slug(payload)
         try:
             plan = load_title_plan(report_path, report_id=disc_id)
         except TitlePlanError as exc:
@@ -294,15 +385,46 @@ def build_rip_manifest(
             )
             continue
 
+        context = media_contexts.get(disc_id) if media_contexts else None
+        content_hint = context.content_hint if context is not None else None
         review_count = sum(
             decision.classification == "review" for decision in plan.decisions
         )
         selected = [decision for decision in plan.decisions if decision.selected]
+        selection_mode = "episode"
+        if context is not None and context.selected_title_indexes is not None:
+            decisions_by_index = {
+                decision.title.index: decision for decision in plan.decisions
+            }
+            missing = set(context.selected_title_indexes) - decisions_by_index.keys()
+            if missing:
+                raise RipError("Media context selects a title absent from inventory")
+            selected = [
+                decisions_by_index[index] for index in context.selected_title_indexes
+            ]
+            selection_mode = "reviewed-special-features"
+        elif content_hint == "extras":
+            selected = list(select_bonus_titles(plan))
+            selection_mode = "bonus-features"
+        elif content_hint == "mixed":
+            bonus = select_bonus_titles(plan)
+            selected = list(
+                {item.title.index: item for item in (*selected, *bonus)}.values()
+            )
+            selected.sort(key=lambda item: item.title.index)
+            selection_mode = "mixed"
+        elif content_hint is None and not selected:
+            selected = list(select_bonus_titles(plan))
+            selection_mode = "automatic-bonus-fallback"
         reasons: list[str] = []
-        if review_count:
+        if review_count and selection_mode == "episode":
             reasons.append(f"contains-{review_count}-review-title(s)")
         if not selected:
-            reasons.append("no-episode-titles-selected")
+            reasons.append(
+                "no-plausible-bonus-titles-selected"
+                if selection_mode != "episode"
+                else "no-episode-titles-selected"
+            )
         if reasons:
             skipped.append(
                 SkippedDisc(
@@ -317,8 +439,11 @@ def build_rip_manifest(
         for decision in selected:
             title = decision.title
             job_id = f"{disc_id}-title-{title.index:03d}"
-            context = media_contexts.get(disc_id) if media_contexts else None
             staging_root = f".staging/{disc_id}"
+            if context is not None and context.staging_attempt is not None:
+                if re.fullmatch(r"[a-z0-9-]{8,40}", context.staging_attempt) is None:
+                    raise RipError("Media context staging attempt is invalid")
+                staging_root = f"{staging_root}/{context.staging_attempt}"
             disc_jobs.append(
                 RipJob(
                     job_id=job_id,
@@ -328,9 +453,8 @@ def build_rip_manifest(
                         f"{staging_root}/{fingerprint}/title-{title.index:03d}"
                     ),
                     estimated_bytes=title.size_bytes,
-                    output_basename=(
-                        f"{disc_id}-{fingerprint}-title-{title.index:03d}.mkv"
-                    ),
+                    output_basename=(f"{disc_label_slug}--" if disc_label_slug else "")
+                    + (f"{disc_id}-{fingerprint}-title-{title.index:03d}.mkv"),
                     final_relative_dir=(
                         _context_final_dir(context) if context is not None else None
                     ),
@@ -394,7 +518,7 @@ def load_rip_manifest(path: Path) -> RipManifest:
         jobs = tuple(RipJob(**item) for item in payload["jobs"])
         skipped = tuple(SkippedDisc(**item) for item in payload["skipped_discs"])
         contexts = tuple(
-            MediaContext(**item) for item in payload.get("media_contexts", [])
+            media_context_from_dict(item) for item in payload.get("media_contexts", [])
         )
         proofs = tuple(
             RipDiscProof(**{

@@ -11,12 +11,83 @@ from mkv_episode_matcher.backend.dependencies import (
     get_private_binding_store,
     get_rip_queue_runner,
 )
+from mkv_episode_matcher.backend.routers import rip
 from mkv_episode_matcher.backend.routers.rip import router
 from mkv_episode_matcher.disc.orchestration_store import OrchestrationStore
 from mkv_episode_matcher.disc.private_bindings import PrivateBindingStore
+from mkv_episode_matcher.disc.rip_manifest import MediaContext
+from mkv_episode_matcher.disc.rip_preview import build_rip_preview
 from mkv_episode_matcher.disc.ripper import RipResult, resolve_final_output
 from mkv_episode_matcher.pipeline_queue import PipelineQueueStore
 from tests.test_rip_manifest import _inventory, _make_batch_names, _write_report
+
+
+def test_collision_resolution_can_create_missing_only_review(tmp_path):
+    report = _write_report(
+        tmp_path,
+        "saved-report.json",
+        _make_batch_names(_inventory(4, "Synthetic Disc", [1300, 1300])),
+    )
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    public = OrchestrationStore(tmp_path / "public.sqlite3")
+    private = PrivateBindingStore(tmp_path / "private.sqlite3")
+    context = MediaContext(
+        disc_id="disc-01",
+        series_name="Synthetic Show",
+        season=1,
+        staging_attempt="attempt-original01",
+    )
+    initial = build_rip_preview([report], {"disc-01": context})
+    (output_root / initial.jobs[0].staging_destination).mkdir(parents=True)
+    preview = build_rip_preview([report], {"disc-01": context}, output_root=output_root)
+    source = public.create_job(preview, idempotency_key="source-review-0001")
+    private.bind(
+        job_id=source.job_id,
+        plan_sha256=source.plan_sha256,
+        report_paths=[report],
+        output_root=output_root,
+        media_contexts={"disc-01": context},
+    )
+
+    response = rip.resolve_rip_collisions(
+        source.job_id,
+        rip.ResolveRipCollisionsRequest(policy="missing-only", confirm_resolution=True),
+        "missing-review-0001",
+        public,
+        private,
+    )
+
+    assert len(response["preview"]["jobs"]) == 1
+    assert response["preview"]["jobs"][0]["title_index"] == 1
+    assert response["preview"]["collision_count"] == 0
+    assert response["state"] == "queued"
+    assert (
+        private.get(response["job_id"]).media_contexts["disc-01"].staging_attempt
+        != context.staging_attempt
+    )
+    replacement = rip.resolve_rip_collisions(
+        source.job_id,
+        rip.ResolveRipCollisionsRequest(
+            policy="replace-after-verification", confirm_resolution=True
+        ),
+        "replace-review-0001",
+        public,
+        private,
+    )
+    replacement_context = private.get(replacement["job_id"]).media_contexts["disc-01"]
+    assert replacement["state"] == "queued"
+    assert replacement_context.existing_output_policy == "replace-after-verification"
+    assert len(replacement["preview"]["jobs"]) == 2
+
+    selected = rip.select_rip_titles(
+        source.job_id,
+        rip.SelectRipTitlesRequest(title_indexes=[1], confirm_selection=True),
+        "selected-review-0001",
+        public,
+        private,
+    )
+    assert [item["title_index"] for item in selected["preview"]["jobs"]] == [1]
 
 
 def _post(app, path, payload, *, idempotency_key):

@@ -1,8 +1,140 @@
-from fastapi import APIRouter
+import shutil
+import string
+from pathlib import Path
+
+from fastapi import APIRouter, HTTPException
 
 from mkv_episode_matcher import __version__
 
 router = APIRouter(prefix="/system", tags=["System"])
+
+
+def _find_executable(
+    names: tuple[str, ...], candidates: tuple[Path, ...] = ()
+) -> str | None:
+    """Find an installed executable without launching it."""
+
+    for name in names:
+        discovered = shutil.which(name)
+        if discovered:
+            return str(Path(discovered).resolve())
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate.resolve())
+    return None
+
+
+def _find_portable_executable(
+    filename: str, roots: tuple[Path, ...], *, max_depth: int = 3, max_dirs: int = 2000
+) -> str | None:
+    """Find one exact portable executable in bounded download-folder roots."""
+
+    queue = [(root, 0) for root in roots if root.is_dir()]
+    visited: set[Path] = set()
+    inspected = 0
+    while queue and inspected < max_dirs:
+        directory, depth = queue.pop(0)
+        try:
+            resolved = directory.resolve()
+            if resolved in visited:
+                continue
+            visited.add(resolved)
+            inspected += 1
+            entries = sorted(directory.iterdir(), key=lambda item: item.name.casefold())
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.is_file() and entry.name.casefold() == filename.casefold():
+                return str(entry.resolve())
+        if depth < max_depth:
+            queue.extend(
+                (entry, depth + 1)
+                for entry in entries
+                if entry.is_dir() and not entry.is_symlink()
+            )
+    return None
+
+
+def _portable_download_roots() -> tuple[Path, ...]:
+    roots = [Path.home() / "Downloads"]
+    for letter in string.ascii_uppercase:
+        roots.extend((Path(f"{letter}:/downloads"), Path(f"{letter}:/Downloads")))
+    unique = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root).casefold()
+        if key not in seen:
+            seen.add(key)
+            unique.append(root)
+    return tuple(unique)
+
+
+@router.get("/tools/discover")
+def discover_tools():
+    """Locate supported executables without invoking external programs."""
+
+    program_files = Path("C:/Program Files")
+    program_files_x86 = Path("C:/Program Files (x86)")
+    return {
+        "tools": {
+            "makemkv_path": _find_executable(
+                ("makemkvcon64.exe", "makemkvcon.exe"),
+                (
+                    program_files_x86 / "MakeMKV" / "makemkvcon64.exe",
+                    program_files / "MakeMKV" / "makemkvcon64.exe",
+                ),
+            ),
+            "handbrake_path": _find_executable(
+                ("HandBrakeCLI.exe", "HandBrakeCLI"),
+                (program_files / "HandBrake" / "HandBrakeCLI.exe",),
+            )
+            or _find_portable_executable(
+                "HandBrakeCLI.exe", _portable_download_roots()
+            ),
+            "ffmpeg_path": _find_executable(("ffmpeg.exe", "ffmpeg")),
+            "ffprobe_path": _find_executable(("ffprobe.exe", "ffprobe")),
+        }
+    }
+
+
+@router.get("/folders")
+def browse_folders(path: str | None = None):
+    """List local directories for the settings folder chooser, read-only."""
+
+    if path is None or not path.strip():
+        if Path("C:/").exists():
+            roots = [Path(f"{letter}:/") for letter in string.ascii_uppercase]
+            return {
+                "current": None,
+                "entries": [
+                    {"name": root.drive or str(root), "path": str(root)}
+                    for root in roots
+                    if root.exists()
+                ],
+            }
+        path_obj = Path("/")
+    else:
+        path_obj = Path(path).expanduser()
+
+    if not path_obj.exists() or not path_obj.is_dir():
+        raise HTTPException(status_code=400, detail="Folder does not exist")
+    try:
+        entries = sorted(
+            (
+                {"name": item.name or str(item), "path": str(item.resolve())}
+                for item in path_obj.iterdir()
+                if item.is_dir()
+            ),
+            key=lambda item: item["name"].casefold(),
+        )
+    except OSError:
+        raise HTTPException(status_code=403, detail="Folder cannot be read") from None
+    parent = path_obj.parent if path_obj.parent != path_obj else None
+    return {
+        "current": str(path_obj.resolve()),
+        "parent": str(parent.resolve()) if parent else None,
+        "entries": entries,
+    }
 
 
 def _public_config(config):
@@ -12,6 +144,7 @@ def _public_config(config):
     from mkv_episode_matcher.core.credentials import (
         CREDENTIAL_SPECS,
         credential_is_configured,
+        credential_last4,
     )
 
     result = config.model_dump(exclude=SECRET_CONFIG_FIELDS)
@@ -19,12 +152,34 @@ def _public_config(config):
     result["credential_status"] = {
         name: {
             "configured": credential_is_configured(spec.name),
+            "last4": credential_last4(spec.name),
             "management_url": spec.management_url,
         }
         for name, spec in CREDENTIAL_SPECS.items()
         if name in CREDENTIAL_SPECS
     }
     return result
+
+
+def _validate_executable_paths(config) -> dict[str, str]:
+    """Validate configured tool files without launching them or exposing paths."""
+
+    expected_names = {
+        "makemkv_path": {"makemkvcon64.exe", "makemkvcon.exe", "makemkvcon"},
+        "handbrake_path": {"handbrakecli.exe", "handbrakecli"},
+        "ffmpeg_path": {"ffmpeg.exe", "ffmpeg"},
+        "ffprobe_path": {"ffprobe.exe", "ffprobe"},
+    }
+    errors = {}
+    for field, names in expected_names.items():
+        path = getattr(config, field)
+        if path is None:
+            continue
+        if not path.is_file():
+            errors[field] = "The selected executable file does not exist."
+        elif path.name.casefold() not in names:
+            errors[field] = "The selected file has the wrong executable name."
+    return errors
 
 
 @router.get("/status")
@@ -86,6 +241,13 @@ def update_config(config_data: dict):
         current = manager.load().model_dump(exclude=SECRET_CONFIG_FIELDS)
         current.update(submitted)
         new_config = Config(**current)
+        field_errors = _validate_executable_paths(new_config)
+        if field_errors:
+            return {
+                "status": "error",
+                "message": "Configuration was not saved. Fix the highlighted executable path.",
+                "field_errors": field_errors,
+            }
 
         for credential, value in credential_updates.items():
             store_credential(credential, value)

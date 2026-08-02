@@ -4,10 +4,18 @@ from pathlib import Path
 from mkv_episode_matcher.backend.rip_runtime import RipExecutionRegistry
 from mkv_episode_matcher.core.config_manager import ConfigManager
 from mkv_episode_matcher.core.engine import MatchEngineV2
+from mkv_episode_matcher.disc.drive_watcher import DriveWatcher
 from mkv_episode_matcher.disc.orchestration_store import OrchestrationStore
+from mkv_episode_matcher.disc.preflight import resolve_makemkv_path, run_info_command
 from mkv_episode_matcher.disc.private_bindings import PrivateBindingStore
 from mkv_episode_matcher.disc.rip_orchestrator import run_parallel_auto_rip_queue
 from mkv_episode_matcher.disc.ripper import run_rip_queue
+from mkv_episode_matcher.disc.windows_drive_events import (
+    DriveRefreshCoordinator,
+    WindowsVolumeEventListener,
+)
+from mkv_episode_matcher.media.ffprobe_runner import inspect_mkv
+from mkv_episode_matcher.media.handbrake_profiles import HandBrakeProfileStore
 from mkv_episode_matcher.pipeline_queue import PipelineQueueStore
 
 # Global singleton instance
@@ -19,6 +27,10 @@ _orchestration_lock = threading.Lock()
 _private_binding_store: PrivateBindingStore | None = None
 _rip_execution_registry = RipExecutionRegistry()
 _pipeline_queue_store: PipelineQueueStore | None = None
+_drive_watcher = DriveWatcher()
+_handbrake_profile_store: HandBrakeProfileStore | None = None
+_drive_refresh_coordinator: DriveRefreshCoordinator | None = None
+_windows_volume_listener: WindowsVolumeEventListener | None = None
 
 
 def get_config_manager():
@@ -92,6 +104,18 @@ def get_rip_queue_runner():
     return run_parallel_auto_rip_queue
 
 
+def get_disc_inventory_runner():
+    """Return the read-only MakeMKV info runner; tests override this dependency."""
+
+    return run_info_command
+
+
+def get_ffprobe_inspector():
+    """Return constrained read-only FFprobe inspection; tests inject a fake."""
+
+    return inspect_mkv
+
+
 def get_special_feature_queue_runner():
     """Return the sequential special-feature runner; tests override it."""
 
@@ -117,3 +141,69 @@ def get_pipeline_contract_root() -> Path:
 
     config = get_config_manager().load()
     return config.cache_dir.parent / "orchestration" / "pipeline-contracts"
+
+
+def get_drive_watcher() -> DriveWatcher:
+    """Return the read-only process-local drive status cache."""
+
+    return _drive_watcher
+
+
+def get_handbrake_profile_store() -> HandBrakeProfileStore:
+    """Return the local non-secret HandBrake profile library."""
+
+    global _handbrake_profile_store
+    with _orchestration_lock:
+        if _handbrake_profile_store is None:
+            config = get_config_manager().load()
+            path = config.cache_dir.parent / "orchestration" / "handbrake-profiles.json"
+            _handbrake_profile_store = HandBrakeProfileStore(path)
+    return _handbrake_profile_store
+
+
+def start_windows_drive_events() -> bool:
+    """Attach event-driven cached drive refresh on Windows."""
+
+    global _drive_refresh_coordinator, _windows_volume_listener
+    if _drive_refresh_coordinator is not None:
+        return True
+
+    def refresh() -> None:
+        config = get_config_manager().load()
+        executable = resolve_makemkv_path(config.makemkv_path)
+        snapshot = _drive_watcher.refresh(executable, timeout_seconds=30)
+        from mkv_episode_matcher.backend.automatic_rip import automatic_rip_coordinator
+
+        automatic_rip_coordinator.observe(
+            snapshot, enabled=config.automatic_processing_enabled
+        )
+
+    coordinator = DriveRefreshCoordinator(
+        refresh, _rip_execution_registry.has_active_executor
+    )
+    listener = WindowsVolumeEventListener(coordinator.notify_change)
+    coordinator.start()
+    try:
+        listener.start()
+    except Exception:
+        coordinator.stop()
+        return False
+    _drive_refresh_coordinator = coordinator
+    _windows_volume_listener = listener
+    # Reconcile discs that were already inserted before the server started.
+    # The coordinator debounces this read-only MakeMKV info refresh and still
+    # defers it while an authorized rip executor is active.
+    coordinator.notify_change()
+    return True
+
+
+def stop_windows_drive_events() -> None:
+    """Stop native volume notifications and their refresh worker."""
+
+    global _drive_refresh_coordinator, _windows_volume_listener
+    if _windows_volume_listener is not None:
+        _windows_volume_listener.stop()
+    if _drive_refresh_coordinator is not None:
+        _drive_refresh_coordinator.stop()
+    _windows_volume_listener = None
+    _drive_refresh_coordinator = None

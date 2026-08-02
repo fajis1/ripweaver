@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from mkv_episode_matcher.disc.rip_manifest import MediaContext
+from mkv_episode_matcher.disc.rip_manifest import MediaContext, media_context_from_dict
 from mkv_episode_matcher.disc.ripper import RipError
 
 _JOB_ID_PATTERN = re.compile(r"rip-[0-9a-f]{32}")
@@ -110,7 +110,7 @@ class PrivateBindingStore:
             ),
             output_root=Path(row["output_root"]),
             media_contexts={
-                disc_id: MediaContext(**value)
+                disc_id: media_context_from_dict(value)
                 for disc_id, value in raw_contexts.items()
             },
             created_at=row["created_at"],

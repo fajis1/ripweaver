@@ -30,6 +30,7 @@ from mkv_episode_matcher.disc.ripper import (
     progress_fraction,
     resolve_final_output,
     resolve_job_output,
+    sample_output_throughput,
     sanitize_output,
     validate_job,
 )
@@ -308,8 +309,12 @@ def run_single_open_batch(  # noqa: C901
     warnings = 0
     fatal = False
     last_progress = -1
+    throughput_sample = (time.monotonic(), 0)
     try:
         while not stream_finished or process.poll() is None:
+            throughput_sample = sample_output_throughput(
+                workspace, throughput_sample, "batch", on_event
+            )
             if cancel_file is not None and cancel_file.exists():
                 event_log.write("batch_cancel_requested")
                 _stop_process(process)
@@ -339,6 +344,8 @@ def run_single_open_batch(  # noqa: C901
             fraction = progress_fraction(line)
             if fraction is not None:
                 percent = round(fraction * 100)
+                if last_progress >= 0 and percent + 25 < last_progress:
+                    last_progress = -1
                 if percent >= last_progress + 5 or percent == 100:
                     last_progress = percent
                     event_log.write("batch_progress", percent=percent)

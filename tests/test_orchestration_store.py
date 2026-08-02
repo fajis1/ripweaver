@@ -113,6 +113,87 @@ def test_start_before_authorization_is_refused(tmp_path):
     assert len(store.list_events(job.job_id)) == 1
 
 
+def test_queued_job_can_return_to_review_without_changing_plan(tmp_path):
+    preview, _report, _root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+    job = store.create_job(preview, idempotency_key="create-return-0001")
+    store.authorize(
+        job.job_id,
+        expected_plan_sha256=job.plan_sha256,
+        idempotency_key="authorize-return-0001",
+    )
+    store.queue(job.job_id, idempotency_key="queue-return-0001")
+
+    reviewed = store.return_to_review(job.job_id, idempotency_key="return-review-0001")
+
+    assert reviewed.state == "awaiting_review"
+    assert reviewed.plan_sha256 == job.plan_sha256
+    assert reviewed.executor_attached is False
+    assert store.list_events(job.job_id)[-1].event_type == "job_returned_to_review"
+
+
+def test_non_running_job_can_be_cancelled_without_changing_media(tmp_path):
+    preview, _report, _root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+    job = store.create_job(preview, idempotency_key="create-cancel-0001")
+
+    cancelled = store.cancel(job.job_id, idempotency_key="cancel-job-0001")
+
+    assert cancelled.state == "cancelled"
+    event = store.list_events(job.job_id)[-1]
+    assert event.event_type == "job_cancelled"
+    assert event.details == {"media_changed": False}
+
+
+def test_running_job_records_path_free_progress_and_updates_timestamp(tmp_path):
+    preview, _report, _root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+    job = store.create_job(preview, idempotency_key="create-progress-0001")
+    store.authorize(
+        job.job_id,
+        expected_plan_sha256=job.plan_sha256,
+        idempotency_key="authorize-progress-0001",
+    )
+    store.queue(job.job_id, idempotency_key="queue-progress-0001")
+    store.claim_for_dispatch(job.job_id, idempotency_key="claim-progress-0001")
+
+    store.record_progress(job.job_id, "progress", "disc-01-title-000: 25%")
+    store.record_progress(job.job_id, "throughput", "disc-01-title-000: 12.34 MiB/s")
+
+    progress, throughput = store.list_events(job.job_id)[-2:]
+    assert progress.event_type == "rip_progress"
+    assert progress.details == {"percent": 25, "scope": "disc-01-title-000"}
+    assert throughput.event_type == "rip_throughput"
+    assert throughput.details == {
+        "mib_per_second": 12.34,
+        "scope": "disc-01-title-000",
+    }
+    assert store.get_job(job.job_id).updated_at >= job.updated_at
+
+
+def test_failed_job_can_be_queued_for_collision_safe_retry(tmp_path):
+    preview, _report, _root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+    job = store.create_job(preview, idempotency_key="create-retry-store-0001")
+    store.authorize(
+        job.job_id,
+        expected_plan_sha256=job.plan_sha256,
+        idempotency_key="authorize-retry-store-0001",
+    )
+    store.queue(job.job_id, idempotency_key="queue-retry-store-0001")
+    store.fail(
+        job.job_id,
+        idempotency_key="fail-retry-store-0001",
+        error_type="RipError",
+        error_category="timeout",
+        failed_drive_indexes=(2,),
+        completed_job_ids=("disc-01-title-000",),
+    )
+    retried = store.retry_failed(job.job_id, idempotency_key="retry-retry-store-0001")
+    assert retried.state == "queued"
+    assert store.list_events(job.job_id)[-1].event_type == "job_retry_queued"
+
+
 def test_restart_recovers_job_and_events(tmp_path):
     preview, _report, _root = _preview(tmp_path)
     database = tmp_path / "jobs.sqlite3"

@@ -93,11 +93,32 @@ def test_manifest_selects_episodes_and_excludes_combined_title(tmp_path):
     assert all(job.final_relative_dir is None for job in manifest.jobs)
     assert all(
         job.output_basename
-        and job.output_basename.startswith("disc-01-")
+        and job.output_basename.startswith("Private-Disc-Label--disc-01-")
         and job.output_basename.endswith(".mkv")
         for job in manifest.jobs
     )
     assert manifest.skipped_discs == ()
+
+
+def test_movie_extras_stay_in_isolated_staging_with_readable_disc_name(tmp_path):
+    report = _write_report(
+        tmp_path,
+        "movie-extras.json",
+        _inventory(0, "PARENT_TRAP_1961_PARENT_TRAP_II", [300, 600, 900]),
+    )
+    context = MediaContext(
+        disc_id="disc-01",
+        series_name="Unmatched",
+        content_hint="extras",
+        selected_title_indexes=(0, 1, 2),
+    )
+
+    manifest = build_rip_manifest([report], {"disc-01": context})
+
+    assert all(job.final_relative_dir is None for job in manifest.jobs)
+    assert manifest.jobs[0].output_basename.startswith(
+        "Parent-Trap-1961-Parent-Trap-II--disc-01-"
+    )
 
 
 def test_manifest_skips_disc_with_review_titles(tmp_path):
@@ -121,6 +142,58 @@ def test_manifest_skips_disc_with_review_titles(tmp_path):
     assert len(manifest.jobs) == 6
     assert manifest.skipped_discs[0].disc_id == "disc-01"
     assert "review" in manifest.skipped_discs[0].reasons[0]
+
+
+def test_automatic_mode_falls_back_to_plausible_bonus_titles(tmp_path):
+    report = _write_report(
+        tmp_path,
+        "bonus.json",
+        _inventory(3, "Bonus Disc", [99, 144, 360, 540, 900]),
+    )
+    context = MediaContext(disc_id="disc-01", series_name="Unmatched")
+
+    manifest = build_rip_manifest([report], {"disc-01": context})
+
+    assert [job.title_index for job in manifest.jobs] == [2, 3]
+    assert manifest.skipped_discs == ()
+
+
+def test_explicit_bonus_mode_does_not_select_episode_cluster_or_short_menus(tmp_path):
+    report = _write_report(
+        tmp_path,
+        "bonus.json",
+        _inventory(3, "Bonus Disc", [99, 144, 360, 540, 900, 1320, 1325]),
+    )
+    context = MediaContext(
+        disc_id="disc-01",
+        series_name="Unmatched",
+        content_hint="extras",
+    )
+
+    manifest = build_rip_manifest([report], {"disc-01": context})
+
+    assert {job.title_index for job in manifest.jobs}.isdisjoint({0, 1})
+    assert {job.title_index for job in manifest.jobs}.issuperset({2, 3})
+    assert 4 not in {job.title_index for job in manifest.jobs}
+
+
+def test_catalogued_bonus_titles_remain_in_isolated_staging(tmp_path):
+    report = _write_report(
+        tmp_path,
+        "bonus.json",
+        _inventory(3, "Bonus Disc", [360, 540]),
+    )
+    context = MediaContext(
+        disc_id="disc-01",
+        series_name="Unmatched",
+        content_hint="extras",
+        selected_title_indexes=(0, 1),
+        special_feature_catalog_id="reviewed-catalog",
+    )
+
+    manifest = build_rip_manifest([report], {"disc-01": context})
+
+    assert all(job.final_relative_dir is None for job in manifest.jobs)
 
 
 def test_media_context_builds_matcher_native_season_path(tmp_path):

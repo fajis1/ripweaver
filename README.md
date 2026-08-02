@@ -240,5 +240,11 @@ Show Name/
 ## License
 Distributed under the MIT License. See `LICENSE` for more information.
 
+RipWeaver is based on [MKV Episode Matcher](https://github.com/Jsakkos/mkv-episode-matcher)
+and incorporates selected ideas or adapted behavior from
+[Riplex](https://github.com/AnyCredit5518/riplex). Copyright, dependency, and
+service acknowledgments are retained in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+and [docs/ATTRIBUTIONS.md](docs/ATTRIBUTIONS.md).
+
 ## Documentation
 Full documentation is available at [https://jsakkos.github.io/mkv-episode-matcher/](https://jsakkos.github.io/mkv-episode-matcher/)

@@ -47,7 +47,13 @@ class ConfigManager:
                     "Move them with 'mkv-match credentials'."
                 )
 
-            data.update(self._environment_overrides())
+            environment = self._environment_overrides()
+            for key, value in environment.items():
+                # Credentials remain environment-authoritative. Non-secret
+                # tool paths are only environment defaults so a path selected
+                # and saved in the web UI remains stable on the next load.
+                if key in SECRET_CONFIG_FIELDS or key not in data:
+                    data[key] = value
 
             config = Config(**data)
             logger.debug(f"Config loaded from {self.config_path}")
@@ -80,6 +86,7 @@ class ConfigManager:
             "handbrake_path": environment.handbrake_path,
             "ffmpeg_path": environment.ffmpeg_path,
             "ffprobe_path": environment.ffprobe_path,
+            "gemini_model": environment.gemini_model,
         }
         return {key: value for key, value in values.items() if value not in (None, "")}
 
@@ -99,6 +106,7 @@ class ConfigManager:
             "show_dir": legacy_config.get("show_dir"),
             "cache_dir": str(Path.home() / ".mkv-episode-matcher" / "cache"),
             "min_confidence": 0.7,
+            "gemini_model": "gemini-3.6-flash",
             "asr_provider": "whisper",
             "asr_model_name": asr_model_name,
             "sub_provider": "opensubtitles",

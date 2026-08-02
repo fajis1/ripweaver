@@ -175,6 +175,17 @@ def fetch_show_id(show_name: str) -> str | None:
     return None
 
 
+def fetch_aired_episode_catalog_for_show(show_name: str):
+    """Return one validated, all-season aired catalogue for a reviewed TV name."""
+
+    from mkv_episode_matcher.media.episode_catalog import build_tmdb_aired_catalog
+
+    show_id = fetch_show_id(show_name)
+    if show_id is None:
+        return None
+    return build_tmdb_aired_catalog(int(show_id), _tmdb_get_json)
+
+
 @retry_network_operation(max_retries=3, base_delay=1.0)
 def fetch_show_details(show_id: int) -> dict | None:
     """

@@ -6,7 +6,7 @@ import json
 import re
 import shutil
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -30,11 +30,51 @@ class HandBrakeProcessError(HandBrakeError):
         )
 
 
-_HARDWARE_ENCODERS = {"vce_h264", "vce_h265", "vce_h265_10bit"}
+_ENCODER_PRESETS = {
+    "x264": {
+        "ultrafast",
+        "superfast",
+        "veryfast",
+        "faster",
+        "fast",
+        "medium",
+        "slow",
+        "slower",
+        "veryslow",
+    },
+    "vce_h264": {"speed", "balanced", "quality"},
+    "vce_h265": {"speed", "balanced", "quality"},
+    "vce_h265_10bit": {"speed", "balanced", "quality"},
+    "nvenc_h264": {"fast", "medium", "slow"},
+    "nvenc_h265": {"fast", "medium", "slow"},
+    "qsv_h264": {"speed", "balanced", "quality"},
+    "qsv_h265": {"speed", "balanced", "quality"},
+    "svt_av1": {str(preset) for preset in range(0, 14)},
+    "x265": {
+        "ultrafast",
+        "superfast",
+        "veryfast",
+        "faster",
+        "fast",
+        "medium",
+        "slow",
+        "slower",
+        "veryslow",
+    },
+}
+_HARDWARE_ENCODERS = set(_ENCODER_PRESETS)
+_AMD_ENCODERS = {"vce_h264", "vce_h265", "vce_h265_10bit"}
 _EXPECTED_VIDEO_CODEC = {
+    "x264": "h264",
     "vce_h264": "h264",
     "vce_h265": "hevc",
     "vce_h265_10bit": "hevc",
+    "nvenc_h264": "h264",
+    "nvenc_h265": "hevc",
+    "qsv_h264": "h264",
+    "qsv_h265": "hevc",
+    "x265": "hevc",
+    "svt_av1": "av1",
 }
 _NLMEANS_PRESETS = {"ultralight", "light", "medium", "strong"}
 _NLMEANS_TUNES = {
@@ -47,6 +87,14 @@ _NLMEANS_TUNES = {
     "sprite",
 }
 _CONTENT_KINDS = {"unknown", "live_action", "animation"}
+_AUDIO_PREFERENCES = {
+    "default": None,
+    "stereo": 2,
+    "2.1": 3,
+    "5.1": 6,
+    "7.1": 8,
+    "highest": None,
+}
 _MEDIA_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 _WINDOWS_PATH_TO_LINE_END = re.compile(
     r"(?im)[A-Za-z]:[\\/].*$",
@@ -57,6 +105,25 @@ _WINDOWS_INTERRUPTION_CODES = {
     0xC000013A,  # STATUS_CONTROL_C_EXIT
 }
 _POSIX_INTERRUPTION_CODES = {-1, -2, -15}  # SIGHUP, SIGINT, SIGTERM
+_RESOLUTION_POLICIES = {
+    "source": None,
+    "480p": 480,
+    "720p": 720,
+    "1080p": 1080,
+    "2160p": 2160,
+}
+_FRAME_RATE_POLICIES = {
+    "source",
+    "vfr",
+    "23.976",
+    "24",
+    "25",
+    "29.97",
+    "30",
+    "50",
+    "59.94",
+    "60",
+}
 
 
 def _is_process_interruption(return_code: int) -> bool:
@@ -74,14 +141,34 @@ class HandBrakeProfile:
     encoder: str = "vce_h265"
     encoder_preset: str = "quality"
     quality: float = 26.0
+    quality_480p: float = 26.0
+    quality_720p: float = 25.0
+    quality_1080p: float = 24.0
+    quality_2160p: float = 22.0
     selective_decomb: bool = True
     content_kind: str = "unknown"
     nlmeans_preset: str | None = None
     nlmeans_tune: str = "none"
     audio_track: int = 1
+    audio_preference: str = "default"
+    audio_primary_layout: str = ""
+    audio_secondary_layout: str = ""
+    audio_default_language: str = "default"
+    audio_language: str = "default"
+    audio_selection: str = "all_matching"
+    additional_audio: str = "selected_only"
     compatibility_audio_bitrate: int = 256
+    audio_bitrate_stereo: int = 256
+    audio_bitrate_2_1: int = 320
+    audio_bitrate_5_1: int = 512
+    audio_bitrate_7_1: int = 640
     stereo_first: bool = True
     retain_subtitles: bool = True
+    subtitle_language: str = "eng"
+    subtitle_selection: str = "all_matching"
+    subtitle_default: str = "none"
+    resolution_policy: str = "source"
+    frame_rate_policy: str = "source"
 
 
 @dataclass(frozen=True)
@@ -203,18 +290,115 @@ def _validate_nlmeans(profile: HandBrakeProfile) -> None:
         raise HandBrakeError("NLMeans requires explicitly reviewed live-action content")
 
 
-def _validate_profile(profile: HandBrakeProfile) -> None:
-    if profile.encoder not in _HARDWARE_ENCODERS:
-        raise HandBrakeError("Only explicit AMD VCN encoders are permitted")
-    if profile.encoder_preset not in {"speed", "balanced", "quality"}:
-        raise HandBrakeError("Unsupported AMD VCN encoder preset")
-    if not 0 <= profile.quality <= 51:
-        raise HandBrakeError("HandBrake quality must be between 0 and 51")
-    _validate_nlmeans(profile)
+def _validate_subtitle_profile(profile: HandBrakeProfile) -> None:
+    if not re.fullmatch(r"[a-z]{3}(?:,[a-z]{3})*", profile.subtitle_language):
+        raise HandBrakeError("Subtitle language codes must be ISO 639-2 values")
+    if profile.subtitle_selection not in {
+        "all_matching",
+        "first_matching",
+        "all",
+        "none",
+    }:
+        raise HandBrakeError("Unsupported subtitle selection policy")
+    if profile.subtitle_default not in {"none", "first"}:
+        raise HandBrakeError("Unsupported subtitle default policy")
+
+
+def _validate_video_policies(profile: HandBrakeProfile) -> None:
+    if profile.resolution_policy not in _RESOLUTION_POLICIES:
+        raise HandBrakeError("Unsupported resolution policy")
+    if profile.frame_rate_policy not in _FRAME_RATE_POLICIES:
+        raise HandBrakeError("Unsupported frame-rate policy")
+
+
+def _validate_audio_language(profile: HandBrakeProfile) -> None:
+    if profile.audio_default_language != "default" and not re.fullmatch(
+        r"[a-z]{3}", profile.audio_default_language
+    ):
+        raise HandBrakeError("Default audio language must be one ISO 639-2 code")
+    if profile.audio_language != "default" and not re.fullmatch(
+        r"[a-z]{3}(?:,[a-z]{3})*", profile.audio_language
+    ):
+        raise HandBrakeError("Audio language codes must be ISO 639-2 values")
+    if profile.audio_selection not in {"all_matching", "first_matching", "all"}:
+        raise HandBrakeError("Unsupported audio language selection policy")
+
+
+def _configured_audio_layouts(profile: HandBrakeProfile) -> tuple[str, ...]:
+    """Return explicit output order, preserving legacy profile behavior."""
+
+    if profile.audio_primary_layout:
+        layouts = (profile.audio_primary_layout, profile.audio_secondary_layout)
+        return tuple(layout for layout in layouts if layout != "none")
+    legacy_pair = ("stereo", profile.audio_preference)
+    return legacy_pair if profile.stereo_first else tuple(reversed(legacy_pair))
+
+
+def _source_audio_preference(profile: HandBrakeProfile) -> str:
+    """Choose a source with enough channels for every requested output."""
+
+    if not profile.audio_primary_layout:
+        return profile.audio_preference
+    layouts = _configured_audio_layouts(profile)
+    if "highest" in layouts:
+        return "highest"
+    ranked = {"default": 0, "stereo": 2, "2.1": 3, "5.1": 6, "7.1": 8}
+    return max(layouts, key=lambda layout: ranked[layout])
+
+
+def _validate_audio_profile(profile: HandBrakeProfile) -> None:
     if profile.audio_track <= 0:
         raise HandBrakeError("HandBrake audio track is one-based and must be positive")
+    if profile.audio_preference not in _AUDIO_PREFERENCES:
+        raise HandBrakeError("Unsupported source audio preference")
+    supported_layouts = {"default", "stereo", "2.1", "5.1", "7.1", "highest"}
+    if profile.audio_primary_layout and profile.audio_primary_layout not in supported_layouts:
+        raise HandBrakeError("Unsupported primary audio layout")
+    if profile.audio_secondary_layout and profile.audio_secondary_layout not in (
+        supported_layouts | {"none"}
+    ):
+        raise HandBrakeError("Unsupported secondary audio layout")
+    configured_layouts = _configured_audio_layouts(profile)
+    if not configured_layouts or len(set(configured_layouts)) != len(configured_layouts):
+        raise HandBrakeError("Audio output layouts must be present and distinct")
+    if profile.additional_audio not in {"selected_only", "all"}:
+        raise HandBrakeError("Unsupported additional audio policy")
     if not 64 <= profile.compatibility_audio_bitrate <= 512:
         raise HandBrakeError("Compatibility audio bitrate is outside safe bounds")
+    if any(
+        not 64 <= bitrate <= 1024
+        for bitrate in (
+            profile.audio_bitrate_stereo,
+            profile.audio_bitrate_2_1,
+            profile.audio_bitrate_5_1,
+            profile.audio_bitrate_7_1,
+        )
+    ):
+        raise HandBrakeError("Audio layout bitrate is outside safe bounds")
+
+
+def _validate_profile(profile: HandBrakeProfile) -> None:
+    presets = _ENCODER_PRESETS.get(profile.encoder)
+    if presets is None:
+        raise HandBrakeError("Unsupported HandBrake video encoder")
+    if profile.encoder_preset not in presets:
+        raise HandBrakeError("Unsupported preset for the selected video encoder")
+    if any(
+        not 0 <= quality <= 51
+        for quality in (
+            profile.quality,
+            profile.quality_480p,
+            profile.quality_720p,
+            profile.quality_1080p,
+            profile.quality_2160p,
+        )
+    ):
+        raise HandBrakeError("HandBrake quality must be between 0 and 51")
+    _validate_nlmeans(profile)
+    _validate_audio_profile(profile)
+    _validate_subtitle_profile(profile)
+    _validate_video_policies(profile)
+    _validate_audio_language(profile)
 
 
 def validate_handbrake_profile(profile: HandBrakeProfile) -> HandBrakeProfile:
@@ -222,6 +406,12 @@ def validate_handbrake_profile(profile: HandBrakeProfile) -> HandBrakeProfile:
 
     _validate_profile(profile)
     return profile
+
+
+def encoder_requires_vcn(encoder: str) -> bool:
+    """Return whether an encoder requires AMD's explicit VCN availability signal."""
+
+    return encoder in _AMD_ENCODERS
 
 
 def _validate_sample(job: HandBrakeJob) -> None:
@@ -246,11 +436,108 @@ def partial_output_path(job: HandBrakeJob) -> Path:
     )
 
 
+def _audio_options(
+    profile: HandBrakeProfile,
+    source_audio_track_count: int | None,
+    audio_track_indices: tuple[int, ...] | None = None,
+) -> tuple[str, str, str, str]:
+    if profile.additional_audio == "all":
+        if source_audio_track_count is None or source_audio_track_count < 1:
+            raise HandBrakeError("All-audio retention requires source audio metadata")
+        if profile.audio_track > source_audio_track_count:
+            raise HandBrakeError("Preferred audio track is absent from the source")
+    layout_options = {
+        "stereo": ("av_aac", "dpl2", str(profile.audio_bitrate_stereo)),
+        "2.1": ("av_aac", "2point1", str(profile.audio_bitrate_2_1)),
+        "5.1": ("av_aac", "5point1", str(profile.audio_bitrate_5_1)),
+        "7.1": ("av_aac", "7point1", str(profile.audio_bitrate_7_1)),
+        "default": ("copy", "none", "0"),
+        "highest": ("copy", "none", "0"),
+    }
+    layouts = _configured_audio_layouts(profile)
+    audio_tracks = [profile.audio_track for _ in layouts]
+    layout_specs = [layout_options[layout] for layout in layouts]
+    audio_encoders = [spec[0] for spec in layout_specs]
+    audio_mixdowns = [spec[1] for spec in layout_specs]
+    audio_bitrates = [spec[2] for spec in layout_specs]
+    if profile.additional_audio == "all":
+        available_tracks = audio_track_indices or tuple(
+            range(1, source_audio_track_count + 1)
+        )
+        additional_tracks = [
+            track for track in available_tracks if track != profile.audio_track
+        ]
+        audio_tracks.extend(additional_tracks)
+        audio_encoders.extend("copy" for _ in additional_tracks)
+        audio_mixdowns.extend("none" for _ in additional_tracks)
+        audio_bitrates.extend("0" for _ in additional_tracks)
+    return (
+        ",".join(str(track) for track in audio_tracks),
+        ",".join(audio_encoders),
+        ",".join(audio_mixdowns),
+        ",".join(audio_bitrates),
+    )
+
+
+def _subtitle_options(profile: HandBrakeProfile) -> tuple[str, ...]:
+    if not profile.retain_subtitles or profile.subtitle_selection == "none":
+        return ("--subtitle", "none")
+    if profile.subtitle_selection == "all":
+        options = ("--all-subtitles",)
+    else:
+        selector = (
+            "--all-subtitles"
+            if profile.subtitle_selection == "all_matching"
+            else "--first-subtitle"
+        )
+        options = ("--subtitle-lang-list", profile.subtitle_language, selector)
+    if profile.subtitle_default == "first":
+        options += ("--subtitle-default", "1")
+    return options
+
+
+def _video_options(profile: HandBrakeProfile) -> tuple[str, ...]:
+    options: list[str] = []
+    max_height = _RESOLUTION_POLICIES[profile.resolution_policy]
+    if max_height is not None:
+        options.extend(("--maxHeight", str(max_height)))
+    if profile.frame_rate_policy == "vfr":
+        options.append("--vfr")
+    elif profile.frame_rate_policy != "source":
+        options.extend(("--rate", profile.frame_rate_policy, "--pfr"))
+    return tuple(options)
+
+
+def _quality_for_profile(profile: HandBrakeProfile) -> float:
+    return {
+        "source": profile.quality,
+        "480p": profile.quality_480p,
+        "720p": profile.quality_720p,
+        "1080p": profile.quality_1080p,
+        "2160p": profile.quality_2160p,
+    }[profile.resolution_policy]
+
+
+def _quality_for_source_height(profile: HandBrakeProfile, height: int | None) -> float:
+    if height is None:
+        return profile.quality
+    if height <= 480:
+        return profile.quality_480p
+    if height <= 720:
+        return profile.quality_720p
+    if height <= 1080:
+        return profile.quality_1080p
+    return profile.quality_2160p
+
+
 def build_handbrake_command(
     executable: Path,
     job: HandBrakeJob,
     *,
     output_path: Path | None = None,
+    source_audio_track_count: int | None = None,
+    audio_track_indices: tuple[int, ...] | None = None,
+    source_height: int | None = None,
 ) -> tuple[str, ...]:
     validate_handbrake_job(job)
     if not executable.is_file():
@@ -260,15 +547,9 @@ def build_handbrake_command(
         raise HandBrakeError("Partial transcode exists; refusing overwrite")
 
     profile = job.profile
-    audio_track = str(profile.audio_track)
-    if profile.stereo_first:
-        audio_encoders = "av_aac,copy"
-        audio_mixdowns = "dpl2,none"
-        audio_bitrates = f"{profile.compatibility_audio_bitrate},0"
-    else:
-        audio_encoders = "copy,av_aac"
-        audio_mixdowns = "none,dpl2"
-        audio_bitrates = f"0,{profile.compatibility_audio_bitrate}"
+    audio_tracks, audio_encoders, audio_mixdowns, audio_bitrates = _audio_options(
+        profile, source_audio_track_count, audio_track_indices
+    )
     command = [
         str(executable.resolve()),
         "--input",
@@ -282,10 +563,14 @@ def build_handbrake_command(
         "--encoder-preset",
         profile.encoder_preset,
         "--quality",
-        str(profile.quality),
-        "--vfr",
+        str(
+            _quality_for_source_height(profile, source_height)
+            if profile.resolution_policy == "source"
+            else _quality_for_profile(profile)
+        ),
+        *_video_options(profile),
         "--audio",
-        f"{audio_track},{audio_track}",
+        audio_tracks,
         "--aencoder",
         audio_encoders,
         "--audio-copy-mask",
@@ -308,8 +593,7 @@ def build_handbrake_command(
             "--nlmeans-tune",
             profile.nlmeans_tune,
         ])
-    if profile.retain_subtitles:
-        command.append("--all-subtitles")
+    command.extend(_subtitle_options(profile))
     if job.sample_start_seconds is not None:
         command.extend([
             "--start-at",
@@ -479,10 +763,10 @@ def _validate_execution_boundary(
         raise HandBrakeError("Cancellation marker exists; refusing to start")
 
     capabilities = inspect_handbrake_capabilities(executable)
-    if not capabilities.vcn_available:
+    if job.profile.encoder in _AMD_ENCODERS and not capabilities.vcn_available:
         raise HandBrakeError("AMD VCN is not available")
     if job.profile.encoder not in capabilities.encoders:
-        raise HandBrakeError("Requested AMD VCN encoder is not available")
+        raise HandBrakeError("Requested HandBrake encoder is not available")
 
 
 def _new_log_paths(run_dir: Path, job: HandBrakeJob) -> tuple[Path, Path]:
@@ -551,6 +835,130 @@ def _verify_expected_output(
     return verified
 
 
+def select_audio_track(preference: str, channel_counts: tuple[int, ...]) -> int:
+    """Resolve a reusable layout preference to a one-based HandBrake audio track."""
+
+    if preference not in _AUDIO_PREFERENCES or not channel_counts:
+        raise HandBrakeError("Source audio preference cannot be resolved")
+    if any(value <= 0 for value in channel_counts):
+        raise HandBrakeError("Source audio channel metadata is invalid")
+    if preference == "default":
+        return 1
+    if preference == "highest":
+        return max(range(len(channel_counts)), key=channel_counts.__getitem__) + 1
+    target = _AUDIO_PREFERENCES[preference]
+    assert target is not None
+    return (
+        min(
+            range(len(channel_counts)),
+            key=lambda index: (
+                abs(channel_counts[index] - target),
+                -channel_counts[index],
+                index,
+            ),
+        )
+        + 1
+    )
+
+
+def _source_audio_tracks(
+    ffprobe: Path, source: Path
+) -> tuple[tuple[int, str | None, int], ...]:
+    if not ffprobe.is_file():
+        raise HandBrakeError("FFprobe executable was not found")
+    try:
+        completed = subprocess.run(
+            (
+                str(ffprobe.resolve()),
+                "-v",
+                "error",
+                "-select_streams",
+                "a",
+                "-show_entries",
+                "stream=channels:stream_tags=language",
+                "-of",
+                "json",
+                str(source.resolve()),
+            ),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            check=False,
+        )
+        payload = json.loads(completed.stdout)
+        tracks = tuple(
+            (index + 1, stream.get("tags", {}).get("language"), int(stream["channels"]))
+            for index, stream in enumerate(payload["streams"])
+        )
+    except (
+        OSError,
+        subprocess.TimeoutExpired,
+        json.JSONDecodeError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise HandBrakeError("Source audio inspection failed safely") from exc
+    if completed.returncode != 0 or not tracks:
+        raise HandBrakeError("Source audio inspection returned no usable tracks")
+    return tracks
+
+
+def _source_audio_channels(ffprobe: Path, source: Path) -> tuple[int, ...]:
+    """Compatibility helper returning only channel counts."""
+
+    return tuple(channels for _, _, channels in _source_audio_tracks(ffprobe, source))
+
+
+def _source_video_height(ffprobe: Path, source: Path) -> int:
+    if not ffprobe.is_file():
+        raise HandBrakeError("FFprobe executable was not found")
+    try:
+        completed = subprocess.run(
+            (
+                str(ffprobe.resolve()),
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=height",
+                "-of",
+                "json",
+                str(source.resolve()),
+            ),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            check=False,
+        )
+        payload = json.loads(completed.stdout)
+        height = int(payload["streams"][0]["height"])
+    except (
+        OSError,
+        subprocess.TimeoutExpired,
+        json.JSONDecodeError,
+        KeyError,
+        TypeError,
+        ValueError,
+        IndexError,
+    ) as exc:
+        raise HandBrakeError("Source video inspection failed safely") from exc
+    if completed.returncode != 0 or height <= 0:
+        raise HandBrakeError("Source video inspection returned no usable height")
+    return height
+
+
+def source_video_height(ffprobe: Path, source: Path) -> int:
+    """Return the verified source height for profile selection."""
+
+    return _source_video_height(ffprobe, source)
+
+
 def execute_handbrake_job(
     executable: Path,
     ffprobe: Path,
@@ -570,22 +978,105 @@ def execute_handbrake_job(
         timeout_seconds=timeout_seconds,
     )
 
-    partial = partial_output_path(job)
-    command = build_handbrake_command(executable, job, output_path=partial)
-    event_log, process_log = _new_log_paths(run_dir, job)
+    effective_job = job
+    source_audio_channels = None
+    source_audio_track_indices = None
+    source_height = None
+    if job.profile.resolution_policy == "source":
+        source_height = _source_video_height(ffprobe, job.source)
+    source_audio_preference = _source_audio_preference(job.profile)
+    if (
+        source_audio_preference != "default"
+        or job.profile.additional_audio == "all"
+        or job.profile.audio_language != "default"
+        or job.profile.audio_default_language != "default"
+    ):
+        source_audio_tracks = _source_audio_tracks(ffprobe, job.source)
+        source_audio_channels = tuple(
+            channels for _, _, channels in source_audio_tracks
+        )
+        if (
+            job.profile.audio_language != "default"
+            or job.profile.audio_default_language != "default"
+        ):
+            languages = set(
+                job.profile.audio_language.split(",")
+                if job.profile.audio_language != "default"
+                else ()
+            )
+            if job.profile.audio_default_language != "default":
+                languages.add(job.profile.audio_default_language)
+            matching = tuple(
+                index
+                for index, language, _ in source_audio_tracks
+                if language in languages
+            )
+            if not matching:
+                raise HandBrakeError("Requested audio language was not found")
+            default_matches = tuple(
+                index
+                for index in matching
+                if source_audio_tracks[index - 1][1]
+                == job.profile.audio_default_language
+            )
+            ordered_matching = default_matches + tuple(
+                index for index in matching if index not in default_matches
+            )
+            matching_channels = tuple(
+                source_audio_channels[index - 1] for index in ordered_matching
+            )
+            preferred_relative = (
+                0
+                if source_audio_preference == "default"
+                else select_audio_track(source_audio_preference, matching_channels)
+                - 1
+            )
+            effective_job = replace(
+                effective_job,
+                profile=replace(
+                    effective_job.profile,
+                    audio_track=ordered_matching[preferred_relative],
+                ),
+            )
+            # With an explicit language list, retain only tracks in those
+            # languages; this keeps unrelated foreign/commentary tracks out.
+            source_audio_track_indices = ordered_matching
+            if job.profile.audio_selection == "first_matching":
+                source_audio_track_indices = ordered_matching[:1]
+    if source_audio_preference != "default":
+        resolved_track = select_audio_track(
+            source_audio_preference,
+            source_audio_channels or (),
+        )
+        effective_job = replace(
+            effective_job,
+            profile=replace(effective_job.profile, audio_track=resolved_track),
+        )
+    partial = partial_output_path(effective_job)
+    command = build_handbrake_command(
+        executable,
+        effective_job,
+        output_path=partial,
+        source_audio_track_count=(
+            len(source_audio_channels) if source_audio_channels is not None else None
+        ),
+        audio_track_indices=source_audio_track_indices,
+        source_height=source_height,
+    )
+    event_log, process_log = _new_log_paths(run_dir, effective_job)
 
     _write_event(
         event_log,
         {
             "at": datetime.now(UTC).isoformat(),
             "event": "started",
-            **job.safe_plan(),
+            **effective_job.safe_plan(),
         },
     )
     completed = _run_handbrake_process(
         command,
         event_log,
-        job,
+        effective_job,
         timeout_seconds=timeout_seconds,
     )
 
@@ -607,8 +1098,8 @@ def execute_handbrake_job(
             },
         )
         raise HandBrakeProcessError(completed.returncode)
-    verified = _verify_expected_output(ffprobe, job, partial)
-    partial.rename(job.destination)
+    verified = _verify_expected_output(ffprobe, effective_job, partial)
+    partial.rename(effective_job.destination)
 
     result = HandBrakeResult(
         media_id=job.media_id,

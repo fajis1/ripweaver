@@ -78,6 +78,7 @@ class Config(BaseModel):
     # are non-secret and may be persisted in the local JSON configuration.
     rip_output_root: Path | None = None
     transcode_output_root: Path | None = None
+    deletion_staging_root: Path | None = None
     jellyfin_tv_root: Path | None = None
     jellyfin_movie_root: Path | None = None
     makemkv_path: Path | None = None
@@ -85,7 +86,16 @@ class Config(BaseModel):
     ffmpeg_path: Path | None = None
     ffprobe_path: Path | None = None
     default_handbrake_profile: str = "balanced"
+    default_handbrake_profile_480p: str | None = None
+    default_handbrake_profile_720p: str | None = None
+    default_handbrake_profile_1080p: str | None = None
+    default_handbrake_profile_2160p: str | None = None
+    remember_last_handbrake_profile: bool = True
+    gemini_model: str = "gemini-3.6-flash"
     automatic_processing_enabled: bool = False
+    automatic_eject_after_rip: bool = False
+    automatic_gemini_ambiguity_fallback: bool = False
+    automatic_organization_enabled: bool = False
 
     # OpenSubtitles settings
     open_subtitles_api_key: str | None = None
@@ -124,6 +134,7 @@ class Config(BaseModel):
     @field_validator(
         "rip_output_root",
         "transcode_output_root",
+        "deletion_staging_root",
         "jellyfin_tv_root",
         "jellyfin_movie_root",
         "makemkv_path",
@@ -137,10 +148,34 @@ class Config(BaseModel):
             return None
         return Path(value)
 
-    @field_validator("default_handbrake_profile")
+    @field_validator(
+        "default_handbrake_profile",
+        "default_handbrake_profile_480p",
+        "default_handbrake_profile_720p",
+        "default_handbrake_profile_1080p",
+        "default_handbrake_profile_2160p",
+    )
     @classmethod
-    def validate_profile_name(cls, value: str) -> str:
+    def validate_profile_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         cleaned = value.strip()
-        if not cleaned or len(cleaned) > 80:
+        if not cleaned:
+            return None
+        if len(cleaned) > 80:
             raise ValueError("HandBrake profile name is invalid")
+        return cleaned
+
+    @field_validator("gemini_model")
+    @classmethod
+    def validate_gemini_model(cls, value: str) -> str:
+        cleaned = value.strip()
+        if (
+            not cleaned
+            or len(cleaned) > 100
+            or not all(
+                character.isalnum() or character in "._-" for character in cleaned
+            )
+        ):
+            raise ValueError("Gemini model ID is invalid")
         return cleaned

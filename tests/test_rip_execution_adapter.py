@@ -8,6 +8,7 @@ from mkv_episode_matcher.disc.rip_execution_adapter import (
     RipExecutionOptions,
 )
 from mkv_episode_matcher.disc.rip_manifest import RipManifest
+from mkv_episode_matcher.disc.rip_orchestrator import ParallelRipError
 from mkv_episode_matcher.disc.ripper import RipError, RipJob, RipResult
 
 
@@ -152,3 +153,28 @@ def test_adapter_hands_verified_results_to_completion_sink(tmp_path):
     assert {item.job_id for item in observed[0][1]} == {
         job.job_id for job in bound.manifest.jobs
     }
+
+
+def test_adapter_hands_unaffected_drive_results_to_sink_before_failure(tmp_path):
+    bound = _bound(tmp_path)
+    observed = []
+    completed = _result(bound.manifest.jobs[1].job_id)
+
+    def partially_failing_queue(*_args, **_kwargs):
+        raise ParallelRipError(
+            "drive worker timed out",
+            completed_results=[completed],
+            drive_failures={0: "RipError"},
+        )
+
+    with pytest.raises(ParallelRipError):
+        ProductionRipExecutor(
+            _options(tmp_path),
+            queue_runner=partially_failing_queue,
+            completion_sink=lambda dispatch, results: observed.append((
+                dispatch,
+                results,
+            )),
+        )(bound)
+
+    assert observed == [(bound, [completed])]

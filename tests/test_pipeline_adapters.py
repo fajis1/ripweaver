@@ -13,6 +13,7 @@ from mkv_episode_matcher.pipeline_queue import (
     PipelineQueueStore,
     PipelineReviewRequiredError,
     QueuedPipelineItem,
+    StageOutcome,
     build_artifact,
 )
 
@@ -64,6 +65,321 @@ def test_identify_adapter_runs_engine_in_dry_run_and_writes_handoff(tmp_path):
     assert payload["library_relative"].endswith("Test Show - S01E02 - Second.mkv")
 
 
+def test_movie_hint_routes_to_movie_identifier_before_tv_fallback(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+
+    class Engine:
+        def process_path(self, *args, **kwargs):
+            raise AssertionError("TV matcher must not run before the movie strategy")
+
+    item = _queued_item(
+        tmp_path,
+        {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "media_context": {
+                "series_name": "Possible Movie",
+                "season": 1,
+                "content_hint": "movie",
+            },
+        },
+    )
+
+    with pytest.raises(
+        PipelineReviewRequiredError, match="movie_identification_required"
+    ):
+        IdentifyStageAdapter(Engine(), contracts)(item)
+
+
+def test_extras_hint_without_season_routes_to_feature_evidence(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+
+    class Engine:
+        def process_path(self, *args, **kwargs):
+            raise AssertionError("TV matcher must not run for movie extras")
+
+    item = _queued_item(
+        tmp_path,
+        {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "media_context": {
+                "series_name": "Parent Trap II",
+                "season": None,
+                "content_hint": "extras",
+            },
+        },
+    )
+
+    with pytest.raises(
+        PipelineReviewRequiredError, match="special_feature_evidence_required"
+    ):
+        IdentifyStageAdapter(Engine(), contracts)(item)
+
+
+def test_identify_adapter_uses_reviewed_special_feature_assignment(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+
+    class Engine:
+        def process_path(self, *args, **kwargs):
+            raise AssertionError("Episode matcher must not run for a catalogued extra")
+
+    item = _queued_item(
+        tmp_path,
+        {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "media_context": {
+                "series_name": "Unmatched",
+                "content_hint": "extras",
+                "special_feature_catalog_id": "reviewed-catalog",
+                "special_feature_library_title": "Example Movie",
+                "special_feature_library_year": 2001,
+                "special_feature_assignments": [
+                    {
+                        "title_index": 7,
+                        "classification": "matched-feature",
+                        "matched_title": "Making Of",
+                        "jellyfin_folder": "behind the scenes",
+                        "fallback_name_policy": "none",
+                    }
+                ],
+            },
+        },
+    )
+    item = SimpleNamespace(**{**item.__dict__, "media_id": "disc-01-title-007"})
+
+    artifact = IdentifyStageAdapter(Engine(), contracts)(item)
+    payload = json.loads(artifact.contract_path.read_text(encoding="utf-8"))
+
+    assert payload["episode_id"] is None
+    assert payload["library_relative"] == (
+        "Example Movie (2001)/behind the scenes/Making Of.mkv"
+    )
+
+
+def test_identify_adapter_uses_provisional_descriptive_movie_assignment(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    item = _queued_item(
+        tmp_path,
+        {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "title_index": 0,
+            "media_context": {
+                "series_name": "Example Double Feature",
+                "content_hint": "extras",
+                "special_feature_library_title": "The Example Movie",
+                "special_feature_library_year": 1961,
+                "special_feature_assignments": [
+                    {
+                        "title_index": 0,
+                        "classification": "matched-feature",
+                        "matched_title": "The Example Movie",
+                        "jellyfin_folder": "other",
+                        "fallback_name_policy": "none",
+                        "media_kind": "movie",
+                        "provisional_match": True,
+                        "gemini_confidence": 0.81,
+                    }
+                ],
+            },
+        },
+    )
+
+    artifact = IdentifyStageAdapter(SimpleNamespace(), contracts)(item)
+    payload = json.loads(artifact.contract_path.read_text(encoding="utf-8"))
+
+    assert payload["library_relative"] == (
+        "The Example Movie (1961)/The Example Movie (1961).mkv"
+    )
+    assert payload["identification_order"] == ["gemini-descriptive-movie"]
+    assert payload["provisional_match"] is True
+    assert payload["confidence"] == 0.81
+
+
+def test_identify_adapter_allows_provisional_extra_without_release_year(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    item = _queued_item(
+        tmp_path,
+        {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "title_index": 3,
+            "media_context": {
+                "series_name": "Example Release",
+                "content_hint": "extras",
+                "special_feature_library_title": "Example Release",
+                "special_feature_library_year": None,
+                "special_feature_assignments": [
+                    {
+                        "title_index": 3,
+                        "classification": "matched-feature",
+                        "matched_title": "Production Featurette",
+                        "jellyfin_folder": "other",
+                        "fallback_name_policy": "none",
+                        "media_kind": "extra",
+                        "provisional_match": True,
+                        "gemini_confidence": 0.65,
+                    }
+                ],
+            },
+        },
+    )
+
+    artifact = IdentifyStageAdapter(SimpleNamespace(), contracts)(item)
+    payload = json.loads(artifact.contract_path.read_text(encoding="utf-8"))
+
+    assert payload["library_relative"] == (
+        "Example Release/other/Production Featurette.mkv"
+    )
+
+
+def test_identify_adapter_holds_ambiguous_special_feature_for_evidence(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    item = _queued_item(
+        tmp_path,
+        {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "media_context": {
+                "series_name": "Unmatched",
+                "special_feature_assignments": [
+                    {
+                        "title_index": 7,
+                        "classification": "ambiguous-match",
+                        "fallback_name_policy": "content-fingerprint-required",
+                    }
+                ],
+            },
+        },
+    )
+    item = SimpleNamespace(**{**item.__dict__, "media_id": "disc-01-title-007"})
+
+    with pytest.raises(
+        PipelineReviewRequiredError, match="special_feature_evidence_required"
+    ):
+        IdentifyStageAdapter(SimpleNamespace(), contracts)(item)
+
+
+def test_identify_adapter_uses_reviewed_cross_season_episode_assignment(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    item = _queued_item(
+        tmp_path,
+        {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "title_index": 3,
+            "media_context": {
+                "series_name": "Faerie Tale Theatre",
+                "season": None,
+                "episode_assignments": [
+                    {
+                        "title_index": 3,
+                        "season": 4,
+                        "episode": 1,
+                        "title": "The Three Little Pigs",
+                    }
+                ],
+            },
+        },
+    )
+
+    artifact = IdentifyStageAdapter(SimpleNamespace(), contracts)(item)
+    payload = json.loads(artifact.contract_path.read_text(encoding="utf-8"))
+
+    assert payload["episode_id"] == "S04E01"
+    assert payload["library_relative"] == (
+        "Faerie Tale Theatre/Season 04/"
+        "Faerie Tale Theatre - S04E01 - The Three Little Pigs.mkv"
+    )
+    assert payload["identification_order"] == ["reviewed-release-catalogue"]
+
+
+def test_unmatched_disc_routes_to_analysis_instead_of_missing_season(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    item = _queued_item(
+        tmp_path,
+        {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "media_context": {"series_name": "Unmatched", "season": None},
+        },
+    )
+
+    with pytest.raises(
+        PipelineReviewRequiredError, match="unmatched_disc_analysis_required"
+    ):
+        IdentifyStageAdapter(SimpleNamespace(), contracts)(item)
+
+
+def test_identification_holds_existing_episode_before_transcode(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    library = tmp_path / "library"
+    season = library / "Test Show" / "Season 01"
+    contracts.mkdir()
+    season.mkdir(parents=True)
+    (season / "Test Show - S01E01 - Existing - 720p.mkv").write_bytes(b"old")
+    item = _queued_item(
+        tmp_path,
+        {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "title_index": 0,
+            "media_context": {
+                "series_name": "Test Show",
+                "episode_assignments": [
+                    {"title_index": 0, "season": 1, "episode": 1, "title": "First"}
+                ],
+            },
+        },
+    )
+
+    outcome = IdentifyStageAdapter(
+        SimpleNamespace(), contracts, tv_library_root=library
+    )(item)
+
+    assert isinstance(outcome, StageOutcome)
+    assert outcome.next_review_code == "library_collision"
+    identified = json.loads(outcome.artifact.contract_path.read_text())
+    assert identified["episode_id"] == "S01E01"
+
+
 def test_transcode_and_organization_adapters_link_verified_output(
     tmp_path, monkeypatch
 ):
@@ -73,7 +389,8 @@ def test_transcode_and_organization_adapters_link_verified_output(
     encoded_root = tmp_path / "encoded"
     run_root = tmp_path / "runs"
     library_root = tmp_path / "library"
-    for path in (contracts, encoded_root, run_root, library_root):
+    deletion_root = tmp_path / "ready-to-delete"
+    for path in (contracts, encoded_root, run_root, library_root, deletion_root):
         path.mkdir()
     identify_contract = tmp_path / "identify.json"
     identify_contract.write_text(
@@ -132,6 +449,7 @@ def test_transcode_and_organization_adapters_link_verified_output(
         library_root=library_root,
         contract_root=contracts,
         confirm_organize=True,
+        deletion_staging_root=deletion_root,
     )(organize_item)
     final = store.complete_stage("media-1", "organize", organized_artifact)
 
@@ -139,7 +457,90 @@ def test_transcode_and_organization_adapters_link_verified_output(
         library_root / "Test Show/Season 01/Test Show - S01E01 - First - 1080p.mkv"
     )
     assert destination.read_bytes() == b"encoded"
+    archived = deletion_root / "media-1" / "source.mkv"
+    assert archived.read_bytes() == b"raw"
+    assert not source.exists()
+    organized_payload = json.loads(organized_artifact.contract_path.read_text())
+    assert organized_payload["output_size_bytes"] == 7
+    assert organized_payload["archived_source_size_bytes"] == 3
     assert final.state == "completed"
+
+
+@pytest.mark.parametrize(
+    ("override", "expected_encoder"),
+    [(None, "x265"), ("balanced", "vce_h265")],
+)
+def test_transcode_uses_reviewed_profile_precedence(
+    tmp_path, monkeypatch, override, expected_encoder
+):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"raw")
+    contracts = tmp_path / "contracts"
+    encoded_root = tmp_path / "encoded"
+    run_root = tmp_path / "runs"
+    for path in (contracts, encoded_root, run_root):
+        path.mkdir()
+    identify_contract = tmp_path / "identify.json"
+    identify_contract.write_text(
+        json.dumps({
+            "mode": "identified-episode-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "episode_id": "S01E01",
+            "library_relative": "Show/Season 01/Show - S01E01 - First.mkv",
+            "handbrake_profile_id": "cpu-balanced",
+        }),
+        encoding="utf-8",
+    )
+    item = QueuedPipelineItem(
+        media_id="media-1",
+        state="running",
+        stage="transcode",
+        artifact=build_artifact("identify", identify_contract),
+        created_at="2026-07-31T00:00:00+00:00",
+        updated_at="2026-07-31T00:00:00+00:00",
+        error_type=None,
+        review_code=None,
+    )
+    observed = {}
+
+    def fake_handbrake(_executable, _ffprobe, job, run_dir, **_kwargs):
+        observed["profile"] = job.profile
+        job.destination.write_bytes(b"encoded")
+        return HandBrakeResult(
+            job.media_id,
+            job.profile.encoder,
+            7,
+            1200,
+            "hevc",
+            1,
+            0,
+            run_dir / "p",
+            run_dir / "e",
+            1920,
+            1080,
+            "progressive",
+        )
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.pipeline_adapters.execute_handbrake_job", fake_handbrake
+    )
+    TranscodeStageAdapter(
+        handbrake=tmp_path / "HandBrakeCLI.exe",
+        ffprobe=tmp_path / "ffprobe.exe",
+        output_root=encoded_root,
+        run_root=run_root,
+        contract_root=contracts,
+        profile=HandBrakeProfile(),
+        profiles={
+            "cpu-balanced": HandBrakeProfile(
+                encoder="x265", encoder_preset="medium", quality=22
+            )
+        },
+        profile_override_id=override,
+    )(item)
+
+    assert observed["profile"].encoder == expected_encoder
 
 
 def test_organization_holds_existing_episode_until_keep_both_is_explicit(tmp_path):
@@ -193,3 +594,61 @@ def test_organization_holds_existing_episode_until_keep_both_is_explicit(tmp_pat
     assert (
         season / "Test Show - S01E01 - First - 1080p.mkv"
     ).read_bytes() == b"new-version"
+
+
+def test_transcode_holds_existing_library_episode_before_handbrake(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"raw")
+    contracts = tmp_path / "contracts"
+    encoded_root = tmp_path / "encoded"
+    run_root = tmp_path / "runs"
+    library_root = tmp_path / "library"
+    season = library_root / "Test Show" / "Season 01"
+    for path in (contracts, encoded_root, run_root, season):
+        path.mkdir(parents=True)
+    (season / "Test Show - S01E01 - Existing - 720p.mkv").write_bytes(b"existing")
+    identify_contract = tmp_path / "identify.json"
+    identify_contract.write_text(
+        json.dumps({
+            "mode": "identified-episode-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "episode_id": "S01E01",
+            "library_relative": "Test Show/Season 01/Test Show - S01E01 - First.mkv",
+        }),
+        encoding="utf-8",
+    )
+    item = QueuedPipelineItem(
+        media_id="media-1",
+        state="running",
+        stage="transcode",
+        artifact=build_artifact("identify", identify_contract),
+        created_at="2026-08-01T00:00:00+00:00",
+        updated_at="2026-08-01T00:00:00+00:00",
+        error_type=None,
+        review_code=None,
+    )
+
+    def unexpected_handbrake(*_args, **_kwargs):
+        raise AssertionError("HandBrake must not run for a library collision")
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.pipeline_adapters.execute_handbrake_job",
+        unexpected_handbrake,
+    )
+    with pytest.raises(PipelineReviewRequiredError, match="library_collision"):
+        TranscodeStageAdapter(
+            handbrake=tmp_path / "HandBrakeCLI.exe",
+            ffprobe=tmp_path / "ffprobe.exe",
+            output_root=encoded_root,
+            run_root=run_root,
+            contract_root=contracts,
+            profile=HandBrakeProfile(),
+            tv_library_root=library_root,
+        )(item)
+
+    assert source.read_bytes() == b"raw"
+    assert not any(encoded_root.rglob("*.mkv"))
+    assert not any(run_root.iterdir())

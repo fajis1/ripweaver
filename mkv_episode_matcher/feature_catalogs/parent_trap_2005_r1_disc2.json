@@ -1,0 +1,29 @@
+{
+  "mode": "special-feature-catalog",
+  "catalog_id": "parent-trap-2005-r1-disc2-v1",
+  "release_id": "upc-786936286960",
+  "release": {"library_title":"The Parent Trap","library_year":1961},
+  "sources": [
+    {
+      "source_id": "reviewed-release-record",
+      "source_type": "manual",
+      "locator": "reviewed-project-catalogue"
+    }
+  ],
+  "features": [
+    {"feature_id":"caught-in-the-act","title":"Caught in the Act: The Making of The Parent Trap","feature_type":"behind the scenes","runtime_seconds":1123,"source_ids":["reviewed-release-record"]},
+    {"feature_id":"music-magic","title":"Music Magic: The Sherman Brothers","feature_type":"featurette","runtime_seconds":882,"source_ids":["reviewed-release-record"]},
+    {"feature_id":"lets-get-together","title":"Let's Get Together","feature_type":"other","runtime_seconds":95,"source_ids":["reviewed-release-record"]},
+    {"feature_id":"whos-the-twin","title":"Lost Treasures: Who's the Twin?","feature_type":"featurette","runtime_seconds":360,"source_ids":["reviewed-release-record"]},
+    {"feature_id":"studio-album","title":"1961 Disney Studio Album","feature_type":"featurette","runtime_seconds":220,"source_ids":["reviewed-release-record"]},
+    {"feature_id":"trailers-tv-spots","title":"Trailers & TV Spots","feature_type":"trailers","runtime_seconds":300,"source_ids":["reviewed-release-record"]},
+    {"feature_id":"hayley-mills","title":"Disney Legend: Hayley Mills","feature_type":"featurette","runtime_seconds":1352,"source_ids":["reviewed-release-record"]},
+    {"feature_id":"seeing-double","title":"Seeing Double","feature_type":"behind the scenes","runtime_seconds":557,"source_ids":["reviewed-release-record"]},
+    {"feature_id":"title-makers","title":"The Title Makers","feature_type":"featurette","runtime_seconds":1037,"source_ids":["reviewed-release-record"]},
+    {"feature_id":"kimball-swift","title":"Kimball & Swift: The Disney Years","feature_type":"interviews","runtime_seconds":1052,"source_ids":["reviewed-release-record"]},
+    {"feature_id":"production-gallery","title":"Production Gallery","feature_type":"other","runtime_seconds":97,"source_ids":["reviewed-release-record"]},
+    {"feature_id":"screenplay-excerpt","title":"Screenplay Excerpt","feature_type":"other","runtime_seconds":420,"source_ids":["reviewed-release-record"]},
+    {"feature_id":"sound-studio-girlfriend","title":"Sound Studio: The Girlfriend","feature_type":"scenes","runtime_seconds":142,"representation":"multi-audio-title","source_ids":["reviewed-release-record"]},
+    {"feature_id":"sound-studio-twins-revenge","title":"Sound Studio: Twin's Revenge","feature_type":"scenes","runtime_seconds":148,"representation":"multi-audio-title","source_ids":["reviewed-release-record"]}
+  ]
+}

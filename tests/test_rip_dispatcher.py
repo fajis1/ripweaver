@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime
 
 import pytest
 
@@ -9,8 +10,9 @@ from mkv_episode_matcher.disc.rip_dispatcher import (
     RipDispatcher,
 )
 from mkv_episode_matcher.disc.rip_manifest import MediaContext
+from mkv_episode_matcher.disc.rip_orchestrator import ParallelRipError
 from mkv_episode_matcher.disc.rip_preview import build_rip_preview
-from mkv_episode_matcher.disc.ripper import RipError
+from mkv_episode_matcher.disc.ripper import RipError, RipResult, resolve_final_output
 from tests.test_rip_manifest import (
     _inventory,
     _make_batch_names,
@@ -165,3 +167,60 @@ def test_restart_reconciliation_pauses_claimed_job(tmp_path):
     assert reconciled[0].state == "paused"
     assert reconciled[0].executor_attached is False
     assert reopened.list_events(job_id)[-1].event_type == "job_restart_reconciled"
+
+
+def test_failed_multi_drive_retry_dispatches_only_unfinished_titles(tmp_path):
+    dispatcher, job_id, _report, output_root = _queued_dispatch(tmp_path)
+    job = dispatcher.public_store.get_job(job_id)
+    completed_job = job.preview["jobs"][0]
+    now = datetime.now(UTC).isoformat()
+    completed_result = RipResult(
+        job_id=completed_job["job_id"],
+        return_code=0,
+        output_count=1,
+        output_bytes=1,
+        warning_count=0,
+        started_at=now,
+        finished_at=now,
+    )
+
+    def partially_failing(bound):
+        source_job = next(
+            item
+            for item in bound.manifest.jobs
+            if item.job_id == completed_result.job_id
+        )
+        destination = resolve_final_output(output_root, source_job)
+        assert destination is not None
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"x")
+        raise ParallelRipError(
+            "drive worker timed out",
+            completed_results=[completed_result],
+            drive_failures={3: "RipError"},
+        )
+
+    with pytest.raises(ParallelRipError):
+        dispatcher.dispatch(
+            job_id, dispatch_key="partial-dispatch-0001", executor=partially_failing
+        )
+
+    failure = dispatcher.public_store.list_events(job_id)[-1]
+    assert failure.details["error_category"] == "timeout"
+    assert failure.details["completed_job_ids"] == [completed_result.job_id]
+    dispatcher.public_store.retry_failed(
+        job_id, idempotency_key="retry-partial-dispatch-0001"
+    )
+    received = []
+
+    def retry_executor(bound):
+        received.extend(item.job_id for item in bound.manifest.jobs)
+        assert bound.batch_plans == {}
+        return DispatchOutcome(completed_count=len(bound.manifest.jobs))
+
+    completed = dispatcher.dispatch(
+        job_id, dispatch_key="partial-dispatch-0002", executor=retry_executor
+    )
+    assert completed.state == "completed"
+    assert completed_result.job_id not in received
+    assert len(received) == 2

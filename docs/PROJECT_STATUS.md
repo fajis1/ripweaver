@@ -1,5 +1,70 @@
 # Project Status
 
+## 2026-08-01 — automatic sequence recovery and queue safety UX
+
+- Automatic TV batches that ordinary identification cannot place now enter the
+  serialized disc-sequence matcher without requiring a second UI click. The
+  idle downstream worker also recovers already-held multi-title batches after
+  restart.
+- Active MakeMKV orchestration jobs are now shown above the downstream queue;
+  the UI explains that a title appears downstream only after its rip verifies.
+- Existing MakeMKV `PRGV` samples now flow into path-redacted orchestration
+  events. The parser recognizes MakeMKV's progress reset between internal/title
+  operations. Drive cards and the queue show the current percentage plus actual
+  staged-MKV write throughput sampled every two seconds; this performs no extra
+  disc read and exposes no staging path.
+- Existing-rip discovery prefers one exact current ordinal/fingerprint/title
+  basename over older ordinal copies, while multiple copies of the exact same
+  basename remain an explicit ambiguity.
+- Queued identified rips now offer both a non-destructive queue removal and a
+  separately confirmed permanent staged-rip deletion. Deletion validates the
+  immutable contract, exact size, MKV extension, and containment within the
+  configured rip-staging root; it never changes Jellyfin.
+- A non-running rip plan can be cancelled and its disc ejected from the review
+  screen. Active MakeMKV execution is refused. Failed-attempt cleanup now blocks
+  only the exact active rip job, not unrelated drives.
+- Focused backend tests passed (39 tests), the API composition regression passed,
+  focused Ruff checks passed, and frontend lint, TypeScript, and production build
+  passed. No media operation was performed by these implementation tests.
+
+## 2026-08-01: duplicate staged-rip recovery and disc-history isolation
+
+- Existing-rip discovery now returns every collision-safe retained candidate when
+  two or more attempts exist for the same fingerprint/title. The public response
+  uses opaque candidate digests and does not expose staging paths.
+- The web review requires an explicit one-per-title radio selection for ambiguous
+  copies. Verification re-discovers the files, validates the unchanged plan, and
+  binds FFprobe to the exact selected candidate; it still never overwrites or
+  removes an earlier attempt.
+- Removed the frontend's unsafe prior-name fallback through session-local
+  `disc-01-title-NNN` queue IDs. Prior Jellyfin outcomes are now shown only from
+  backend history keyed by the durable inventory fingerprint and title index, so
+  one disc's titles cannot be displayed on an unrelated disc review.
+- Synthetic recovery/API/queue tests passed. Ruff, frontend lint, TypeScript, and
+  the packaged frontend build passed. No disc, MKV, credential, or external media
+  executable was accessed.
+- The Disc Dashboard now filters downstream records by the currently selected
+  disc's verified inventory fingerprint. A separate Queue navigation page owns
+  the complete cross-disc queue and its global start, pause, transcode, and
+  organization controls.
+- Reviewed cross-season episode assignments are now a production identification
+  contract. The Faerie Tale Theatre Volume 4 aired-order catalogue maps its four
+  title indexes across S03E05-S03E07 and S04E01, is attached automatically only
+  when the normalized disc label and complete title set match, and bypasses the
+  obsolete single-season requirement without running the matcher again.
+- Existing held Volume 4 items can be repaired from the Disc Dashboard by an
+  exact fingerprint/catalogue operation. It creates new immutable private input
+  contracts and requeues identification; it does not read or modify media.
+- Existing-rip recovery now derives a stable collision-safe queue ID from the
+  exact selected candidate digest. Retained copies with the same MakeMKV
+  basename no longer collide with an earlier queue contract, and neither the
+  earlier contract nor either media copy is overwritten.
+- Unknown discs without a season now stop as
+  `unmatched_disc_analysis_required` instead of the misleading
+  `missing_season_context`. The general live evidence-collection coordinator is
+  still a separate remaining integration; the saved-data BM25/sequence planner
+  itself is unchanged.
+
 Last updated: 2026-07-30
 
 ## Current State
@@ -1211,3 +1276,1061 @@ Current limitation and exact next step:
   profile, disc-context fallback, conflict policy, and parallel-drive limit.
   Only then may `watcher_attached` become true and the automatic preference
   initiate read-only inventory scans and authorized collision-safe rips.
+
+## Disc dashboard landing view
+
+- The web application now opens on the Disc Dashboard instead of the legacy
+  library-folder scan.
+- Navigation labels the legacy matcher as Library Scan and the primary workflow
+  as Disc Dashboard.
+- The dashboard provides per-disc draft choices for TV episodes, movie, extras,
+  or mixed main-title/extras content, plus the configured default HandBrake
+  profile or a future custom profile.
+- A synthetic-tested read-only drive watcher is now attached. `GET /rip/drives`
+  returns only its cached, redacted slot state and never accesses hardware.
+  `POST /rip/drives/refresh` requires an explicit confirmation and runs one
+  MakeMKV `info disc:9999` discovery call; it never inventories titles or rips.
+  The dashboard shows every returned drive as empty or loaded and performs no
+  automatic physical polling merely because a browser is open.
+- MakeMKV's invisible disabled placeholder records are filtered from the
+  dashboard; visible physical drives remain listed even when their tray is
+  empty.
+- Some MakeMKV versions report additional enabled placeholder records with no
+  drive description or device identifier. Those records are also filtered;
+  a real empty optical drive remains visible because its hardware and device
+  fields are present even when its disc label is blank.
+- These choices remain UI drafts and are not execution authority. The next step
+  is to add durable HandBrake profiles and bind each per-disc content/profile
+  choice into the combined immutable pipeline authorization.
+- Both per-disc controls now default to an explicit blank Automatic choice.
+  Content hints are intended to change identification priority rather than act
+  as hard filters: TV prefers episodic matching before movies; movie does the
+  inverse; extras prefers special-feature classification; mixed evaluates main
+  titles and extras; every preference may fall back only after its preferred
+  strategy fails. A blank profile uses the configured default.
+
+## HandBrake profile library and content hints
+
+- A durable non-secret HandBrake profile library now exposes built-in AMD VCN,
+  NVIDIA NVENC, Intel Quick Sync, and CPU x265 HEVC profiles. Custom profiles
+  are validated and atomically stored outside the repository under application
+  data; built-ins cannot be overwritten.
+- The custom profile editor exposes every field accepted by the current safe
+  HandBrake adapter: encoder family and compatible preset, constant quality,
+  selective comb detection/decomb, reviewed content type, NLMeans preset and
+  tune, a source audio layout preference, compatibility bitrate, stereo-first
+  audio ordering, and subtitle retention. Preferences include disc default,
+  stereo, 2.1, 5.1, 7.1, and highest channel count. Immediately before an
+  authorized encode, a fixed FFprobe metadata query resolves the preference to
+  the best available one-based source track for that individual file. It does
+  not accept arbitrary CLI arguments that would bypass adapter validation.
+  Audio profiles also accept ISO-639-2 language preferences and can retain all
+  matching-language tracks, only the first matching track, or all languages.
+  Language selection is resolved against the source metadata before the
+  explicit HandBrake command is built.
+  Profiles may retain only that preferred source stream or append every other
+  source audio stream after the preferred stereo/original pair. Additional
+  streams use codec copy where supported with the existing safe AAC fallback;
+  no source stream can displace the reviewed preferred stream as the default.
+  The profile editor also makes subtitle handling explicit: by default it
+  retains all English (`eng`) subtitle/closed-caption tracks, with options for
+  the first matching track, all languages, or none. The first selected track
+  may be marked as the playback default. Burned-in text remains part of the
+  video and is unaffected.
+  Profiles also expose maximum resolution (source, 480p, 720p, 1080p, or
+  2160p) and independent frame-rate policy. Source timing is the default;
+  explicit VFR and fixed-rate PFR choices are separate. Built-in profiles can be customized into a new profile, and existing
+  custom profiles can be edited or duplicated without changing the built-ins.
+  Quality values can be set independently for 480p, 720p, 1080p, and 2160p;
+  when resolution is left at source, a fixed FFprobe video-height query maps
+  the source into the matching CQ bucket automatically. The general quality
+  value remains a compatibility fallback if that metadata is unavailable.
+  Selecting a profile for a disc also persists that profile ID as the local
+  user's default for future newly detected discs. Choosing the automatic option
+  leaves the saved default unchanged; this setting contains no secrets.
+- The local `/rip/handbrake/profiles` API lists profiles and creates/replaces
+  validated custom profiles. The settings page includes a profile creator and
+  the Disc Dashboard selector lists the resulting library.
+- HandBrake capability parsing and validation now recognize the four encoder
+  families. Actual availability remains an execution-time requirement; no
+  encoder or physical media was invoked while implementing this change.
+- Optional `content_hint` and `handbrake_profile_id` fields are accepted in
+  reviewed media contexts and preserved through private rip, identification,
+  and transcode contracts. A selected profile is frozen by ID in the identify
+  contract and an unavailable profile routes the item to review.
+- The deterministic content policy establishes preferred-first fallback order
+  for automatic, TV, movie, extras, and mixed choices. The existing TV adapter
+  honors TV-first operation. Movie/extras/mixed-first items stop with a typed
+  review code because dedicated movie and mixed/special-feature runtime
+  identifiers are not attached yet; they are never silently sent through the
+  TV matcher first.
+
+Current limitation and exact next step:
+
+- The drive-card choices cannot yet be safely attached by drive number because
+  a disc can be swapped between refresh and execution. Implement automatic
+  read-only inventory/job creation, bind the choices to the resulting complete
+  inventory signature, and include that preference/profile binding in the
+  combined pipeline authorization digest. Then attach dedicated movie and
+  mixed/extras identification adapters before enabling no-touch execution.
+
+## Windows optical-drive events
+
+- FastAPI startup now attaches a hidden-window `WM_DEVICECHANGE` listener on
+  Windows. Volume arrival/removal events are debounced and request exactly one
+  cached MakeMKV drive-slot refresh; browser polling continues to read only the
+  in-memory cache.
+- The refresh coordinator never launches MakeMKV while a rip executor is
+  attached. An event remains pending and one refresh runs after all active rips
+  detach, preventing discovery/rip contention.
+- FastAPI shutdown stops both the native message loop and refresh worker.
+- Loaded-drive cards may display a sanitized MakeMKV disc volume label after a
+  refresh. Hardware names and drive letters remain excluded, and labels are not
+  written to orchestration jobs, events, or logs.
+- A server started with discs already inserted still uses the existing manual
+  read-only refresh for its initial snapshot. Subsequent Windows insertion or
+  removal events refresh automatically.
+
+## Spark handoff: current edge-case audit baseline (2026-08-01)
+
+The latest safe troubleshooting pass was synthetic-only. It did not start
+MakeMKV, HandBrakeCLI, FFmpeg, FFprobe, Whisper, OCR, or access physical discs
+or media files. The focused command was run with a writable temporary root
+because the default Windows pytest temporary directory is access-restricted:
+
+```text
+uv run --no-cache pytest tests/test_handbrake_adapter.py tests/test_handbrake_profiles.py tests/test_batch_ripper.py tests/test_rip_manifest.py --basetemp "G:\\CodexProject_MKV\\.pytest-troubleshooter-current"
+```
+
+Result: **78 passed**. Pytest emitted only two cache-path permission warnings
+for the repository `.pytest_cache`; these did not affect test results.
+
+The tested behavior includes encoder-family validation, CQ/resolution mapping,
+audio default-language versus retained-language policy, missing-language
+handling, subtitle selection policies, collision-safe MakeMKV staging, and
+path-redacted planning. The broader queue/pipeline and HandBrake recovery
+tests should be included in Spark's next synthetic audit.
+
+Known follow-up: subtitle retention language selection is explicit, but a
+separate language-aware subtitle *default-track* field and execution mapping
+are not yet complete. Do not claim that choosing a subtitle language makes it
+the playback default until that contract is implemented and tested.
+
+Spark may run synthetic tests and static checks using a writable `--basetemp`
+under `G:\\CodexProject_MKV`. Any live edge-case audit must first enumerate
+the current drives, state the exact drives and read-only operation, and obtain
+approval for that specific MakeMKV information scan. No live scan is implied
+by this documentation or by passing tests.
+
+## 2026-08-01 Synthetic Verification Cycle (post-merge, non-destructive)
+
+Ran a broad synthetic verification pass with no media I/O.
+
+- Command:
+
+```text
+uv run --no-cache pytest tests/test_handbrake_profiles.py tests/test_handbrake_adapter.py tests/test_handbrake_batch.py tests/test_handbrake_batch_executor.py tests/test_batch_ripper.py tests/test_pipeline_adapters.py tests/test_pipeline_queue.py tests/test_rip_dispatcher.py tests/test_content_policy.py tests/test_rip_api_composition.py tests/test_system_credentials.py tests/test_handbrake_batch_cli.py tests/test_organizer.py tests/test_organizer_cli.py tests/test_rip_manifest.py tests/test_rip_orchestrator.py tests/test_rip_preview.py tests/test_rip_execution_adapter.py tests/test_batch_validation.py tests/test_batch_validation_executor.py --basetemp "G:\CodexProject_MKV\.pytest-spark-audit"
+```
+
+Result:
+
+- `182 passed`, `0 failed`.
+- `pytest` cache warnings persist for `C:\Users\Owner\mkv-episode-matcher\.pytest_cache` path write restrictions.
+
+- Static and frontend checks:
+  - `uv run ruff check` (touched Python modules/tests): passed.
+  - `uv run ruff format --check` (touched Python modules/tests): passed.
+  - `Set-Location mkv_episode_matcher/frontend; npm.cmd run lint; npx.cmd tsc -b; npm.cmd run build`: passed.
+
+No external process touched discs/media.
+
+No synthetic defect findings were introduced by this cycle. Next recommended
+step remains the combined live authorization and pipeline attachment work under an
+explicit approved immutable batch.
+
+## 2026-08-01 Drive-failure recovery and dashboard status
+
+Implemented a synthetic-only, path-redacted recovery boundary for parallel rip
+failures. The parallel orchestrator now retains verified results from unaffected
+drives and the failed drive indexes without retaining media paths. Verified
+results are admitted to the downstream queue even when another drive fails.
+
+The durable failure event records an error category and opaque completed job
+IDs. A confirmed retry revalidates the original private binding and authorized
+plan, accepts only collisions belonging to those recorded completed outputs,
+and dispatches only unfinished titles. A partially completed single-open drive
+falls back to per-title execution. Unfinished titles restart from the beginning
+in a new run directory; existing finals, partials, and unknown collisions are
+never overwritten or removed.
+
+The Disc Dashboard now shows the failed drive, categorized status, preserved-
+partial warning, recommended actions, and a confirmed **Retry unfinished
+titles** control. Recommendations cover timeout, I/O/connection, collision,
+storage, interruption, and MakeMKV failures.
+
+Verification was synthetic only. Focused Python tests passed (`22 passed`),
+focused Ruff checks passed, and frontend ESLint, TypeScript, and production
+build checks passed. No MakeMKV, HandBrake, FFmpeg, optical disc, or media file
+was accessed. A future live retry still requires a new run directory and the
+existing explicit execute confirmation.
+
+## 2026-08-01 Manual startup-disc pipeline preparation
+
+The Disc Dashboard now offers **Start pipeline for this disc** for a loaded
+drive even when the disc was inserted before the HTTP server started. A
+completed or failed historical job on the same physical drive does not hide
+the option for a newly inserted disc.
+
+The action requires a clear read-only confirmation, inventories only the
+selected drive with MakeMKV `info`, saves private sanitized evidence, and
+creates the normal durable `awaiting_review` job. Optional content and
+HandBrake-profile hints are bound into that job. With no canonical identity
+yet, the plan stages under `Unmatched`; identification remains responsible for
+finding the final series or movie identity. The action does not itself rip,
+transcode, rename, organize, delete, or eject media. The resulting exact title
+plan must still pass the existing review, authorization, queue, and execute
+controls.
+
+Synthetic verification passed (`14 passed`) together with focused Ruff,
+frontend ESLint, TypeScript, and production-build checks. No physical drive or
+real media was accessed during implementation.
+
+## 2026-08-01 Multi-drive preparation queue and stale-staging recovery
+
+The dashboard preparation controls now accept multiple loaded drives into a
+visible client queue. The user may queue every drive immediately; MakeMKV
+information scans remain sequential so preparation does not contend for drive
+resources. Each drive displays either `Queued for preparation` or the active
+read status.
+
+New web-prepared plans bind a random, validated staging-attempt ID into the
+immutable media context. Re-preparing the same physical disc therefore uses a
+new isolated staging directory and never overwrites or deletes an earlier
+partial attempt. Stable final basenames retain the disc fingerprint and title
+index, so a real finalized-output collision still requires deduplication
+review.
+
+The review UI now distinguishes staging-only collisions, explains that the
+earlier attempt is preserved, hides authorization while review is unresolved,
+and offers **Prepare fresh isolated attempt** on the corresponding drive. A
+web-prepared job is labeled as automatically saved rather than presenting a
+misleading save-only action.
+
+Synthetic verification passed (`23 passed`) using the configured writable
+pytest base directory. Focused Ruff, frontend ESLint, TypeScript, and
+production-build checks passed. No real disc or media operation was performed.
+
+Queue isolation was also hardened: both review-required and media-specific
+failed downstream items now release the single global downstream worker and
+the dispatcher continues with unrelated queued media. Queue-database failures
+still propagate because scheduler integrity would then be unknown. Regression
+coverage confirms a review item and a failed item can remain held while a
+healthy item proceeds through identify, transcode, and organize to completion.
+
+The dashboard review display is now explicitly drive-selected. Completing a
+later disc preparation no longer replaces the plan currently being reviewed.
+Every drive whose newest job is `awaiting_review` is rendered red with a
+**Review this disc** action; failed drives are also red with their recovery
+action. Selecting a drive loads that exact durable job and preview, labels the
+review with the optical-drive number, and scrolls to its available decisions.
+Other drive cards and queued work remain independent.
+
+## 2026-08-01 Automatic bonus-disc fallback
+
+The normal web-preparation path now makes the optional content hint effective
+during title selection. Explicit **Extras / bonus disc** mode proposes a
+conservative set of plausible bonus titles, and **Automatic** uses the same
+fallback only when no episode cluster can be selected. **Mixed** combines the
+episode and plausible-bonus sets.
+
+The fallback is saved-inventory-only. It holds titles shorter than three
+minutes as menu/navigation candidates and holds a longer title when its runtime
+matches the sum of multiple plausible individual features. These rules create
+only an `awaiting_review` proposal; they do not authorize execution and do not
+replace the reviewed-catalogue special-feature workflow for final naming.
+Preview drive cards identify when automatic bonus fallback was used so the user
+does not mistake the proposal for an episode match.
+
+Synthetic verification passed (`27 passed`) for manifest, preview, and drive-
+preparation coverage. Focused Ruff checks and formatting checks passed, along
+with frontend ESLint, TypeScript, and production build. No physical disc,
+MakeMKV, FFmpeg, HandBrake, or real media file was accessed.
+
+## 2026-08-01 Special-feature dashboard and downstream attachment
+
+The Disc Dashboard preparation boundary now evaluates reviewed, provider-neutral
+special-feature catalogues for Automatic, Extras, and Mixed discs. Catalogue
+selection is saved-data-only and requires a uniquely best release with multiple
+strong global runtime assignments; a weak or tied catalogue is never forced.
+The proven Parent Trap release catalogue is packaged as the first built-in
+catalogue. Additional reviewed catalogues can be installed as JSON files in the
+local application-data `feature-catalogs` directory without changing planner
+code.
+
+When a catalogue is selected, the exact title indexes, catalog/release IDs,
+library identity, feature assignments, audio policy, and evidence requirement
+are stored in the immutable private media context. Rebinding and restart resume
+therefore rebuild the same selection from the same fresh inventory. The public
+preview labels this as `reviewed-special-features` but does not expose catalogue
+paths or private media paths.
+
+Verified strong feature matches now enter the serialized downstream queue with
+Jellyfin-compatible movie extras destinations. The episode matcher is not
+called for those items. Ambiguous, duplicate, or fingerprint-required items
+stop at `special_feature_evidence_required`, release the global worker, and
+allow unrelated items to continue; they are never assigned a guessed name.
+Organization remains collision-refusing and appends the normal resolution
+version label after a verified staged transcode.
+
+Synthetic verification passed 80 focused catalogue, special-feature, rip API,
+dispatcher, queue, and downstream-adapter tests. Focused Ruff checks and format
+checks passed, as did frontend ESLint, TypeScript, and the production build. No
+physical disc, real MKV, MakeMKV, FFmpeg, HandBrake, provider request, or
+credential was accessed.
+
+The awaiting-review dashboard language now describes outcomes rather than the
+internal authorization transition. A collision-free review offers one primary
+**Save these titles and add to rip queue** action and states explicitly that it
+does not start MakeMKV, overwrite files, remove earlier attempts, or eject the
+disc. Separate actions inspect the selected title list, keep the durable review
+on hold, or perform a newly confirmed read-only inventory for a fresh review.
+Authorization and queue admission are combined in the UI while the final
+physical-rip confirmation remains separate.
+
+The reviewed special-feature preview now keeps raw MakeMKV outputs in isolated
+collision-safe staging instead of presenting a misleading
+`TV Shows/Unmatched/Unmatched` final destination. Each planned title displays
+its own reviewed feature name, Jellyfin extras category, and whether the match
+is catalogue-backed or still needs evidence. The single-open cutoff is labelled
+as MakeMKV's minimum title length and explained as a menu-title exclusion
+boundary. Existing durable reviews remain immutable; these presentation and
+staging corrections apply after creating a fresh review.
+
+Regression coverage caught and repaired a stale per-title catalogue lookup
+that initially repeated the last feature name for every title. Verification
+passed 30 focused manifest, preview, and drive-preparation tests, focused Ruff
+checks and format checks, frontend ESLint, TypeScript, and production build. No
+physical disc, real media, or external media program was accessed.
+
+## 2026-08-01 Collision choices and prior title outcomes
+
+Collision review now offers two real plan operations. **Rip only missing
+titles** derives a new immutable review containing only jobs whose planned
+output and staging locations are absent. **Rip all titles again as replacement
+copies** derives a new attempt for the full selection using a fresh isolated
+staging namespace. Neither operation overwrites or deletes a completed file or
+partial. Replacement of an older completed file remains a later, separately
+confirmed organization decision after the new output verifies.
+
+The downstream SQLite store now retains a path-redacted title outcome keyed by
+the stable disc-inventory fingerprint and MakeMKV title index. A completed
+identification records the episode/feature name, episode ID when applicable,
+and relative Jellyfin name. Fresh disc reviews project those prior outcomes
+back onto the matching title cards. Existing private pipeline contracts are
+scanned lazily to backfill older outcomes when their verified-rip basename still
+contains the inventory fingerprint. No media content is opened for this
+backfill; missing or malformed contracts are ignored.
+
+Verification passed 22 focused queue, API-composition, drive-preparation, and
+preview tests, focused Ruff checks and formatting checks, frontend ESLint,
+TypeScript, and a production build. No physical disc, media file, MakeMKV,
+FFmpeg, HandBrake, provider, or credential was accessed.
+
+Collision review now also distinguishes a deliberate replacement intent from a
+non-destructive replacement copy. **Deliberately replace existing completed
+files** records `replace-after-verification` in the private media context and
+propagates that policy through identify and transcode contracts. It is not
+deletion authority: the new output must verify before the UI presents the exact
+old/new destination confirmation. Partials remain ineligible for overwrite.
+
+**Use verified existing rips and restart matching** avoids unnecessary disc
+work. It resets only items with an unchanged durable verified-rip contract to
+the serialized identify queue. Titles without such proof are reported as
+requiring verification and are not trusted merely because a staging path
+exists. The action performs no optical-disc access and no media mutation.
+
+Verification passed 37 focused queue, adapters, API composition, and manifest
+tests, focused Ruff checks, frontend ESLint, TypeScript, and production build.
+No physical disc, media file, or external media program was accessed.
+
+The verified-existing-rip recovery action is now shown for every
+`awaiting_review` job, including reviews whose newly isolated staging paths are
+collision-free. Recovery validates that each durable verified-rip contract has
+the same inventory fingerprint and MakeMKV title index as the current review;
+a generic `disc-01-title-NNN` ID alone is never sufficient to reuse media.
+
+Queued jobs now offer **Remove from rip queue and return to review**. This
+changes only durable control state from `queued` to `awaiting_review`, preserves
+the exact plan and authorization history, and performs no media or disc access.
+Verification passed 19 focused orchestration, queue, and API tests plus Ruff,
+frontend ESLint, TypeScript, and production build.
+
+Title inspection is now actionable rather than a scroll-only control. It opens
+checkboxes for every planned MakeMKV title, with select-all and clear controls.
+The checked set can create a new immutable rip review or restart identification
+for only matching durable verified-rip records. The selection endpoint rejects
+duplicates, empty sets, negative indexes, and indexes outside the saved review;
+it binds a fresh collision-safe staging attempt without changing the original
+durable job. Verification passed 19 focused API, queue, and orchestration tests,
+Ruff, frontend ESLint, TypeScript, and production build.
+
+Existing staging files that predate durable verified-rip records now have a
+safe recovery path. The UI first searches only the job's privately bound rip
+staging root for each exact collision-safe planned basename and presents a
+path-redacted candidate list. Missing, empty, or duplicate candidates remain
+held. A separate explicit confirmation runs read-only FFprobe verification on
+only the checked candidates, rechecks their sizes, and admits successful files
+to the serialized identification queue without reripping, renaming, moving,
+overwriting, deleting, transcoding, or reading the optical disc. The recovery
+plan is digest-bound and is recomputed immediately before verification.
+
+Verification passed 13 focused recovery, API composition, and pipeline queue
+tests; focused Ruff; frontend ESLint; TypeScript; and the production frontend
+build. No physical disc, real media file, MakeMKV, HandBrake, FFmpeg, or
+FFprobe process was accessed during implementation testing. An already-renamed
+file that no longer retains its unique staging basename is intentionally not
+auto-discovered and still requires a future reviewed canonical-file recovery
+flow.
+
+Recovery also treats the ordinal `disc-XX` filename prefix as session-local.
+An older staging basename may be reused when its 16-character inventory
+fingerprint and three-digit title index exactly match the current reviewed
+disc, even if its earlier disc ordinal differs. The recovered job is rebound to
+that exact basename before verification. Different fingerprints or title
+indexes remain ineligible, and two matching candidates remain an ambiguity
+rather than being chosen automatically. Fifteen focused recovery, API, and
+queue tests pass after this compatibility correction.
+
+Legacy special-feature execution output is now recoverable without trusting a
+filename alone. Recovery groups `special-<token>-title-NNN.mkv` files by their
+reviewed-plan token and accepts a cohort only when exactly one token contains
+the complete current title-index set and every file size equals the saved disc
+inventory size. Incomplete earlier attempts are ignored; multiple complete
+cohorts remain ambiguous. The zero-candidate UI now explicitly explains that
+verification is disabled instead of silently returning from a button click.
+Seventeen focused recovery, API, and queue tests, Ruff, frontend ESLint,
+TypeScript, and the production build pass. Diagnosis inspected filenames and
+sizes only; it did not open media content or invoke an external media tool.
+
+The initial special-cohort recovery check was too strict because MakeMKV's
+saved inventory size is an estimate: the observed completed filesystem sizes
+were consistently about two to three percent smaller. Recovery now permits a
+bounded five-percent estimate variance (with a one-MiB minimum allowance) only
+inside the already strict unique-complete-cohort rule. It still requires the
+exact complete title-index set and a single plan token; zero-byte files,
+larger size discrepancies, incomplete cohorts, and competing complete cohorts
+are rejected. The active 13-title saved review now resolves through metadata
+to 13 candidates, zero missing, and zero ambiguous. Nineteen focused tests and
+Ruff pass. No MKV content or external media process was accessed.
+
+Automatic mode now starts a durable identification-only background consumer
+after the matching engine finishes warming. It claims only `identify` items,
+one globally at a time, and continues past media-specific review/failure states
+so unrelated items are not blocked. Successful identification advances an item
+to `transcode · queued`; the worker deliberately cannot claim transcode or
+organize because no combined HandBrake/library authorization is yet bound to
+these queue items. Shutdown signals and joins the worker. Twenty-two focused
+queue and application tests plus Ruff pass. No real identification, external
+media process, transcode, or organization operation ran during testing.
+
+The downstream dashboard now always shows separate **Start / resume authorized
+work** and **Pause downstream queue** controls. Start/resume clears the durable
+pause flag and lets the background worker claim permitted work; it never
+bypasses a per-item review state or grants a missing stage authorization. When
+items are `transcode · queued`, the UI explicitly states that they are ready
+but held until the HandBrake profile, encoded staging root, and downstream
+authorization are reviewed. Frontend ESLint, TypeScript, and the production
+build pass.
+
+Queued transcodes now have a concrete two-step web authorization flow. **Review
+and authorize transcoding** builds a path-redacted SHA-256 identity over the
+exact currently queued media IDs, immutable identification-contract hashes,
+saved default HandBrake profile settings, configured HandBrake/FFprobe tools,
+and encoded staging root. The review displays the exact item count, IDs,
+profile, and digest without exposing private paths. **Start this exact
+transcode batch** recomputes that identity, refuses any changed item set or
+configuration, and starts a daemon batch restricted to those exact IDs and the
+`transcode` stage. Queue claiming remains globally serialized. The existing
+one-file adapter preserves collision partials and verifies with FFprobe;
+organization remains unauthorized and cannot run through this batch.
+
+Fifteen focused authorization, queue, and API tests, Ruff, frontend ESLint,
+TypeScript, and the production build pass. No HandBrake, FFprobe, real media,
+or library operation ran during implementation testing.
+
+The transcode review now presents the full saved HandBrake profile list and
+binds the user's selected profile into both the preview digest and execution
+request. Changing the selector invalidates the prior preview. Tool failures are
+reported separately for HandBrakeCLI and FFprobe, and the warning provides a
+direct **Open settings to fix tools** action. Current public configuration
+diagnostics showed that FFprobe exists and the custom default profile exists,
+but the saved HandBrakeCLI path no longer points to a file; no configuration
+value was changed automatically. Backend profile tests, Ruff, frontend ESLint,
+TypeScript, and the production build pass.
+
+Windows tool discovery now searches for an exact `HandBrakeCLI.exe` in PATH,
+the standard installed location, and bounded download-folder roots (maximum
+three directory levels and 2,000 directories, without following symlinks).
+This supports portable HandBrakeCLI bundles without indexing arbitrary media
+or launching the executable. The currently available portable CLI was found
+under the user's downloads area; the UI still requires **Save Configuration**
+before replacing a stale saved path. Five focused discovery/configuration tests
+and Ruff pass.
+
+Web-saved non-secret executable paths now remain authoritative after reload.
+Previously, a stale `.env` or process-level tool path was applied after JSON on
+every load, making a successful Settings save appear to revert. Environment
+values remain authoritative for credentials, but MakeMKV, HandBrakeCLI,
+FFmpeg, and FFprobe environment paths now act only as defaults when the JSON
+configuration has no saved value. Eleven focused configuration and
+special-character tests plus Ruff pass. No `.env` file was opened or changed.
+
+Settings now validates every nonempty executable path before saving. The path
+must be an existing file with the expected MakeMKV, HandBrakeCLI, FFmpeg, or
+FFprobe basename. A failed check returns field-specific errors, highlights the
+affected input, and does not save configuration or submitted credential
+updates. Validation never launches the executable. Ambiguous special-feature
+queue items no longer offer a misleading retry button: the dashboard explains
+that contact-sheet/OCR/audio evidence or a reviewed manual assignment is
+required. New disc reviews now retain candidate feature IDs for that future
+resolution action. Nine focused save/review tests, Ruff, frontend ESLint,
+TypeScript, and the production build pass.
+
+The queue action is now explicitly **Assign a HandBrake profile to this queued
+batch**, separate from the tool-path repair action. A reviewed batch profile
+has execution precedence over any older per-disc profile frozen in an
+identification contract, and the verified transcode contract records the
+actual override profile ID. This prevents a newly selected queue profile from
+being silently ignored. Ten focused pipeline-adapter and authorization tests,
+Ruff, frontend ESLint, TypeScript, and the production build pass.
+
+Ambiguous bonus-feature items now expose three durable review choices in the
+disc dashboard: use Gemini after local evidence, choose a name manually, or
+leave the item on hold. The saved non-secret setting **Use Gemini as the final
+fallback** automatically records the Gemini path when local identification
+ends in `special_feature_evidence_required`; it does not contact Gemini. The
+item remains at identify/review and therefore cannot reach HandBrake with an
+unknown name, while unrelated queue items continue. The UI presents an
+external-data warning and the queue event log records only the path-free review
+code. The next implementation step is the separately guarded local-evidence
+collector and schema-constrained provider execution boundary; no live Gemini
+request was made by this change.
+
+The downstream dashboard now displays the matched title from the private
+identify/transcode contract while retaining the stable `disc-XX-title-NNN`
+recovery ID as technical information. Queued organization items explain that
+their encode is verified in staging and has not yet been moved. A new
+path-redacted organization preview and exact authorization endpoint binds the
+queued contract digests, configured TV/movie roots, resolution-version target,
+and collision set. The UI exposes **Review placement into Jellyfin** and refuses
+the batch when an exact destination already exists. A separate saved setting
+may enable automatic organization of collision-free verified encodes on server
+startup; collisions still stop for review and overwrite is never automatic.
+
+The Gemini ambiguity action now queues real bounded work instead of only
+changing a review label. One confirmed batch reads only the exact held MKVs,
+runs FFprobe plus the existing sequential CPU Whisper/FFmpeg sampling fallback,
+and sends Gemini only up to three short excerpts per item together with the
+remaining runtime-plausible reviewed-catalogue candidates. A structured answer
+must use an allowed candidate and reach the confidence threshold before a new
+immutable verified-rip contract is written and identification is requeued.
+Failures remain held and retryable. Completed organization cards now state the
+local completion time as **Moved into Jellyfin**, and saved disc reviews show a
+known prior matched name ahead of the technical collision-safe staging path.
+
+The web navigation now includes **Recently Finished**. It groups durable queue
+results by local calendar day and shows the matched name, completion/review
+time, stage outcome, stop reason, and a safe Jellyfin- or staging-relative
+location after the optical disc is removed. Absolute private roots remain out
+of the public response. New production queue admissions use the existing
+collision-safe basename (including the inventory fingerprint) as the durable
+media ID, preventing a later disc's generic `disc-01-title-NNN` identifiers
+from replacing an earlier disc's history.
+
+Recently Finished now groups records as day → expandable disc. The disc summary
+uses the best known library title and shows completed versus attention-required
+counts. Expanding it exposes title-level destinations and reasons. A held or
+failed Gemini ambiguity can launch the confirmed local-evidence/Gemini workflow
+directly from history, including after the physical disc has been ejected.
+Full Windows Jellyfin paths are assembled only in the loopback browser from the
+configured root plus the validated relative contract; absolute roots are not
+added to queue events or durable public history records.
+# 2026-08-01 — Recoverable source retention and finished-size reporting
+
+- Added a non-secret `deletion_staging_root` setting and folder-browser field.
+- New transcodes retain the verified original-source identity in the private
+  transcode contract. After a Jellyfin destination has been collision-checked,
+  moved, and size-verified, organization may move that original into a unique
+  per-media directory beneath the configured deletion-staging root. Existing
+  archive paths are never overwritten. If the root is unset, or an older
+  transcode contract has no retained-source fields, the original remains in its
+  existing staging location.
+- Organized contracts record the verified Jellyfin output size and retained
+  source identity privately. Public pipeline responses expose only the output
+  byte count and whether a retained source is currently available; they do not
+  expose the private retained-source path.
+- The Disc Dashboard queue and Recently Finished view now show the completed
+  Jellyfin file size. Recently Finished provides per-disc `Re-encode this disc`
+  and `Delete retained originals` actions when retained originals are present.
+  Re-encode reuses saved identification and enters at the serialized transcode
+  stage. Delete requires a digest-bound preview, exact file count, and a second
+  confirmation; it affects only recorded files beneath the configured
+  deletion-staging root and never Jellyfin files.
+- Focused synthetic validation: 32 pytest tests passed across pipeline adapters,
+  queue, API composition, and configuration; focused Ruff check and format
+  checks passed; frontend ESLint, TypeScript, and production build passed. No
+  disc, real MKV, MakeMKV, HandBrake, FFmpeg, or FFprobe operation was run.
+- Fixed the Settings folder chooser so it renders as a modal over the user's
+  current scroll position. Previously it rendered inline at the top of the long
+  Settings page, making a successful click appear to do nothing when the user
+  was viewing Media Pipeline Locations farther down the page. Frontend lint,
+  TypeScript, and production build checks passed after the repair.
+- Added left-navigation `Logs` and `System Cleanup` views. Logs reads the
+  durable path-redacted pipeline event stream rather than exposing the raw
+  application log. New Gemini failures retain a safe specific review code for
+  insufficient audio evidence, unavailable catalogue data, or provider
+  failure. System Cleanup groups retained originals by disc, requires a valid
+  HandBrake profile for requeue, reuses saved identification, and provides an
+  exact-preview deletion action that cannot affect Jellyfin files.
+- Weak or silent local audio no longer prevents a confirmed Gemini fallback.
+  The request may contain runtime plus the constrained remaining catalogue
+  names with zero transcript excerpts and asks Gemini for a provisional
+  one-to-one best choice. Low-evidence/low-confidence results are carried
+  through identify, transcode, and organization as explicitly provisional.
+  Disc Dashboard and Recently Finished show the provisional marker and
+  confidence, offer an exact `Play for review` action through the Windows
+  default media player, and provide a filename-stem box. A reviewed rename
+  preserves `.mkv`, refuses invalid Windows names and destination collisions,
+  and appends a new immutable organization contract/event.
+- System Cleanup now also lists legacy completed items whose durable verified
+  rip contract still points to an unchanged original in rip staging. A
+  digest-bound, exact-count confirmation can move those originals into the
+  configured cleanup root without touching Jellyfin, after which normal
+  requeue/delete controls become available. Recently Finished now detects
+  queued transcodes and provides prominent navigation to the Disc Dashboard's
+  exact HandBrake-profile review and start controls.
+- Core Settings now persists a validated, non-secret Gemini model ID. The UI
+  provides a suggested-model chooser with custom model-ID entry, and the live
+  ambiguity fallback uses this saved configuration. An existing `GEMINI_MODEL`
+  environment value remains a migration/default source only when no model has
+  yet been persisted; API keys remain environment-only.
+- Queue views now show only actionable downstream work. Completed items remain
+  in durable history and are presented under Recently Finished instead of
+  continuing to occupy the global or selected-disc queue. When recovery creates
+  a newer durable record for the same disc fingerprint and title index, queue
+  views show only that newest record. Reviewed release repair likewise requeues
+  only the newest held copy of each title, preventing duplicate downstream work.
+- Fresh seasonless TV discs no longer receive an automatic hard-coded release
+  assignment, including known Faerie Tale Theatre test media. Their selected-
+  disc queue instead requests a canonical series name and offers the general
+  all-season analysis path: inspect each newest held MKV, transcribe bounded
+  samples once, fetch the complete aired TMDb catalogue, and run the existing
+  ordered BM25/runtime sequence model across every season. Confident sequence
+  assignments are written into new private contracts and requeued; ambiguous
+  or failed analysis remains held with a typed review reason. The legacy
+  reviewed-release endpoint remains diagnostic-only and is no longer offered
+  as the normal dashboard solution.
+- Planned Titles now overlays the newest durable identification result by disc
+  fingerprint and title index. The immutable collision-safe rip destination is
+  still shown as the original rip target, while a newly matched pretty name
+  refreshes globally even when recovery changed the internal media ID.
+- The selected-disc queue on Disc Dashboard now exposes the same global
+  serialized worker start/resume and pause controls as the Queue page. Resume
+  still cannot bypass HandBrake or organization authorization.
+- Pipeline item stages now use a consistent visual state cycle in both queue
+  views: completed stages are green, the actively running stage is animated
+  blue, a queued current stage is amber, review is orange, failures are red,
+  and future stages remain muted. Human-readable status text distinguishes
+  waiting from active ripping, matching, transcoding, and Jellyfin transfer.
+- The production transcode adapter now receives the configured TV and movie
+  library roots and performs a read-only destination/episode-ID collision check
+  before creating an encoded destination, run directory, or HandBrake job.
+  Existing Jellyfin episodes therefore stop at `library_collision` before
+  encoding; the organization-stage check remains as defense in depth. The Disc
+  Dashboard now exposes transcode and organization review controls for its
+  selected disc and reports when Start/Resume merely unpaused a queue whose
+  remaining items are all held for review.
+- Library collision inspection now also runs as part of the successful
+  identify-to-transcode transition. On a mixed disc, only titles whose episode
+  ID or exact destination already exists are held; unrelated missing episodes
+  remain queued for HandBrake. Each held item exposes two exact-digest actions:
+  discard only the new pipeline media, or replace from a verified encode after
+  first moving the old Jellyfin file into collision-refusing deletion staging.
+  Raw rips are retained when an already-encoded copy is discarded or replaces
+  a library file. Synthetic tests cover both destructive decisions; no real
+  media was used during implementation.
+- Recently Finished now supports browser-persistent read and cleared state,
+  including mark-all-read, clear-read, clear-all, and restore-cleared controls.
+  These presentation controls never delete durable history or media.
+- Distribution attribution was hardened: `THIRD_PARTY_NOTICES.md` retains the
+  MKV Episode Matcher and Riplex MIT notices, `docs/ATTRIBUTIONS.md` documents
+  external services and tools, Help contains TMDB's required notice and an
+  approved TMDB logo, and the PyInstaller build copies these files plus
+  recursive installed-package metadata into binary distributions.
+## Failed rip replacement authorization (2026-08-01)
+
+- The web rip confirmation now treats failed-partial preservation as an explicit
+  opt-in. With it unchecked, starting a reviewed rip previews the exact isolated
+  incomplete-attempt set and shows its file count and total size before removal.
+- Cleanup is bound to the reviewed disc fingerprint, title indexes, and an
+  immutable metadata digest. A changed plan, active physical rip, symlink,
+  non-MKV/unknown file, path escape, or verified final output prevents cleanup.
+- Older API clients remain preservation-safe by default. Destructive cleanup
+  requires both the exact preview digest and a dedicated confirmation field.
+- No physical disc or real media was accessed while implementing this boundary.
+
+## Per-disc missing-items policy (2026-08-01)
+
+- The disc dashboard offers an optional `Add missing items from this disc`
+  policy. The choice is stored in the private media context and propagated to
+  every verified-rip contract.
+- Known prior results can be shown during preparation. Every successfully
+  identified item is checked against the configured Jellyfin library before
+  HandBrake; collisions are held per item while unrelated missing items keep
+  moving through the global downstream worker.
+- A same-named movie is not sufficient to skip an ambiguous edition or
+  commentary-bearing title before its streams are inspected.
+## Legacy queued-plan digest compatibility (2026-08-01)
+
+- Queued jobs created before the special-feature, selected-title, episode-map,
+  and existing-output-policy context fields were added can now be rebound when
+  every omitted field still has its original safe default.
+- Compatibility never removes a non-default policy or assignment from the
+  authorization identity. Inventory proofs, selected jobs, destinations, disc
+  bindings, and private/public binding agreement remain mandatory.
+- The previously blocked six-title queued job passed a read-only dispatcher
+  binding validation after this repair. No MakeMKV process was started.
+
+## Sticky HandBrake profile default (2026-08-01)
+
+- Each loaded disc retains its own HandBrake profile choice for the current
+  dashboard session. Choosing a profile on one drive does not change the
+  displayed or effective profile of the other currently loaded discs.
+- The most recently selected explicit profile becomes the automatic default
+  for discs detected later and is persisted for the next server session.
+- Profile-default persistence now uses a dedicated validated API boundary. It
+  refuses unknown profile IDs and reports save failures instead of silently
+  changing only the browser state.
+- Focused profile tests, Ruff checks, frontend lint, TypeScript compilation,
+  and the production frontend build passed.
+- No optical disc, media file, encoder, or external media tool was accessed.
+
+## Reduced review-to-queue interaction and unmatched fallback (2026-08-01)
+
+- Choosing a rip-collision policy now creates, approves, and queues the new
+  immutable collision-safe plan in one action. Physical MakeMKV execution still
+  retains its final exact title-count warning and confirmation.
+- Restarting verified-rip identification and starting all-season analysis now
+  resume the downstream scheduler automatically instead of requiring a second
+  generic queue-resume click.
+- Suggested series names remove complete `Season N` and disc/DVD suffixes. For
+  example, `Dragons Race to the Edge Season 1 DVD2` now suggests
+  `Dragons Race to the Edge`.
+- If local all-season sequence matching remains ambiguous, the user has enabled
+  automatic Gemini fallback, and the analysis confirmation permits external
+  fallback, bounded transcript excerpts can be ranked only against the fetched
+  TMDb episode catalogue. Results are one-to-one and recorded as provisional
+  with confidence. Missing catalogue or evidence still stops safely.
+- Eleven focused backend tests, Ruff, frontend lint, TypeScript, and the
+  production frontend build passed. No live media or provider was accessed.
+
+## Explicit season context and automatic restart analysis (2026-08-01)
+
+- Disc preparation now recognizes an explicit `Season N` phrase in a MakeMKV
+  volume label. `Dragons Race to the Edge Season 1 DVD2` becomes series
+  `Dragons Race to the Edge`, season `1`, and TV-first identification. Generic
+  `DVD2`, `Disc 2`, and `Volume 2` labels are never treated as season numbers.
+- New jobs with reliable label context therefore enter ordinary season matching
+  and do not stop at the general all-season analysis prompt.
+- For older verified-rip records already held without season context, choosing
+  restart matching now launches all-season analysis automatically using the
+  cleaned series label. The separate Analyze button is no longer required for
+  that recovery path.
+- Fifteen focused tests, Ruff, frontend lint, TypeScript, and the production
+  frontend build passed.
+
+## Non-destructive queue clearing (2026-08-01)
+
+- The global and selected-disc queue views now offer `Clear held items`, and
+  ordinary failed/review cards offer `Clear from queue` for one record.
+- Clearing changes only the durable queue state to `discarded`. Original MKVs,
+  partials, encoded files, contracts, event history, logs, and library media are
+  not renamed, moved, or deleted.
+- Bulk clearing is atomic and accepts only failed or review-held records. If an
+  item becomes active before confirmation, the entire selection is refused.
+- Twenty-nine focused queue/content-policy tests, Ruff, frontend lint,
+  TypeScript, and the production build passed. No live media was accessed.
+
+## Existing-rip review and optical-drive ejection (2026-08-01)
+
+- After verified existing MKVs are accepted for identification, the disc review
+  now says they are processing instead of continuing to present `final-exists`
+  as an unresolved rip collision. Planned titles retain the accepted status and
+  current durable match information.
+- Inserted-drive cards now have an explicitly confirmed manual `Eject disc`
+  action. It resolves only the selected MakeMKV drive and refuses ejection while
+  that drive has authorized, queued, running, or pause-requested rip work.
+- Settings now include an opt-in `Automatically eject after a successful rip`
+  preference. Automatic ejection occurs only after the complete reviewed job is
+  recorded completed and every selected output has passed the existing rip
+  verification boundary. Failure, timeout, pause, stop, a missing disc, or
+  competing work for that drive prevents ejection. An eject failure is logged
+  without changing a successful rip into a failed rip.
+- Ejection uses the Windows storage-eject control against the exact resolved
+  optical drive, retries compatible storage access modes, and falls back to the
+  exact-drive Windows CD-audio tray command for optical drivers that reject the
+  storage control. The existing-rip review now also includes a directly visible
+  `Start / resume matching queue` action, and eject failures are shown in an
+  immediate dialog instead of only in the page-level status area. Focused tests
+  inject fake inventory and eject adapters; no physical disc was read or
+  ejected while implementing this change.
+- Drive refresh now privately caches the exact MakeMKV-index-to-Windows-letter
+  mapping. Dashboard eject uses that mapping immediately and performs the slow
+  MakeMKV lookup only when the server has not yet been primed. Eject requests
+  have per-drive UI state, so one tray operation no longer disables eject on
+  other idle drives.
+- Selected-disc record collapsing no longer lets a newer discarded recovery
+  attempt hide an older active review. Existing MKVs held for
+  `unmatched_disc_analysis_required` are described accurately and the review
+  action launches all-season analysis instead of a queue resume that cannot
+  bypass the hold.
+- Recovery analysis now carries an explicit `Season N` parsed from the current
+  disc label into its request, filters the authoritative episode catalogue to
+  that season, and writes the season back into the revised identification
+  contract. Only genuinely seasonless/mixed discs use the all-season scope.
+- Queue review summaries now enumerate their hold codes, explain the available
+  resolution, and link to the affected cards. Clear, collision resolution, and
+  transcode-plan failures are shown immediately. Deleting a collision copy also
+  retires other held/failed queue records for the same disc fingerprint and
+  title index without deleting their media, preventing an older recovery
+  lineage from resurfacing as the same collision.
+
+## Automatic inserted-disc pipeline (2026-08-01)
+
+- The Windows volume watcher now passes each refreshed drive snapshot to a
+  process-local automatic-rip coordinator when automatic processing is enabled.
+  A newly loaded drive is admitted once; repeated refresh/poll events cannot
+  duplicate the attempt. Removing the disc rearms that drive for its next
+  insertion, and discs already present at server startup are admitted by the
+  startup refresh.
+- Each newly loaded drive receives its own worker. Collision-free, unambiguous
+  plans are prepared, authorized, queued, and executed with the configured
+  MakeMKV path and isolated recovery directory. Multiple inserted drives may rip
+  in parallel while titles within each drive remain sequential. A plan that
+  actually requires review remains held and is never forced through.
+- Verified outputs proceed through identification. Confident, collision-free
+  items are automatically transcoded with the configured default HandBrake
+  profile and organized into the configured Jellyfin library; review-held items
+  release the global downstream worker so unrelated items continue. Automatic
+  eject remains conditional on complete verified rip success and its separate
+  setting.
+- Settings now expose `Remember the last selected profile for future discs`.
+  When enabled, a per-disc profile selection is saved as the default for later
+  insertions and server restarts; existing disc overrides remain unchanged.
+- Every HandBrake profile card now has a default-profile radio control. The
+  selected card is highlighted and labeled `Current default`; changing it uses
+  the validated persisted profile endpoint and reports success or failure.
+- Fourteen focused automatic-dispatch, API-composition, profile, and collision
+  tests passed with fake drive/executor boundaries. Ruff, frontend lint,
+  TypeScript, and the production frontend build passed. No physical disc or
+  media was accessed while implementing this phase.
+
+## HandBrake audio-profile clarity (2026-08-01)
+
+- The profile editor presents the source-layout preference as six always-visible
+  radio choices: disc default, stereo, 2.1, 5.1, 7.1, or highest channel count.
+- The UI now explains the existing adapter behavior: the preferred original
+  source-layout track is retained and a stereo AAC compatibility track is also
+  created. `Put stereo compatibility track first` controls only their order.
+- A live output-audio summary reflects the selected order and additional-track
+  retention policy. Frontend lint, TypeScript, and the production build passed.
+  No HandBrake, FFmpeg, disc, or media operation was run.
+- Stereo, 2.1, 5.1, and 7.1 now each store an independent bitrate preference.
+  An explicitly selected layout is emitted as an AAC track using that layout's
+  bitrate, alongside the separately configured stereo compatibility track.
+  Disc-default and highest-available remain source passthrough choices. Older
+  saved profiles and manifests receive backward-compatible bitrate defaults.
+  Fifty-four focused adapter/profile/authorization tests, Ruff, frontend lint,
+  TypeScript, and the production build passed; the new layouts have not yet
+  been validated against real media.
+- Audio profiles now have explicit ordered primary and secondary outputs. This
+  supports stereo-first plus 5.1-second, highest-available passthrough first
+  plus stereo second, any other distinct pair, or no secondary output. The
+  adapter selects a source track with enough channels for both outputs.
+  Language retention remains independent: `all specified languages` with
+  `eng` retains other English tracks such as commentary and alternate mixes
+  after the primary/secondary pair. Duplicate output layouts are rejected.
+- Settings and HandBrake-profile save results now appear as fixed, dismissible
+  success/error notifications that remain visible at any scroll position.
+  The configuration button changes to `Configuration saved` after a successful
+  response. Frontend lint, TypeScript, and the production build passed.
+- HandBrake profile validation now also appears inline beside `Save custom
+  profile`; Profile ID and Display name are visibly required and invalid values
+  receive specific guidance.
+- Each HandBrake profile card can assign that profile as the general, 480p,
+  720p, 1080p, or 4K default. Automatic transcode authorization binds the full
+  resolution mapping, FFprobe selects the source-height bucket at execution,
+  and an explicit disc/queue profile still overrides it. Missing resolution
+  assignments fall back to the general profile.
+- Queued but not-running downstream items can be removed individually or in a
+  batch. Cancellation is atomic, records a durable event, and preserves every
+  staged MKV, encode, partial, contract, and log. Running work remains
+  uncancellable through this control.
+- Thirty-nine final focused profile, authorization, adapter, and queue tests
+  passed, as did Ruff, frontend lint, TypeScript, and the production build. No
+  disc or media tool was run.
+- Rip-review collision handling now offers a separately reviewed deletion of
+  raw staged MKVs only when both the exact planned staging file and its prior
+  matched Jellyfin destination still exist. The server returns a path-redacted
+  digest/count/size preview, revalidates it before deletion, and never changes
+  Jellyfin. Files with ambiguous identity, missing history, or a missing
+  Jellyfin destination are excluded.
+- Optical tray requests are serialized in the web UI. Later requests display
+  `Queued to eject` or `Queued to open`, then run after the active tray command.
+  Empty detected drives remain visible and expose `Open tray`. Windows eject
+  now sends both the native storage control and independent MCI door-open
+  command because some drivers acknowledge one method without opening the
+  tray. Cancelling and ejecting a reviewed disc also cancels restart-stale,
+  non-active plans for that same drive; a genuinely attached MakeMKV executor
+  remains protected.
+- Twenty-six focused orchestration, eject, drive-watcher, and staged-cleanup
+  tests passed. Ruff, frontend lint, TypeScript, and the production build also
+  passed. No optical drive, disc, MKV, or external media program was accessed.
+- Gemini retry is now an exact per-item operation. The request names one or
+  more explicit recovery IDs, validates that every item is still held in the
+  identify stage, and durably records `gemini_analysis_running` before the API
+  reports that work started. It no longer relies on a two-request UI transition
+  or silently includes every Gemini-held item in the global queue. Both the
+  disc queue and Recently Finished display an immediate item-local submitting,
+  running, or request-error message. Focused regression tests, Ruff, frontend
+  lint, TypeScript, and the production build passed; no MKV, physical disc, or
+  Gemini provider was accessed.
+- Disc Dashboard drive cards and the selected-disc review now consistently use
+  the newest durable orchestration job for that physical drive. When a tray is
+  reused, an older review for the prior disc is replaced in the open view by
+  the newest saved review, preventing prior matched-title history from being
+  displayed beneath the newly detected disc label. Frontend lint, TypeScript,
+  and the production build passed; no disc or media was accessed.
+- Automatic bonus-title fallback is now persisted as `extras` content instead
+  of an unclassified TV context. The automatic downstream worker also refuses
+  to send explicit movie, extras, or mixed batches through all-season episode
+  matching. This prevents movie bonus discs such as the Parent Trap test case
+  from displaying or running a TV-season analysis. Three focused tests and
+  Ruff checks passed; no disc, MKV, or external provider was accessed.
+- New rip manifests now prefix the collision-safe staging basename with a
+  sanitized, title-cased disc label. For example, a disc label resembling
+  `PARENT_TRAP_1961_PARENT_TRAP_II` produces a basename beginning
+  `Parent-Trap-1961-Parent-Trap-II--` while retaining the ordinal disc ID,
+  inventory fingerprint, and title index required for recovery and
+  deduplication. Legacy opaque basenames remain supported. Fifty-three focused
+  manifest, recovery, cleanup, and queue tests passed with Ruff checks; no
+  existing media was renamed or accessed.
+- Failed and review-held identification cards now offer both `Remove from
+  queue — keep staged rip` and `Delete staged rip permanently`. Permanent
+  deletion requires a separate confirmation, resolves and size-checks the
+  exact verified rip beneath the configured staging root, refuses active
+  Gemini evidence analysis, leaves Jellyfin unchanged, and discards the queue
+  record only after deletion succeeds. Twenty-three focused queue/API tests,
+  Ruff, frontend lint, TypeScript, and the production build passed; no real
+  media was deleted or accessed.
+- The staged-rip deletion validator now accepts both the original verified-rip
+  contract used by failed identification and the later identified contract.
+  A record first removed from the active queue may subsequently delete its
+  preserved exact staged rip from Recently Finished. Discarded records expose
+  that action only while the recorded source still exists with its verified
+  size. Movie/extras/mixed plans also remain in isolated staging until their
+  destination is identified, and readable labels preserve Roman numerals such
+  as `II`. Forty-five focused tests, Ruff, frontend lint, TypeScript, and the
+  production build passed; no real media was changed.
+- Disc cards now aggregate downstream identification state and older active rip
+  records for the same tray. A completed MakeMKV job is displayed as `rip
+  completed`, not whole-pipeline completion; unresolved identification turns
+  the card red with a review explanation. If automatic eject is blocked by an
+  earlier job still marked active, the card states that reason and opens the
+  earlier job's controls. The live Parent Trap test confirmed automatic eject
+  was enabled but safely skipped for exactly that competing-job condition.
+- Extras classification is now evaluated before the TV season requirement in
+  the identify adapter. An extras item without a season routes to bonus-feature
+  evidence and the configured Gemini fallback instead of
+  `unmatched_disc_analysis_required`. Thirty-eight focused adapter, queue, and
+  API tests plus Ruff, frontend lint, TypeScript, and the production build
+  passed; no disc or media operation was performed.
+- Startup drive reconciliation no longer automatically rerips a disc whose
+  inventory fingerprint already has durable rip work. The initial startup scan
+  still launches genuinely new inserted discs, while a known disc is held for
+  review so verified output, partials, and unresolved identification can be
+  reused safely. The dashboard's unmatched-disc recovery now offers separate
+  TV-series and movie/TV-movie bonus-feature routes; the latter requeues an
+  immutable `extras` context into the special-feature evidence path. Nineteen
+  focused tests, Ruff, frontend lint, TypeScript, and the production build
+  passed. The already active physical rip was not interrupted or changed.
+- The movie/TV-movie bonus-feature recovery action now continues into bounded
+  local evidence and the confirmed Gemini batch when automatic Gemini fallback
+  is enabled, rather than stopping at `gemini_evidence_required`. Already-held
+  titles also have one batch action to start evidence and Gemini for the whole
+  selected disc. The confirmation explains the bounded external transmission;
+  no MKV, path, credential, or full transcript is sent. Focused Python tests,
+  Ruff, frontend lint, TypeScript, and the production build passed without
+  accessing real media or contacting Gemini.
+- Catalogue-free Gemini recovery now handles mixed and previously unknown
+  discs instead of stopping when no reviewed Riplex catalogue matches. After
+  bounded local FFprobe/transcript evidence is collected, one schema-constrained
+  batch classifies each title as a movie, TV episode, bonus feature, menu, or
+  unknown and proposes a filesystem-safe provisional title. Confident movie
+  and bonus-feature results re-enter the normal identify, transcode, collision,
+  and organize pipeline; uncertain or unsupported results remain in an explicit
+  manual-review state. Recovery-suffixed media IDs retain their original title
+  index. Synthetic matcher, fallback, adapter, queue, and API tests passed; no
+  disc, MKV, credential, or external provider was accessed.
+- Automatic processing now watches the durable downstream queue for newly
+  identified transcode work, including items that arrive after delayed Gemini
+  review or a server restart. It builds the same validated authorization plan
+  with no profile override, so each source uses its configured 480p, 720p,
+  1080p, or 2160p profile and falls back to the general default only when that
+  resolution has no mapping. One shared lock prevents the original rip
+  continuation and the background worker from authorizing the same batch, and
+  HandBrake remains globally serialized. Twenty-three focused tests and Ruff
+  checks passed; HandBrake and real media were not accessed.
+- Server startup now reconciles interrupted `running` and `pause_requested`
+  physical-rip records to paused review state before drive processing begins.
+  These stale records therefore no longer prevent the existing post-rip
+  automatic eject path; a drive can be released once verified ripping is done,
+  while identification, transcode, organization, and review continue from
+  staging. The frontend adds a dedicated `Needs Attention` navigation view
+  backed by the same durable queue records and action handlers as the dashboard,
+  including Gemini/manual review, collision choices, retry, hold/clear, and
+  staged-source cleanup. Twenty-two focused backend tests plus frontend lint,
+  TypeScript, and production build checks passed; no disc or media operation
+  was performed.
+
+## RipWeaver publishing and deployment status (2026-08-02)
+
+- The project and GitHub origin now use the RipWeaver name. The active remote
+  is `fajis1/ripweaver`; the original upstream remains configured separately
+  for attribution and future upstream comparison.
+- The web application title and navigation identify the application as
+  RipWeaver. Generated frontend assets are committed so the packaged FastAPI
+  server serves the same interface that passed the frontend build checks.
+- Third-party attribution and licensing notes are maintained in
+  `THIRD_PARTY_NOTICES.md` and `docs/ATTRIBUTIONS.md`. Local credentials remain
+  outside Git in the ignored `.env` and Codex/Cloudflare authentication state
+  remains outside the repository.
+- The owner registered the RipWeaver domain family. The intended public
+  architecture places DNS and a narrowly scoped catalogue API behind
+  Cloudflare; PostgreSQL, Jellyfin, media roots, and the local RipWeaver control
+  API remain private. The existing `/rip` routes remain loopback/same-origin
+  only until secure pairing and authentication are implemented.
+- The local Windows Codex installation now has Cloudflare account, Workers
+  Bindings, Builds, Documentation, and Observability MCP endpoints enabled.
+  OAuth completed locally so the callback reached the same machine running
+  Codex. No OAuth URL, account identifier, token, or credential is stored in
+  this repository. A new Codex session is required before those tools appear
+  as callable capabilities.
+- Manual tray ejection now distinguishes a genuinely attached process-local
+  MakeMKV executor from stale durable `running` records left by an earlier
+  server process. An explicit eject still refuses a live executor, but safely
+  reconciles stale claims and returns inactive authorized/queued work to review
+  before opening the tray. Drive refreshes also merge partial MakeMKV results
+  with previously discovered slots, so empty trays no longer disappear from
+  the dashboard after a partial refresh. Nineteen focused drive, eject, and API
+  tests plus Ruff and formatting checks passed; no disc was read or ejected.

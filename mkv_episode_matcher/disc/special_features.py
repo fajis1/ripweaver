@@ -85,6 +85,8 @@ class FeatureCatalog:
     catalog_id: str
     release_id: str
     features: tuple[FeatureCatalogEntry, ...]
+    library_title: str | None = None
+    library_year: int | None = None
 
 
 @dataclass(frozen=True)
@@ -117,6 +119,8 @@ class SpecialFeaturePlan:
     planning_notes: tuple[str, ...]
     decisions: tuple[SpecialFeatureDecision, ...]
     missing_feature_ids: tuple[str, ...]
+    library_title: str | None = None
+    library_year: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -237,6 +241,18 @@ def load_feature_catalog_payload(payload: Any) -> FeatureCatalog:  # noqa: C901
     release = payload.get("release")
     if release is not None and not isinstance(release, dict):
         raise SpecialFeaturePlanError("release must be an object")
+    library_title = release.get("library_title") if release else None
+    library_year = release.get("library_year") if release else None
+    if library_title is not None and (
+        not isinstance(library_title, str) or not library_title.strip()
+    ):
+        raise SpecialFeaturePlanError("release library_title is invalid")
+    if library_year is not None and (
+        not isinstance(library_year, int)
+        or isinstance(library_year, bool)
+        or not 1870 <= library_year <= 2200
+    ):
+        raise SpecialFeaturePlanError("release library_year is invalid")
     raw_sources = payload.get("sources", [])
     if not isinstance(raw_sources, list):
         raise SpecialFeaturePlanError("sources must be a list")
@@ -285,6 +301,8 @@ def load_feature_catalog_payload(payload: Any) -> FeatureCatalog:  # noqa: C901
         catalog_id=catalog_id.strip(),
         release_id=release_id.strip(),
         features=tuple(entries),
+        library_title=library_title.strip() if library_title else None,
+        library_year=library_year,
     )
 
 
@@ -653,6 +671,8 @@ def build_special_feature_plan(  # noqa: C901
         mode="special-features-plan-only",
         catalog_id=catalogue.catalog_id,
         release_id=catalogue.release_id,
+        library_title=catalogue.library_title,
+        library_year=catalogue.library_year,
         catalogue_entry_count=len(catalogue.features),
         warning_count=len(warnings) if isinstance(warnings, list) else 0,
         planning_notes=(

@@ -140,6 +140,21 @@ def credential_is_configured(name: CredentialName) -> bool:
     return bool(getattr(load_environment_settings(), field_name))
 
 
+def credential_last4(name: CredentialName) -> str | None:
+    """Return only the final four characters of a configured credential.
+
+    This is deliberately a diagnostic fingerprint, not a credential value.  It
+    is suitable for a local settings screen to distinguish rotated keys while
+    keeping the secret itself out of responses and logs.
+    """
+
+    from mkv_episode_matcher.core.environment import load_environment_settings
+
+    field_name = CREDENTIAL_SPECS[name].environment_variable.lower()
+    value = getattr(load_environment_settings(), field_name) or ""
+    return value[-4:] if value else None
+
+
 def store_credential(
     name: CredentialName,
     value: str,

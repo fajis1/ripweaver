@@ -23,6 +23,21 @@ JobRunner = Callable[..., RipResult]
 BatchRunner = Callable[..., list[RipResult]]
 
 
+class ParallelRipError(RipError):
+    """Retain path-free partial success data when one or more drives fail."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        completed_results: list[RipResult],
+        drive_failures: dict[int, str],
+    ):
+        super().__init__(message)
+        self.completed_results = tuple(completed_results)
+        self.drive_failures = dict(drive_failures)
+
+
 def _group_and_validate(
     jobs: Iterable[RipJob],
     batch_plans: Mapping[int, SingleOpenBatchPlan],
@@ -230,11 +245,13 @@ def run_parallel_auto_rip_queue(
 
             collected: list[RipResult] = []
             first_error: RipError | None = None
+            drive_failures: dict[int, str] = {}
             for future in as_completed(futures):
                 drive_index = futures[future]
                 try:
                     collected.extend(future.result())
                 except Exception as exc:
+                    drive_failures[drive_index] = type(exc).__name__
                     if first_error is None:
                         first_error = (
                             exc
@@ -256,7 +273,11 @@ def run_parallel_auto_rip_queue(
                 completed_count=len(collected),
                 error_type=type(first_error).__name__,
             )
-            raise first_error
+            raise ParallelRipError(
+                str(first_error),
+                completed_results=collected,
+                drive_failures=drive_failures,
+            ) from first_error
 
         order = {job.job_id: index for index, job in enumerate(job_list)}
         collected.sort(key=lambda result: order[result.job_id])

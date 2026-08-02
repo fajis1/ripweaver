@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 MIN_EPISODE_SECONDS = 15 * 60
 MIN_HINTED_TITLE_SECONDS = 5 * 60
+MIN_BONUS_FEATURE_SECONDS = 3 * 60
 CLUSTER_RELATIVE_TOLERANCE = 0.12
 CLUSTER_ABSOLUTE_TOLERANCE = 120
 COMBINED_RELATIVE_TOLERANCE = 0.02
@@ -302,6 +303,36 @@ def _combined_components(
             if abs(component_duration - duration_seconds) <= tolerance:
                 return tuple(title.index for title in group)
     return ()
+
+
+def select_bonus_titles(plan: DiscTitlePlan) -> tuple[TitleDecision, ...]:
+    """Return conservative bonus-disc candidates from a saved title plan.
+
+    This is intentionally metadata-only. Very short navigation clips and titles
+    that resemble a play-all sum of other plausible features remain held for
+    review instead of being added to the rip proposal.
+    """
+
+    plausible = [
+        decision.title
+        for decision in plan.decisions
+        if decision.classification != "combined"
+        and decision.title.duration_seconds is not None
+        and decision.title.duration_seconds >= MIN_BONUS_FEATURE_SECONDS
+    ]
+    selected_indexes: set[int] = set()
+    for title in plausible:
+        duration = title.duration_seconds
+        assert duration is not None
+        other_titles = [item for item in plausible if item.index != title.index]
+        if _combined_components(duration, other_titles):
+            continue
+        selected_indexes.add(title.index)
+    return tuple(
+        decision
+        for decision in plan.decisions
+        if decision.title.index in selected_indexes
+    )
 
 
 def build_title_plan(

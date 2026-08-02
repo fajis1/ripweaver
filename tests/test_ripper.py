@@ -17,6 +17,7 @@ from mkv_episode_matcher.disc.ripper import (
     resolve_job_output,
     run_parallel_rip_queue,
     run_rip_job,
+    sample_output_throughput,
     sanitize_output,
 )
 
@@ -158,7 +159,7 @@ def test_output_sanitization_removes_hardware_embedded_in_error(tmp_path):
     destination = tmp_path / "private" / "output"
     line = (
         "MSG:2003,0,3,\"Error while reading 'BD-ROM Example SERIAL'\","
-        "\"BD-ROM Example SERIAL\""
+        '"BD-ROM Example SERIAL"'
     )
 
     sanitized = sanitize_output(line, destination)
@@ -171,6 +172,25 @@ def test_progress_is_bounded():
     assert progress_fraction("PRGV:32768,0,65536") == 0.5
     assert progress_fraction("PRGV:99999,0,65536") == 1.0
     assert progress_fraction("MSG:1005,0,0") is None
+
+
+def test_output_growth_emits_actual_path_free_throughput(tmp_path, monkeypatch):
+    output = tmp_path / "title.mkv"
+    output.write_bytes(b"x")
+    with output.open("r+b") as stream:
+        stream.truncate(3 * 1024 * 1024)
+    events = []
+    monkeypatch.setattr("mkv_episode_matcher.disc.ripper.time.monotonic", lambda: 4.0)
+
+    sample = sample_output_throughput(
+        tmp_path,
+        (1.0, 1024 * 1024),
+        "disc-01-title-000",
+        lambda kind, message: events.append((kind, message)),
+    )
+
+    assert sample == (4.0, 3 * 1024 * 1024)
+    assert events == [("throughput", "disc-01-title-000: 0.67 MiB/s")]
 
 
 def test_success_streams_sanitized_log_and_verifies_output(tmp_path):
@@ -203,9 +223,7 @@ def test_success_streams_sanitized_log_and_verifies_output(tmp_path):
     records = [json.loads(line) for line in serialized.splitlines()]
     assert result.output_count == 1
     assert result.output_bytes == 2_000_000
-    assert (
-        destination / "disc-01-fingerprint-title-003.mkv"
-    ).is_file()
+    assert (destination / "disc-01-fingerprint-title-003.mkv").is_file()
     assert not (destination / "private-source-name.mkv").exists()
     assert "Drive Serial" not in serialized
     assert str(destination) not in serialized
