@@ -44,16 +44,11 @@ def _selection_mode(
     drive_index: int,
 ) -> str:
     context = media_contexts.get(disc_id)
-    hint = context.content_hint if context is not None else None
     if context is not None and context.special_feature_catalog_id is not None:
         return "reviewed-special-features"
-    if hint == "extras":
-        return "bonus-features"
-    if hint == "mixed":
-        return "mixed"
-    if hint is None and not _has_episode_selection(report_paths, drive_index):
-        return "automatic-bonus-fallback"
-    return "episode"
+    if context is not None and context.selected_title_indexes is not None:
+        return "reviewed-title-selection"
+    return "all-plausible-media"
 
 
 @dataclass(frozen=True)

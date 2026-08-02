@@ -95,7 +95,7 @@ def test_preview_keeps_ineligible_inventory_on_per_title_strategy(tmp_path):
     assert preview.drives[0].reason == "no-exact-runtime-cutoff"
 
 
-def test_preview_labels_automatic_bonus_fallback(tmp_path):
+def test_preview_labels_preclassification_free_rip_selection(tmp_path):
     report = _write_report(
         tmp_path,
         "bonus.json",
@@ -105,8 +105,8 @@ def test_preview_labels_automatic_bonus_fallback(tmp_path):
 
     preview = build_rip_preview([report], contexts)
 
-    assert preview.drives[0].selection_mode == "automatic-bonus-fallback"
-    assert [job.title_index for job in preview.jobs] == [2, 3]
+    assert preview.drives[0].selection_mode == "all-plausible-media"
+    assert [job.title_index for job in preview.jobs] == [0, 1, 2, 3, 4]
 
 
 def test_preview_digest_is_stable_across_replanning(tmp_path):

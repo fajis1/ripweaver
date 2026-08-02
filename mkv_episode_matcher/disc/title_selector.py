@@ -16,6 +16,7 @@ from typing import Any, Literal
 MIN_EPISODE_SECONDS = 15 * 60
 MIN_HINTED_TITLE_SECONDS = 5 * 60
 MIN_BONUS_FEATURE_SECONDS = 3 * 60
+MIN_RIPPABLE_TITLE_SECONDS = 8
 CLUSTER_RELATIVE_TOLERANCE = 0.12
 CLUSTER_ABSOLUTE_TOLERANCE = 120
 COMBINED_RELATIVE_TOLERANCE = 0.02
@@ -332,6 +333,24 @@ def select_bonus_titles(plan: DiscTitlePlan) -> tuple[TitleDecision, ...]:
         decision
         for decision in plan.decisions
         if decision.title.index in selected_indexes
+    )
+
+
+def select_rippable_titles(plan: DiscTitlePlan) -> tuple[TitleDecision, ...]:
+    """Return every nonempty MakeMKV title that is not trivial navigation.
+
+    Whether a title is an episode, movie, extra, duplicate/play-all item, or
+    unknown is intentionally decided after ripping. Metadata ambiguity must not
+    prevent automatic ingestion.
+    """
+
+    return tuple(
+        decision
+        for decision in plan.decisions
+        if decision.title.duration_seconds is not None
+        and decision.title.duration_seconds >= MIN_RIPPABLE_TITLE_SECONDS
+        and decision.title.size_bytes is not None
+        and decision.title.size_bytes > 0
     )
 
 

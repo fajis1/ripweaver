@@ -76,7 +76,7 @@ def _make_batch_names(payload):
     return payload
 
 
-def test_manifest_selects_episodes_and_excludes_combined_title(tmp_path):
+def test_manifest_rips_plausible_titles_before_classification(tmp_path):
     report = _write_report(
         tmp_path,
         "private-disc.json",
@@ -85,7 +85,7 @@ def test_manifest_selects_episodes_and_excludes_combined_title(tmp_path):
 
     manifest = build_rip_manifest([report])
 
-    assert [job.title_index for job in manifest.jobs] == [0, 1, 2, 3]
+    assert [job.title_index for job in manifest.jobs] == [0, 1, 2, 3, 4]
     assert all(job.drive_index == 2 for job in manifest.jobs)
     assert all(
         job.relative_output_dir.startswith(".staging/disc-01/") for job in manifest.jobs
@@ -121,7 +121,26 @@ def test_movie_extras_stay_in_isolated_staging_with_readable_disc_name(tmp_path)
     )
 
 
-def test_manifest_skips_disc_with_review_titles(tmp_path):
+def test_tv_hint_without_episode_cluster_uses_safe_unmatched_title_fallback(tmp_path):
+    report = _write_report(
+        tmp_path,
+        "anthology-tv.json",
+        _inventory(2, "FAERIE_TALE_THEATRE_2", [2800, 3100, 3400, 3700]),
+    )
+    context = MediaContext(
+        disc_id="disc-01",
+        series_name="FAERIE TALE THEATRE",
+        season=2,
+        content_hint="tv",
+    )
+
+    manifest = build_rip_manifest([report], {"disc-01": context})
+
+    assert [job.title_index for job in manifest.jobs] == [0, 1, 2, 3]
+    assert manifest.skipped_discs == ()
+
+
+def test_manifest_does_not_block_ambiguous_disc_before_ripping(tmp_path):
     report = _write_report(
         tmp_path,
         "ambiguous.json",
@@ -139,12 +158,12 @@ def test_manifest_skips_disc_with_review_titles(tmp_path):
 
     manifest = build_rip_manifest([report, good])
 
-    assert len(manifest.jobs) == 6
-    assert manifest.skipped_discs[0].disc_id == "disc-01"
-    assert "review" in manifest.skipped_discs[0].reasons[0]
+    assert len(manifest.jobs) == 16
+    assert {job.drive_index for job in manifest.jobs} == {0, 1}
+    assert manifest.skipped_discs == ()
 
 
-def test_automatic_mode_falls_back_to_plausible_bonus_titles(tmp_path):
+def test_automatic_mode_rips_all_nonempty_titles_before_matching(tmp_path):
     report = _write_report(
         tmp_path,
         "bonus.json",
@@ -154,11 +173,11 @@ def test_automatic_mode_falls_back_to_plausible_bonus_titles(tmp_path):
 
     manifest = build_rip_manifest([report], {"disc-01": context})
 
-    assert [job.title_index for job in manifest.jobs] == [2, 3]
+    assert [job.title_index for job in manifest.jobs] == [0, 1, 2, 3, 4]
     assert manifest.skipped_discs == ()
 
 
-def test_explicit_bonus_mode_does_not_select_episode_cluster_or_short_menus(tmp_path):
+def test_explicit_bonus_hint_does_not_preclassify_titles_before_ripping(tmp_path):
     report = _write_report(
         tmp_path,
         "bonus.json",
@@ -172,9 +191,7 @@ def test_explicit_bonus_mode_does_not_select_episode_cluster_or_short_menus(tmp_
 
     manifest = build_rip_manifest([report], {"disc-01": context})
 
-    assert {job.title_index for job in manifest.jobs}.isdisjoint({0, 1})
-    assert {job.title_index for job in manifest.jobs}.issuperset({2, 3})
-    assert 4 not in {job.title_index for job in manifest.jobs}
+    assert {job.title_index for job in manifest.jobs} == set(range(7))
 
 
 def test_catalogued_bonus_titles_remain_in_isolated_staging(tmp_path):

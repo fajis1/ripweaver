@@ -21,7 +21,7 @@ from mkv_episode_matcher.disc.title_selector import (
     TitlePlanError,
     load_title_plan,
     normalize_title,
-    select_bonus_titles,
+    select_rippable_titles,
 )
 
 
@@ -386,12 +386,7 @@ def build_rip_manifest(  # noqa: C901
             continue
 
         context = media_contexts.get(disc_id) if media_contexts else None
-        content_hint = context.content_hint if context is not None else None
-        review_count = sum(
-            decision.classification == "review" for decision in plan.decisions
-        )
-        selected = [decision for decision in plan.decisions if decision.selected]
-        selection_mode = "episode"
+        selected = list(select_rippable_titles(plan))
         if context is not None and context.selected_title_indexes is not None:
             decisions_by_index = {
                 decision.title.index: decision for decision in plan.decisions
@@ -402,29 +397,9 @@ def build_rip_manifest(  # noqa: C901
             selected = [
                 decisions_by_index[index] for index in context.selected_title_indexes
             ]
-            selection_mode = "reviewed-special-features"
-        elif content_hint == "extras":
-            selected = list(select_bonus_titles(plan))
-            selection_mode = "bonus-features"
-        elif content_hint == "mixed":
-            bonus = select_bonus_titles(plan)
-            selected = list(
-                {item.title.index: item for item in (*selected, *bonus)}.values()
-            )
-            selected.sort(key=lambda item: item.title.index)
-            selection_mode = "mixed"
-        elif content_hint is None and not selected:
-            selected = list(select_bonus_titles(plan))
-            selection_mode = "automatic-bonus-fallback"
         reasons: list[str] = []
-        if review_count and selection_mode == "episode":
-            reasons.append(f"contains-{review_count}-review-title(s)")
         if not selected:
-            reasons.append(
-                "no-plausible-bonus-titles-selected"
-                if selection_mode != "episode"
-                else "no-episode-titles-selected"
-            )
+            reasons.append("no-readable-media-titles")
         if reasons:
             skipped.append(
                 SkippedDisc(
@@ -471,7 +446,7 @@ def build_rip_manifest(  # noqa: C901
             disc_proofs.append(proof)
 
     if not jobs:
-        raise RipError("No unambiguous episode titles are available to rip")
+        raise RipError("No readable media titles are available to rip")
     selected_disc_ids = {job.job_id.rsplit("-title-", 1)[0] for job in jobs}
     if media_contexts is not None:
         missing = selected_disc_ids - media_contexts.keys()

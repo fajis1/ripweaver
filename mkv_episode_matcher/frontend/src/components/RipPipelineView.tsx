@@ -1606,7 +1606,11 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                           ? 'Queued for preparation'
                           : stagingAttemptCollision
                             ? 'Prepare fresh isolated attempt'
-                            : job ? 'Prepare a new pipeline for this disc' : 'Start pipeline for this disc'}
+                            : job
+                              ? 'Prepare a new pipeline for this disc'
+                              : jobDashboard?.automatic_processing_enabled
+                                ? 'Retry automatic preparation'
+                                : 'Start pipeline for this disc'}
                     </button>
                   )}
                   {drive.has_disc && job && <div className="flex items-center justify-between text-xs">

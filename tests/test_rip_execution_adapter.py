@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -178,3 +179,37 @@ def test_adapter_hands_unaffected_drive_results_to_sink_before_failure(tmp_path)
         )(bound)
 
     assert observed == [(bound, [completed])]
+
+
+def test_adapter_does_not_enqueue_partially_completed_disc(tmp_path):
+    bound = _bound(tmp_path)
+    first = bound.manifest.jobs[0]
+    second = replace(
+        bound.manifest.jobs[1],
+        job_id="disc-01-title-001",
+        drive_index=first.drive_index,
+    )
+    bound = replace(
+        bound,
+        manifest=replace(bound.manifest, jobs=(first, second)),
+    )
+    observed = []
+
+    def partially_failing_queue(*_args, **_kwargs):
+        raise ParallelRipError(
+            "second title failed",
+            completed_results=[_result(first.job_id)],
+            drive_failures={first.drive_index: "RipError"},
+        )
+
+    with pytest.raises(ParallelRipError):
+        ProductionRipExecutor(
+            _options(tmp_path),
+            queue_runner=partially_failing_queue,
+            completion_sink=lambda dispatch, results: observed.append((
+                dispatch,
+                results,
+            )),
+        )(bound)
+
+    assert observed == []

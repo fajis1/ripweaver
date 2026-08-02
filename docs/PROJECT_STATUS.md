@@ -2354,3 +2354,12 @@ added to queue events or durable public history records.
   control databases and prior pipeline contracts were moved to a recoverable,
   credential-free application-data backup. No media, Jellyfin output, settings,
   profiles, credentials, or logs were removed.
+- Automatic rip planning no longer requires episode classification before
+  MakeMKV. Every nonempty title of at least eight seconds is placed in the rip
+  manifest regardless of whether metadata calls it an episode, movie, extra,
+  play-all title, or review item; classification begins only after the whole
+  selected disc has completed and verified. A partial failure on one disc does
+  not enqueue that disc for identification, while another fully completed drive
+  may continue independently. The dashboard labels its manual action as a retry
+  when automatic processing is enabled rather than presenting manual start as
+  the normal workflow.
