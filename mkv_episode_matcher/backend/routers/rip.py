@@ -794,6 +794,7 @@ def prepare_drive_pipeline(
             output_root=config.rip_output_root,
             media_contexts={disc_id: context},
         )
+        watcher.bind_current_job(request.drive_index, job.job_id)
         return _job_response(job, public_store)
     except (PreflightError, RipError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

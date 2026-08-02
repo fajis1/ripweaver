@@ -29,7 +29,7 @@ def test_watcher_exposes_only_redacted_slot_state():
             'DRV:15,0,0,0,"","",""\n'
         )
 
-    watcher = DriveWatcher(runner)
+    watcher = DriveWatcher(runner, native_discovery=lambda: ())
     snapshot = watcher.refresh(Path("makemkvcon64.exe"), timeout_seconds=12)
 
     assert calls == [
@@ -56,7 +56,7 @@ def test_snapshot_does_not_invoke_discovery():
     def runner(*args, **kwargs):
         raise AssertionError("snapshot must not access hardware")
 
-    snapshot = DriveWatcher(runner).snapshot()
+    snapshot = DriveWatcher(runner, native_discovery=lambda: ()).snapshot()
 
     assert snapshot.status == "not_scanned"
     assert snapshot.drives == ()
@@ -67,7 +67,9 @@ def test_failed_refresh_preserves_last_known_slots():
         _result('DRV:0,2,999,1,"hardware","disc","D:"\n'),
         _result(""),
     ])
-    watcher = DriveWatcher(lambda *args, **kwargs: next(results))
+    watcher = DriveWatcher(
+        lambda *args, **kwargs: next(results), native_discovery=lambda: ()
+    )
     first = watcher.refresh(Path("makemkvcon64.exe"))
 
     with pytest.raises(PreflightError, match="no optical-drive records"):
@@ -88,7 +90,9 @@ def test_partial_refresh_preserves_previously_discovered_empty_slots():
         ),
         _result('DRV:1,2,999,1,"","new disc","E:"\n'),
     ])
-    watcher = DriveWatcher(lambda *args, **kwargs: next(results))
+    watcher = DriveWatcher(
+        lambda *args, **kwargs: next(results), native_discovery=lambda: ()
+    )
 
     watcher.refresh(Path("makemkvcon64.exe"))
     refreshed = watcher.refresh(Path("makemkvcon64.exe"))
@@ -101,6 +105,47 @@ def test_partial_refresh_preserves_previously_discovered_empty_slots():
     assert watcher.device_name(0) == "D:"
     assert watcher.device_name(1) == "E:"
     assert watcher.device_name(2) == "F:"
+
+
+def test_native_windows_inventory_adds_makemkv_omitted_empty_trays():
+    watcher = DriveWatcher(
+        lambda *_args, **_kwargs: _result(
+            'DRV:1,2,999,1,"hardware","disc one","D:"\n'
+            'DRV:2,2,999,1,"hardware","disc two","F:"\n'
+            'DRV:3,2,999,0,"hardware","","H:"\n'
+        ),
+        native_discovery=lambda: ("D:", "F:", "H:", "I:", "J:"),
+    )
+
+    snapshot = watcher.refresh(Path("makemkvcon64.exe"))
+
+    assert [(drive.drive_index, drive.has_disc) for drive in snapshot.drives] == [
+        (1, True),
+        (2, True),
+        (3, False),
+        (4, False),
+        (5, False),
+    ]
+    assert watcher.device_name(4) == "I:"
+    assert watcher.device_name(5) == "J:"
+
+
+def test_current_job_binding_is_cleared_when_tray_disc_changes():
+    results = iter([
+        _result('DRV:0,2,999,1,"hardware","disc one","D:"\n'),
+        _result('DRV:0,2,999,1,"hardware","disc two","D:"\n'),
+    ])
+    watcher = DriveWatcher(
+        lambda *_args, **_kwargs: next(results), native_discovery=lambda: ()
+    )
+    watcher.refresh(Path("makemkvcon64.exe"))
+    watcher.bind_current_job(0, "rip-0123456789abcdef0123456789abcdef")
+
+    assert watcher.snapshot().drives[0].current_job_id is not None
+
+    watcher.refresh(Path("makemkvcon64.exe"))
+
+    assert watcher.snapshot().drives[0].current_job_id is None
 
 
 @pytest.mark.parametrize("timeout", [0, 4, 121])

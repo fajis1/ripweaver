@@ -93,6 +93,7 @@ interface DriveSlot {
   available: boolean;
   has_disc: boolean;
   disc_label: string | null;
+  current_job_id?: string | null;
 }
 
 interface DriveDashboard {
@@ -1172,11 +1173,13 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  // The API returns jobs newest-first. Always bind a drive card to the first
-  // matching job so a review from the disc previously in that tray cannot leak
-  // into the currently selected drive view.
-  const latestJobForDrive = useCallback((driveIndex: number) => (jobDashboard?.jobs ?? [])
-    .find((candidate) => candidate.preview?.drives.some((item) => item.drive_index === driveIndex)), [jobDashboard?.jobs]);
+  // Bind a drive card only to the process-local job recorded for its current
+  // disc. A reusable tray index must never select an older disc's saved job.
+  const latestJobForDrive = useCallback((driveIndex: number) => {
+    const currentJobId = driveDashboard?.drives.find((drive) => drive.drive_index === driveIndex)?.current_job_id;
+    if (!currentJobId) return undefined;
+    return (jobDashboard?.jobs ?? []).find((candidate) => candidate.job_id === currentJobId);
+  }, [driveDashboard?.drives, jobDashboard?.jobs]);
 
   useEffect(() => {
     const selectedDriveIndex = savedJob?.preview?.drives[0]?.drive_index;

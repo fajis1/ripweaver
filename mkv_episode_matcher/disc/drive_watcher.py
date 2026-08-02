@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import re
+import sys
 import threading
+from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -25,6 +27,7 @@ class PublicDriveStatus:
     available: bool
     has_disc: bool
     disc_label: str | None = None
+    current_job_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -36,6 +39,29 @@ class DriveStatusSnapshot:
 
 
 DiscoveryRunner = Callable[..., CommandResult]
+NativeDriveDiscovery = Callable[[], tuple[str, ...]]
+
+
+def discover_windows_optical_drives() -> tuple[str, ...]:
+    """List Windows CD-ROM drive letters without testing media readiness."""
+
+    if sys.platform != "win32":
+        return ()
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.GetLogicalDrives.restype = ctypes.c_uint32
+    kernel32.GetDriveTypeW.argtypes = [ctypes.c_wchar_p]
+    kernel32.GetDriveTypeW.restype = ctypes.c_uint
+    drive_mask = kernel32.GetLogicalDrives()
+    optical: list[str] = []
+    for ordinal in range(26):
+        if not drive_mask & (1 << ordinal):
+            continue
+        letter = f"{chr(ord('A') + ordinal)}:"
+        if kernel32.GetDriveTypeW(f"{letter}\\") == 5:  # DRIVE_CDROM
+            optical.append(letter)
+    return tuple(optical)
 
 
 def _public_disc_label(value: str) -> str | None:
@@ -48,8 +74,17 @@ def _public_disc_label(value: str) -> str | None:
 class DriveWatcher:
     """Cache explicit read-only refreshes; never inventory titles or mutate media."""
 
-    def __init__(self, runner: DiscoveryRunner = run_info_command) -> None:
+    def __init__(
+        self,
+        runner: DiscoveryRunner = run_info_command,
+        native_discovery: NativeDriveDiscovery | None = None,
+    ) -> None:
         self._runner = runner
+        self._native_discovery = native_discovery or (
+            discover_windows_optical_drives
+            if runner is run_info_command
+            else lambda: ()
+        )
         self._lock = threading.Lock()
         self._snapshot = DriveStatusSnapshot((), None, "not_scanned")
         self._device_names: dict[int, str] = {}
@@ -63,6 +98,27 @@ class DriveWatcher:
 
         with self._lock:
             return self._device_names.get(drive_index)
+
+    def bind_current_job(self, drive_index: int, job_id: str) -> None:
+        """Bind one ephemeral job only to the disc currently in this process."""
+
+        with self._lock:
+            if not re.fullmatch(r"rip-[0-9a-f]{32}", job_id):
+                raise ValueError("Current rip job ID is invalid")
+            if not any(
+                drive.drive_index == drive_index and drive.has_disc
+                for drive in self._snapshot.drives
+            ):
+                raise ValueError("Cannot bind a job to an empty optical drive")
+            self._snapshot = replace(
+                self._snapshot,
+                drives=tuple(
+                    replace(drive, current_job_id=job_id)
+                    if drive.drive_index == drive_index
+                    else drive
+                    for drive in self._snapshot.drives
+                ),
+            )
 
     def refresh(
         self,
@@ -92,28 +148,76 @@ class DriveWatcher:
                             if drive.has_disc
                             else None
                         ),
+                        current_job_id=next(
+                            (
+                                previous.current_job_id
+                                for previous in self._snapshot.drives
+                                if previous.drive_index == drive.index
+                                and previous.has_disc
+                                and previous.disc_label
+                                == _public_disc_label(drive.disc_name)
+                            ),
+                            None,
+                        ),
                     )
                     for drive in parsed_drives
                     if (drive.visible and drive.enabled and drive.device_name.strip())
                 }
                 if not refreshed:
                     raise PreflightError("MakeMKV returned no optical-drive records")
+                parsed_device_names = {
+                    drive.index: drive.device_name.strip().upper().rstrip("\\/")
+                    for drive in parsed_drives
+                    if drive.visible and drive.enabled and drive.device_name.strip()
+                }
+                native_names = tuple(
+                    sorted({
+                        name.strip().upper().rstrip("\\/")
+                        for name in self._native_discovery()
+                        if re.fullmatch(r"[A-Z]:[\\/]?", name.strip().upper())
+                    })
+                )
+                native_positions = {
+                    device_name: ordinal
+                    for ordinal, device_name in enumerate(native_names)
+                }
+                offsets = [
+                    drive_index - native_positions[device_name]
+                    for drive_index, device_name in parsed_device_names.items()
+                    if device_name in native_positions
+                ]
+                index_offset = Counter(offsets).most_common(1)[0][0] if offsets else 0
+                used_indexes = set(refreshed)
+                for ordinal, device_name in enumerate(native_names):
+                    if device_name in parsed_device_names.values():
+                        continue
+                    drive_index = ordinal + index_offset
+                    if drive_index < 0 or drive_index in used_indexes:
+                        drive_index = next(
+                            index for index in range(32) if index not in used_indexes
+                        )
+                    refreshed[drive_index] = PublicDriveStatus(
+                        drive_index=drive_index,
+                        available=True,
+                        has_disc=False,
+                        disc_label=None,
+                        current_job_id=None,
+                    )
+                    parsed_device_names[drive_index] = device_name
+                    used_indexes.add(drive_index)
                 known = {
                     drive.drive_index: PublicDriveStatus(
                         drive_index=drive.drive_index,
                         available=drive.available,
                         has_disc=False,
                         disc_label=None,
+                        current_job_id=None,
                     )
                     for drive in self._snapshot.drives
                 }
                 known.update(refreshed)
                 drives = tuple(known[index] for index in sorted(known))
-                self._device_names.update({
-                    drive.index: drive.device_name
-                    for drive in parsed_drives
-                    if drive.visible and drive.enabled and drive.device_name.strip()
-                })
+                self._device_names.update(parsed_device_names)
                 self._snapshot = DriveStatusSnapshot(
                     drives=drives,
                     refreshed_at=datetime.now(UTC).isoformat(),

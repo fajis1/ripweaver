@@ -2334,3 +2334,12 @@ added to queue events or durable public history records.
   with previously discovered slots, so empty trays no longer disappear from
   the dashboard after a partial refresh. Nineteen focused drive, eject, and API
   tests plus Ruff and formatting checks passed; no disc was read or ejected.
+- Windows drive discovery now supplements MakeMKV's partial inventory with the
+  operating system's complete optical-drive list. This keeps every empty tray
+  visible after a server restart without testing media readiness or spinning a
+  disc. The dashboard also binds a saved rip job to the currently observed disc
+  instead of choosing history by reusable drive index; changing the disc label
+  clears that process-local binding, while durable matching identity remains
+  the inventory fingerprint plus title index. Focused drive, eject, preparation,
+  and API tests plus frontend lint, TypeScript, and production build checks
+  passed; no physical disc or media file was accessed.
