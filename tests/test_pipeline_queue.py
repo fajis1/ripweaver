@@ -3,8 +3,15 @@ import threading
 
 import pytest
 
-from mkv_episode_matcher.backend.routers.rip import _exact_queued_rip_source
+from mkv_episode_matcher.backend.routers.rip import (
+    ManualEpisodeIdentificationRequest,
+    PipelineControlRequest,
+    _exact_queued_rip_source,
+    apply_manual_episode_identification,
+    restart_placeholder_identification,
+)
 from mkv_episode_matcher.disc.ripper import RipJob, RipResult, resolve_final_output
+from mkv_episode_matcher.pipeline_adapters import IdentifyStageAdapter
 from mkv_episode_matcher.pipeline_queue import (
     DOWNSTREAM_STAGES,
     DownstreamDispatcher,
@@ -487,6 +494,121 @@ def test_gemini_assignment_uses_new_contract_and_requeues_identification(tmp_pat
     assert original.contract_path.exists()
 
 
+def test_placeholder_identification_can_restart_from_verified_rip(tmp_path):
+    store = _store(tmp_path)
+    rip = tmp_path / "verified-rip.json"
+    rip.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "disc_fingerprint": "0123456789abcdef",
+            "title_index": 0,
+        }),
+        encoding="utf-8",
+    )
+    identified = tmp_path / "identified.json"
+    identified.write_text(
+        json.dumps({
+            "mode": "identified-episode-contract",
+            "episode_id": "S01E01",
+            "library_relative": "Unmatched/Season 01/Unmatched - S01E01 - Episode 1.mkv",
+        }),
+        encoding="utf-8",
+    )
+    store.enqueue_verified_rip("media-1", build_artifact("rip", rip))
+    store.claim_next()
+    store.complete_stage("media-1", "identify", build_artifact("identify", identified))
+    store.claim_next()
+    store.require_review("media-1", "placeholder_identification_required")
+
+    response = restart_placeholder_identification(
+        "media-1", PipelineControlRequest(confirm_control=True), store
+    )
+
+    restarted = store.get("media-1")
+    assert response["state"] == "queued"
+    assert restarted.stage == "identify"
+    assert restarted.artifact.contract_path == rip.resolve()
+
+
+def test_encoded_placeholder_can_restart_from_verified_rip(tmp_path):
+    store = _store(tmp_path)
+    rip = tmp_path / "verified-rip.json"
+    rip.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "disc_fingerprint": "0123456789abcdef",
+            "title_index": 0,
+        }),
+        encoding="utf-8",
+    )
+    identified = _artifact(tmp_path, "identified", "identify")
+    encoded = _artifact(tmp_path, "encoded", "transcode")
+    store.enqueue_verified_rip("media-1", build_artifact("rip", rip))
+    store.claim_next()
+    store.complete_stage("media-1", "identify", identified)
+    store.claim_next()
+    store.complete_stage("media-1", "transcode", encoded)
+    store.claim_next()
+    store.require_review("media-1", "placeholder_identification_required")
+
+    response = restart_placeholder_identification(
+        "media-1", PipelineControlRequest(confirm_control=True), store
+    )
+
+    restarted = store.get("media-1")
+    assert response["state"] == "queued"
+    assert restarted.stage == "identify"
+    assert restarted.artifact.contract_path == rip.resolve()
+
+
+def test_manual_playback_review_teaches_disc_title_history(tmp_path):
+    store = _store(tmp_path)
+    source = tmp_path / "staged-rip.mkv"
+    source.write_bytes(b"verified-rip")
+    rip = tmp_path / "verified-rip.json"
+    rip.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "disc_fingerprint": "0123456789abcdef",
+            "title_index": 4,
+            "media_context": {"series_name": "Unmatched"},
+        }),
+        encoding="utf-8",
+    )
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    store.enqueue_verified_rip("media-1", build_artifact("rip", rip))
+    store.claim_next()
+    store.require_review("media-1", "all_season_analysis_failed")
+
+    response = apply_manual_episode_identification(
+        "media-1",
+        ManualEpisodeIdentificationRequest(
+            new_name="Faerie Tale Theatre - S03E02 - The Princess and the Pea",
+            confirm_identification=True,
+        ),
+        store,
+        contracts,
+    )
+
+    assert response["stage"] == "identify"
+    assert response["state"] == "queued"
+    running = store.claim_next()
+    identified = IdentifyStageAdapter(object(), contracts)(running)
+    completed = store.complete_stage("media-1", "identify", identified)
+    assert completed.stage == "transcode"
+    assert store.title_history("0123456789abcdef")[4] == {
+        "outcome_name": ("Faerie Tale Theatre - S03E02 - The Princess and the Pea.mkv"),
+        "library_relative": (
+            "Faerie Tale Theatre/Season 03/"
+            "Faerie Tale Theatre - S03E02 - The Princess and the Pea.mkv"
+        ),
+        "episode_id": "S03E02",
+    }
+
+
 def test_verified_rip_result_is_admitted_without_discovering_media(tmp_path):
     store = _store(tmp_path)
     output_root = tmp_path / "media-output"
@@ -548,3 +670,22 @@ def test_retained_source_reencode_starts_at_transcode(tmp_path):
     assert store.list_events(queued.media_id)[-1].event_type == (
         "retained_source_reencode_queued"
     )
+
+
+def test_sequence_diagnostic_accepts_real_ambiguous_planner_disposition(tmp_path):
+    store = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+    store.enqueue_verified_rip("media-1", _artifact(tmp_path, "media-1", "rip"))
+
+    store.record_sequence_diagnostic(
+        ("media-1",),
+        catalog_episode_count=27,
+        file_count=1,
+        best_score=0.51,
+        runner_up_score=0.50,
+        global_margin=0.01,
+        disposition="review-ambiguous",
+    )
+
+    event = store.list_events("media-1")[-1]
+    assert event.event_type == "sequence_match_scored"
+    assert event.details["disposition"] == "review-ambiguous"

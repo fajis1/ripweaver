@@ -2363,3 +2363,129 @@ added to queue events or durable public history records.
   may continue independently. The dashboard labels its manual action as a retry
   when automatic processing is enabled rather than presenting manual start as
   the normal workflow.
+
+## Restart-safe cross-kind identification dossier (2026-08-02)
+
+- Verified rip titles now receive a private evidence dossier keyed by disc
+  inventory fingerprint, title index, exact source size and modification time,
+  ASR model, and sampling-policy version. A restart or retry reuses the cached
+  bounded transcript excerpts only when that complete identity still matches;
+  changed media or ASR policy causes a cache miss.
+- The dossier records dialogue-free summaries for local TV sequence matching,
+  Gemini episode ranking, movie/TV-movie/bonus classification, and final
+  synthesis. Summaries are bounded to scalar scores, margins, candidate IDs,
+  confidences, dispositions, and safe rejection codes. Provider transmission
+  uses only the newest twelve summaries even though the private retry history
+  remains restart-safe. Source paths and transcript dialogue are not copied
+  into public queue events.
+- A confirmed run now uses a bounded cross-kind route. TV-oriented input tries
+  the local all-season sequence model, then schema-constrained Gemini episode
+  ranking, then movie/TV-movie/bonus classification using the same evidence and
+  earlier attempt summaries. A descriptive result of `tv_episode` automatically
+  returns to all-season matching only when that branch has not already run.
+  Each route runs at most once per cycle, preventing recursive TV/movie loops;
+  an explicit later retry remains possible.
+- Runtime-only evidence is retained when Whisper produces no usable dialogue,
+  allowing the constrained provisional Gemini behavior instead of losing the
+  inspection and retranscribing indefinitely.
+- ASR debug logging no longer prints the temporary audio path or raw/cleaned
+  transcript. It records only transcript character counts.
+- Gemini episode results require two independent structured responses to agree
+  on the same catalogue ID at or above the configured confidence threshold.
+  Confident partial results advance independently while null, low-confidence,
+  inconsistent, or runtime-incompatible titles remain review-only. A source
+  whose runtime is consistent with a play-all/compilation title cannot be
+  accepted as one ordinary episode.
+- The deterministic sequence matcher always receives the complete canonical
+  aired catalogue. Jellyfin-present/missing state is sent to Gemini as a
+  tie-break annotation only and never removes an otherwise valid candidate.
+  This preserves aired adjacency and prevents a present episode from being
+  forced into an unrelated missing slot.
+- Forty-five focused dossier, all-season, Gemini fallback, request-schema,
+  partial-result, retry-history, library-awareness, and runtime-guard tests
+  pass. Ruff check and format checks pass on every touched module and focused
+  test.
+- Queue responses expose only the dialogue-free branch/disposition history,
+  and the dashboard renders it as an ordered `Identification tried` trail. A
+  broader 116-test automatic-worker, queue, adapter, API-composition, and
+  matcher suite passed;
+  frontend lint, TypeScript, and the production build also passed.
+- The full repository suite passed 671 tests after the supervised validation
+  fixes. Its seven warnings are dependency deprecations plus the pre-existing
+  inaccessible repository `.pytest_cache`; the required writable audit
+  basetemp was used successfully.
+
+The separately approved ten-file Faerie Tale Theatre validation completed in
+an isolated queue. The first pass used FFprobe, FFmpeg, Whisper, TMDb, and
+Gemini; later retries reused the exact cached dossiers and contacted only the
+catalogue/provider layers. It exposed and fixed five defects: the durable queue
+rejected the real `review-ambiguous` sequence disposition; library filtering
+broke canonical adjacency; valid Gemini partial results were rejected as an
+invalid whole batch; the private history retained more attempts than the
+provider boundary accepted; and play-all titles could be assigned one episode.
+The final two-pass consensus run advanced seven stable provisional episode
+matches and held three titles: one inconsistent episode-length result and both
+play-all titles. No physical disc was accessed, no live application queue was
+changed, and no media was renamed, moved, transcoded, deleted, or organized.
+
+The live queue subsequently exposed two backward-compatibility gaps. A local
+sequence proposal did not apply the same play-all runtime guard as Gemini, and
+older identified contracts could carry synthetic names such as
+`Unmatched - S01E01 - Episode 1` into HandBrake. Local proposals now apply the
+runtime guard per title, so valid episode-length titles may advance while a
+compilation remains held. Identification and transcode adapters both reject
+placeholder series assignments. The WebUI presents rejected legacy items with
+`Remove placeholder and restart matching`, which restores the durable verified
+rip as the identify input without rereading, renaming, or deleting media.
+All-season handoffs now carry an identification-policy version; queued handoffs
+created before the runtime fix are returned to review and recomputed from their
+cached evidence rather than trusted retroactively.
+Server startup now also reconciles interrupted downstream `running` claims;
+previously it reconciled only physical-rip jobs, so a reboot could leave the
+single global worker permanently occupied without a HandBrake process. The
+placeholder guard now recognizes placeholder basenames even beneath a real
+series folder and blocks both transcoding and Jellyfin organization. Recovery
+may restart an already encoded placeholder from its preserved verified rip,
+and the WebUI provides one batch action for every held placeholder title.
+Failed all-season identification cards also expose `Play staged rip for
+review`; it opens only the exact preserved MKV in the Windows default player
+and does not change pipeline or media state.
+The same card accepts a reviewed TV basename in
+`Series - SXXEYY - Episode Title` form without an extension. RipWeaver retains
+the immutable staged basename, adds `.mkv` to the planned output, queues a
+manual reviewed identification, and records the accepted title against the
+disc fingerprint/title index when identification completes.
+Live queue diagnostics exposed an automatic-analysis retry loop for legacy
+contracts whose series context was `Unmatched`. The automatic worker now
+recovers the canonical series from the path-free media-ID disc-label prefix
+without treating a disc ordinal as a season, attempts a fingerprint only once
+per worker lifetime, and resumes an orphaned `all_season_analysis_running`
+batch once after a server restart. Ambiguous results therefore settle into
+review instead of repeatedly contacting catalogue/provider branches.
+Correcting one of those legacy placeholder matches also exposed an immutable
+contract-name collision: the first identification had already reserved the
+fixed `<media-id>.identify.json` name. Identification output now retains that
+original audit artifact and writes a deterministic, content-addressed revision
+when a later reviewed result differs. Repeating the same corrected result is
+idempotent and reuses the same revision; transcode receives only the newest
+queue-bound artifact.
+Transcode retries now advance past either a preserved partial or an existing
+private run-log directory. A failed preflight or interrupted first attempt can
+therefore use `attempt-002` instead of repeatedly colliding with
+`attempt-001`. Retained-source re-encode admission now reconstructs its
+identified input from the verified transcode contract and writes a new
+verified-rip contract bound to the retained original. Restarting identification
+on a re-encode no longer falls back to the obsolete pre-archive source path.
+The Disc Dashboard now keeps a fresh-rerip preparation action visible when a
+disc has identification holds. A saved `awaiting_review` job therefore cannot
+trap the user between analysis and an inaccessible rerip workflow. The same
+action is available in the selected-disc existing-rip panel. Exact staged-file
+deletion remains separately confirmed and is allowed for one eligible inactive
+title even while MakeMKV is working on a different physical drive; its client
+now handles non-JSON error responses safely and refreshes the rip-job view
+after success.
+Eighty-three related startup, automatic-worker, analysis, adapter, and queue
+tests pass; frontend lint, TypeScript, build, Ruff check, and Ruff format checks
+also pass. The complete
+repository suite now passes 675 tests with seven pre-existing dependency/cache
+warnings.

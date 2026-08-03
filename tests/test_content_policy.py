@@ -2,6 +2,7 @@ import pytest
 
 from mkv_episode_matcher.disc.content_policy import (
     identification_order,
+    infer_release_name_from_disc_label,
     infer_tv_context_from_disc_label,
 )
 
@@ -44,3 +45,22 @@ def test_unknown_hint_is_rejected():
 )
 def test_explicit_season_label_context(label, expected):
     assert infer_tv_context_from_disc_label(label) == expected
+
+
+@pytest.mark.parametrize(
+    ("label", "expected"),
+    [
+        ("FAERIE_TALE_THEATRE_5", "FAERIE TALE THEATRE"),
+        (
+            "Dragons Race to the Edge Season 1 DVD2",
+            "Dragons Race to the Edge Season 1",
+        ),
+        (
+            "PARENT_TRAP_1961_PARENT_TRAP_II",
+            "PARENT TRAP 1961 PARENT TRAP II",
+        ),
+        (None, None),
+    ],
+)
+def test_release_name_from_disc_label_preserves_content_identity(label, expected):
+    assert infer_release_name_from_disc_label(label) == expected

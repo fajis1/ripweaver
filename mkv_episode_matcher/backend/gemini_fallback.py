@@ -7,25 +7,29 @@ import re
 from pathlib import Path
 from uuid import uuid4
 
+from mkv_episode_matcher.backend.identification_dossier import collect_dossier_evidence
 from mkv_episode_matcher.core.models import Config
 from mkv_episode_matcher.media.episode_catalog import EpisodeCatalogEntry
-from mkv_episode_matcher.media.ffprobe_runner import inspect_mkv, resolve_ffprobe_path
 from mkv_episode_matcher.media.gemini_matcher import (
     GeminiDescriptiveRanker,
     GeminiEpisodeRanker,
-    UnmatchedFileEvidence,
-)
-from mkv_episode_matcher.media.transcript_batch import (
-    FFmpegSampleExtractor,
-    TranscriptBatchItem,
-    collect_transcript_batch,
-    resolve_ffmpeg_path,
 )
 from mkv_episode_matcher.pipeline_queue import (
     PipelineQueueError,
     PipelineQueueStore,
     build_artifact,
 )
+
+
+def _descriptive_release_hint(payload: dict, media_id: str) -> str:
+    context = payload.get("media_context", {})
+    series_name = context.get("series_name") if isinstance(context, dict) else None
+    if isinstance(series_name, str) and series_name.strip().casefold() != "unmatched":
+        return series_name
+    prefix = media_id.split("--disc-", 1)[0]
+    recovered = " ".join(prefix.replace("_", "-").split("-")).strip()
+    return recovered or "Unknown disc"
+
 
 _TITLE_INDEX_PATTERN = re.compile(r"-title-(\d{3})(?:-|$)")
 
@@ -115,39 +119,17 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
     remaining = [
         item for item in features.values() if item["title"] not in assigned_titles
     ]
-    ffprobe = resolve_ffprobe_path(config.ffprobe_path)
-    ffmpeg = resolve_ffmpeg_path(config.ffmpeg_path)
-    transcript_items = []
-    inspected_durations = {}
-    for item, payload in zip(held, payloads, strict=True):
-        source = Path(str(payload.get("source_path", "")))
-        inspection = inspect_mkv(ffprobe, source, timeout_seconds=60)
-        inspected_durations[item.media_id] = inspection.media.duration_seconds
-        transcript_items.append(
-            TranscriptBatchItem(item.media_id, source, inspection.media)
-        )
-    transcripts = collect_transcript_batch(
-        tuple(transcript_items),
-        asr,
-        FFmpegSampleExtractor(ffmpeg),
-        model_name=config.asr_model_name,
+    evidence, dossier = collect_dossier_evidence(
+        tuple(zip(held, payloads, strict=True)), config, asr, contract_root
     )
-    transcript_files = {item.file_id: item for item in transcripts.files}
-    evidence = tuple(
-        UnmatchedFileEvidence(
-            file_id=item.media_id,
-            duration_seconds=inspected_durations[item.media_id],
-            transcript_excerpts=tuple(
-                window.text[:600]
-                for window in transcript_files.get(item.media_id, ()).windows
-                if window.text
-            )[:3]
-            if item.media_id in transcript_files
-            else (),
-        )
-        for item in held
+    media_ids = tuple(item.media_id for item in held)
+    dossier.record_attempt(
+        media_ids,
+        branch="movie-bonus",
+        disposition="started",
+        summary={"catalogue_available": catalogue is not None},
     )
-    durations = inspected_durations
+    durations = {item.file_id: item.duration_seconds for item in evidence}
     runtime_candidates = [
         item
         for item in remaining
@@ -174,16 +156,26 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
     )
     descriptive = catalog_id is None
     if descriptive:
-        release_hint = str(
-            payloads[0].get("media_context", {}).get("series_name") or "Unknown disc"
-        )
+        release_hint = _descriptive_release_hint(payloads[0], held[0].media_id)
         review = GeminiDescriptiveRanker(
             model=config.gemini_model
-        ).describe_with_configured_keys(evidence, release_hint=release_hint)
+        ).describe_with_configured_keys(
+            evidence,
+            release_hint=release_hint,
+            prior_attempts={
+                media_id: dossier.safe_attempts(media_id) for media_id in media_ids
+            },
+        )
     else:
         review = GeminiEpisodeRanker(
             model=config.gemini_model
-        ).rank_with_configured_keys(evidence, candidates)
+        ).rank_with_configured_keys(
+            evidence,
+            candidates,
+            prior_attempts={
+                media_id: dossier.safe_attempts(media_id) for media_id in media_ids
+            },
+        )
     results = {item.file_id: item for item in review.matches}
     applied = []
     contract_root.mkdir(parents=True, exist_ok=True)
@@ -265,4 +257,66 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
             item.media_id, build_artifact("rip", revised)
         )
         applied.append(item.media_id)
+    dossier.record_attempt(
+        media_ids,
+        branch="movie-bonus",
+        disposition="matched" if len(applied) == len(media_ids) else "review",
+        summary={
+            "matched_count": len(applied),
+            "item_count": len(media_ids),
+            "catalogue_available": catalogue is not None,
+        },
+    )
+    unresolved = tuple(media_id for media_id in media_ids if media_id not in applied)
+    result_by_id = {item.file_id: item for item in review.matches}
+    should_try_tv = (
+        descriptive
+        and len(unresolved) >= 2
+        and all(
+            result_by_id[media_id].content_kind in {"tv_episode", "unknown"}
+            for media_id in unresolved
+        )
+        and not any(dossier.attempted(media_id, "tv-local") for media_id in unresolved)
+    )
+    if should_try_tv:
+        try:
+            from mkv_episode_matcher.backend.unmatched_disc_analysis import (
+                execute_unmatched_disc_analysis,
+            )
+
+            fingerprint = payloads[0].get("disc_fingerprint")
+            if not isinstance(fingerprint, str):
+                raise PipelineQueueError("Disc fingerprint is unavailable")
+            for media_id in unresolved:
+                store.choose_review_path(media_id, "all_season_analysis_running")
+            tv_applied = execute_unmatched_disc_analysis(
+                store,
+                fingerprint,
+                release_hint,
+                config,
+                asr,
+                contract_root,
+                allow_gemini=config.automatic_gemini_ambiguity_fallback,
+                allow_content_fallback=False,
+            )
+            applied.extend(tv_applied)
+            unresolved = tuple(
+                media_id for media_id in media_ids if media_id not in applied
+            )
+        except Exception as exc:
+            dossier.record_attempt(
+                unresolved,
+                branch="gemini-synthesis",
+                disposition="failed",
+                summary={"reason": type(exc).__name__},
+            )
+    if unresolved:
+        dossier.record_attempt(
+            unresolved,
+            branch="gemini-synthesis",
+            disposition="review",
+            summary={"reason": "all_content_routes_exhausted"},
+        )
+        for media_id in unresolved:
+            store.choose_review_path(media_id, "gemini_descriptive_review_required")
     return tuple(applied)

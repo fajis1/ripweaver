@@ -132,6 +132,12 @@ async def startup_event():
             "Reconciled {} interrupted rip job(s) to paused review state",
             len(reconciled),
         )
+    reconciled_pipeline = get_pipeline_queue_store().reconcile_incomplete()
+    if reconciled_pipeline:
+        logger.warning(
+            "Requeued {} interrupted downstream item(s) at their current stage",
+            len(reconciled_pipeline),
+        )
     if start_windows_drive_events():
         logger.info("Windows optical-drive event watcher attached")
     else:

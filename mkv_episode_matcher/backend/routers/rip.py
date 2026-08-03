@@ -36,6 +36,9 @@ from mkv_episode_matcher.backend.dependencies import (
     get_special_feature_queue_runner,
 )
 from mkv_episode_matcher.backend.gemini_fallback import execute_gemini_fallback
+from mkv_episode_matcher.backend.identification_dossier import (
+    IdentificationDossierStore,
+)
 from mkv_episode_matcher.backend.organization_authorization import (
     build_organization_authorization_plan,
 )
@@ -44,10 +47,14 @@ from mkv_episode_matcher.backend.transcode_authorization import (
     build_transcode_authorization_plan,
 )
 from mkv_episode_matcher.backend.unmatched_disc_analysis import (
+    GeminiAnalysisError,
     execute_unmatched_disc_analysis,
 )
 from mkv_episode_matcher.core.config_manager import get_config_manager
-from mkv_episode_matcher.disc.content_policy import infer_tv_context_from_disc_label
+from mkv_episode_matcher.disc.content_policy import (
+    infer_release_name_from_disc_label,
+    infer_tv_context_from_disc_label,
+)
 from mkv_episode_matcher.disc.drive_watcher import DriveWatcher
 from mkv_episode_matcher.disc.eject import DiscEjectError, eject_optical_drive
 from mkv_episode_matcher.disc.episode_release_catalog import (
@@ -122,6 +129,26 @@ router = APIRouter(
     tags=["rip"],
     dependencies=[Depends(require_local_control)],
 )
+
+_prepared_disc_identity_lock = threading.Lock()
+
+
+def _preview_disc_fingerprint(preview: RipPreview | dict[str, object]) -> str | None:
+    jobs = preview.jobs if isinstance(preview, RipPreview) else preview.get("jobs", [])
+    for preview_job in jobs:
+        destination = (
+            preview_job.staging_destination
+            if hasattr(preview_job, "staging_destination")
+            else preview_job.get("staging_destination")
+            if isinstance(preview_job, dict)
+            else None
+        )
+        if not isinstance(destination, str):
+            continue
+        for part in PurePosixPath(destination.replace("\\", "/")).parts:
+            if re.fullmatch(r"[0-9a-f]{16}", part):
+                return part
+    return None
 
 
 class MediaContextInput(BaseModel):
@@ -625,7 +652,7 @@ def _auto_eject_completed_job_drives(
     "/drives/prepare-pipeline",
     response_model=OrchestrationJobResponse,
 )
-def prepare_drive_pipeline(
+def prepare_drive_pipeline(  # noqa: C901
     request: PrepareDrivePipelineRequest,
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
     watcher: Annotated[DriveWatcher, Depends(get_drive_watcher)],
@@ -689,6 +716,7 @@ def prepare_drive_pipeline(
             report_dir, inventory, result, minimum_length_seconds=0
         )
         explicit_tv_context = infer_tv_context_from_disc_label(matching_drive.disc_name)
+        release_name = infer_release_name_from_disc_label(matching_drive.disc_name)
         disc_id = "disc-01"
         episode_plan = load_title_plan(report_path, report_id=disc_id)
         use_special_features = request.content_hint in {None, "extras", "mixed"}
@@ -751,7 +779,9 @@ def prepare_drive_pipeline(
         context = MediaContext(
             disc_id=disc_id,
             series_name=(
-                explicit_tv_context[0] if explicit_tv_context else "Unmatched"
+                explicit_tv_context[0]
+                if explicit_tv_context
+                else release_name or "Unmatched"
             ),
             season=explicit_tv_context[1] if explicit_tv_context else None,
             content_hint=request.content_hint
@@ -786,26 +816,41 @@ def prepare_drive_pipeline(
             output_root=config.rip_output_root,
         )
         preview = _attach_prior_outcomes(preview, pipeline_store)
-        job = public_store.create_job(preview, idempotency_key=idempotency_key)
-        private_store.bind(
-            job_id=job.job_id,
-            plan_sha256=job.plan_sha256,
-            report_paths=[report_path],
-            output_root=config.rip_output_root,
-            media_contexts={disc_id: context},
-        )
-        disc_fingerprint = next(
-            (
-                part
-                for preview_job in preview.jobs
-                for part in Path(preview_job.staging_destination).parts
-                if re.fullmatch(r"[0-9a-f]{16}", part)
-            ),
-            None,
-        )
+        disc_fingerprint = _preview_disc_fingerprint(preview)
         if disc_fingerprint is None:
             raise RipError("Prepared disc identity is unavailable")
-        watcher.bind_current_job(request.drive_index, job.job_id, disc_fingerprint)
+        with _prepared_disc_identity_lock:
+            active_states = {
+                "awaiting_review",
+                "authorized",
+                "queued",
+                "running",
+                "pause_requested",
+                "paused",
+            }
+            existing = next(
+                (
+                    candidate
+                    for candidate in public_store.list_jobs(limit=200)
+                    if candidate.state in active_states
+                    and _preview_disc_fingerprint(candidate.preview) == disc_fingerprint
+                ),
+                None,
+            )
+            if existing is not None:
+                watcher.bind_current_job(
+                    request.drive_index, existing.job_id, disc_fingerprint
+                )
+                return _job_response(existing, public_store)
+            job = public_store.create_job(preview, idempotency_key=idempotency_key)
+            private_store.bind(
+                job_id=job.job_id,
+                plan_sha256=job.plan_sha256,
+                report_paths=[report_path],
+                output_root=config.rip_output_root,
+                media_contexts={disc_id: context},
+            )
+            watcher.bind_current_job(request.drive_index, job.job_id, disc_fingerprint)
         return _job_response(job, public_store)
     except (PreflightError, RipError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -970,6 +1015,7 @@ class PipelineItemResponse(BaseModel):
     updated_at: str
     error_type: str | None
     review_code: str | None
+    identification_attempts: list[dict[str, object]] = Field(default_factory=list)
 
 
 class PipelineQueueResponse(BaseModel):
@@ -1089,6 +1135,11 @@ class RenameProvisionalItemRequest(BaseModel):
     confirm_rename: bool = False
 
 
+class ManualEpisodeIdentificationRequest(BaseModel):
+    new_name: str = Field(min_length=1, max_length=160)
+    confirm_identification: bool = False
+
+
 class ResolveLibraryCollisionRequest(BaseModel):
     action: str = Field(pattern=r"^(replace-library|delete-new)$")
     expected_artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -1147,7 +1198,9 @@ def _pipeline_item_location(item) -> tuple[str, str | None, str | None]:
     return "Rip staging", safe_relative, None
 
 
-def _pipeline_item_response(item) -> dict[str, object]:
+def _pipeline_item_response(
+    item, dossier: IdentificationDossierStore | None = None
+) -> dict[str, object]:
     location_label, location_relative, location_root_key = _pipeline_item_location(item)
     output_size_bytes = None
     retained_source_available = False
@@ -1236,6 +1289,18 @@ def _pipeline_item_response(item) -> dict[str, object]:
         "updated_at": item.updated_at,
         "error_type": item.error_type,
         "review_code": item.review_code,
+        "identification_attempts": (
+            [
+                {
+                    "branch": attempt["branch"],
+                    "disposition": attempt["disposition"],
+                    "summary": attempt["summary"],
+                }
+                for attempt in dossier.safe_attempts(item.media_id)
+            ]
+            if dossier is not None
+            else []
+        ),
     }
 
 
@@ -1982,10 +2047,15 @@ def get_pipeline_items(
 ) -> dict[str, object]:
     """Return path-redacted downstream queue state."""
 
+    dossier = IdentificationDossierStore(
+        get_pipeline_contract_root().parent / "identification-evidence"
+    )
     return {
         "paused": store.is_paused(),
         "downstream_worker_limit": 1,
-        "items": [_pipeline_item_response(item) for item in store.list_items()],
+        "items": [
+            _pipeline_item_response(item, dossier) for item in store.list_items()
+        ],
     }
 
 
@@ -2168,6 +2238,17 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
                 "unmatched_disc_analysis_required",
                 "all_season_analysis_failed",
                 "all_season_sequence_review_required",
+                "gemini_descriptive_review_required",
+                "gemini_analysis_failed",
+                "gemini_audio_evidence_insufficient",
+                "gemini_catalog_unavailable",
+                "gemini_provider_failed",
+                "gemini_credential_rejected",
+                "gemini_rate_limited",
+                "gemini_provider_unavailable",
+                "gemini_request_rejected",
+                "gemini_network_failed",
+                "gemini_response_invalid",
             }
         ):
             continue
@@ -2200,16 +2281,20 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
                 allow_gemini=request.confirm_external_fallback,
             )
         except Exception as exc:
-            logger.error(
-                "All-season disc analysis failed safely: {}", type(exc).__name__
-            )
-            code = (
-                "all_season_sequence_review_required"
-                if str(exc) == "All-season sequence result requires review"
-                else "gemini_provider_failed"
-                if str(exc) == "Automatic Gemini all-season fallback failed"
-                else "all_season_analysis_failed"
-            )
+            if isinstance(exc, GeminiAnalysisError):
+                logger.error(
+                    "All-season Gemini analysis failed safely: {}", exc.diagnostic
+                )
+                code = exc.review_code
+            else:
+                logger.error(
+                    "All-season disc analysis failed safely: {}", type(exc).__name__
+                )
+                code = (
+                    "all_season_sequence_review_required"
+                    if str(exc) == "All-season sequence result requires review"
+                    else "all_season_analysis_failed"
+                )
             for media_id in selected:
                 try:
                     if store.get(media_id).state == "review_required":
@@ -2333,6 +2418,107 @@ def play_pipeline_item_for_review(
             status_code=409, detail="Review playback could not start"
         ) from exc
     return {"started": True, "media_id": media_id}
+
+
+@router.post(
+    "/pipeline/items/{media_id}/manual-episode-identification",
+    response_model=PipelineItemResponse,
+)
+def apply_manual_episode_identification(
+    media_id: str,
+    request: ManualEpisodeIdentificationRequest,
+    store: Annotated[PipelineQueueStore, Depends(get_pipeline_queue_store)],
+    contract_root: Annotated[Path, Depends(get_pipeline_contract_root)],
+) -> dict[str, object]:
+    """Queue one user-reviewed TV identity without renaming its staged source."""
+
+    if request.confirm_identification is not True:
+        raise HTTPException(
+            status_code=400, detail="Manual identification confirmation is required"
+        )
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", request.new_name)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    if not cleaned or cleaned.casefold().endswith(".mkv"):
+        raise HTTPException(
+            status_code=400,
+            detail="Enter a filename without an extension; .mkv is added automatically",
+        )
+    match = re.fullmatch(
+        r"(.+?)\s+-\s+S(\d{1,2})E(\d{1,3})\s+-\s+(.+)",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Use: Series Name - S03E02 - Episode Title (without the .mkv extension)"
+            ),
+        )
+    series_name = re.sub(r"\s+", " ", match.group(1)).strip(" .")
+    season = int(match.group(2))
+    episode = int(match.group(3))
+    title = re.sub(r"\s+", " ", match.group(4)).strip(" .")
+    if not series_name or not title or not 0 <= season <= 99 or not 1 <= episode <= 999:
+        raise HTTPException(
+            status_code=400, detail="Manual episode identity is invalid"
+        )
+    try:
+        item = store.get(media_id)
+        if (
+            item.stage != "identify"
+            or item.state != "review_required"
+            or item.review_code
+            not in {
+                "missing_season_context",
+                "unmatched_disc_analysis_required",
+                "all_season_analysis_failed",
+                "all_season_sequence_review_required",
+                "special_feature_manual_assignment_required",
+                "gemini_descriptive_review_required",
+            }
+        ):
+            raise PipelineQueueError(
+                "Only a held unidentified title can use manual episode identification"
+            )
+        rip_artifact = store.rip_artifact(media_id)
+        payload = json.loads(rip_artifact.contract_path.read_text(encoding="utf-8"))
+        title_index = payload.get("title_index")
+        if not isinstance(title_index, int) or isinstance(title_index, bool):
+            raise PipelineQueueError("Verified rip title identity is unavailable")
+        revised = dict(payload)
+        context = dict(revised.get("media_context", {}))
+        context.update(
+            series_name=series_name,
+            season=season,
+            episode_assignments=[
+                {
+                    "title_index": title_index,
+                    "season": season,
+                    "episode": episode,
+                    "title": title,
+                    "user_reviewed_name": True,
+                }
+            ],
+            episode_assignment_source="manual-playback-review",
+            identification_policy_version=2,
+        )
+        revised["media_context"] = context
+        if not contract_root.is_dir():
+            raise PipelineQueueError("Pipeline contract root is unavailable")
+        path = contract_root / (
+            f"{media_id}.manual-identification-{uuid4().hex[:12]}.json"
+        )
+        path.write_text(
+            json.dumps(revised, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        updated = store.apply_reviewed_identification_input(
+            media_id, build_artifact("rip", path)
+        )
+        store.set_paused(False)
+    except (OSError, json.JSONDecodeError, PipelineQueueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _pipeline_item_response(updated)
 
 
 @router.post("/pipeline/items/{media_id}/rename-provisional")
@@ -2611,6 +2797,39 @@ def delete_retained_sources(
     return {"deleted_file_count": len(entries), "jellyfin_files_affected": 0}
 
 
+def _retained_reencode_verified_payload(
+    store: PipelineQueueStore,
+    media_id: str,
+    new_id: str,
+    retained: Path,
+    size: int,
+) -> dict[str, object]:
+    original_rip = store.rip_artifact(media_id)
+    verified = json.loads(original_rip.contract_path.read_text(encoding="utf-8"))
+    fingerprint = verified.get("disc_fingerprint")
+    title_index = verified.get("title_index")
+    if not isinstance(fingerprint, str):
+        match = re.search(r"-([0-9a-f]{16})-title-", media_id)
+        fingerprint = match.group(1) if match is not None else None
+    if not isinstance(title_index, int) or isinstance(title_index, bool):
+        match = re.search(r"-title-(\d{3})(?:-|$)", media_id)
+        title_index = int(match.group(1)) if match is not None else None
+    if (
+        not isinstance(fingerprint, str)
+        or re.fullmatch(r"[0-9a-f]{16}", fingerprint) is None
+        or title_index is None
+    ):
+        raise PipelineQueueError("Saved verified-rip identity is unavailable")
+    verified.update(
+        media_id=new_id,
+        disc_fingerprint=fingerprint,
+        title_index=title_index,
+        source_path=str(retained),
+        source_size_bytes=size,
+    )
+    return verified
+
+
 @router.post("/pipeline/retained-sources/reencode")
 def reencode_retained_sources(
     request: ReencodeRetainedSourceRequest,
@@ -2636,32 +2855,53 @@ def reencode_retained_sources(
         )
         queued = []
         for media_id, retained, size in entries:
-            identify_path = contract_root / f"{media_id}.identify.json"
-            identified = json.loads(identify_path.read_text(encoding="utf-8"))
-            if identified.get("mode") != "identified-episode-contract":
+            transcode_path = contract_root / f"{media_id}.transcode.json"
+            transcoded = json.loads(transcode_path.read_text(encoding="utf-8"))
+            if transcoded.get("mode") != "verified-transcode-contract":
                 raise PipelineQueueError("Saved matched-name contract is unavailable")
             attempt = 1
             while True:
                 new_id = f"{media_id}-reencode-{attempt:03d}"
                 new_path = contract_root / f"{new_id}.identify.json"
-                if not new_path.exists():
+                new_rip_path = contract_root / f"{new_id}.verified-rip.json"
+                if not new_path.exists() and not new_rip_path.exists():
                     break
                 attempt += 1
-            identified.update(
-                media_id=new_id,
-                source_path=str(retained),
-                source_size_bytes=size,
-            )
+            identified = {
+                "schema_version": 1,
+                "mode": "identified-episode-contract",
+                "media_id": new_id,
+                "source_path": str(retained),
+                "source_size_bytes": size,
+                "library_relative": transcoded.get("library_relative"),
+                "episode_id": transcoded.get("episode_id"),
+                "confidence": 1.0,
+                "existing_output_policy": transcoded.get(
+                    "existing_output_policy", "preserve"
+                ),
+                "provisional_match": bool(transcoded.get("provisional_match")),
+                "gemini_confidence": transcoded.get("gemini_confidence"),
+            }
             if request.profile_id is not None:
                 identified["handbrake_profile_id"] = request.profile_id
+            elif transcoded.get("handbrake_profile_id") is not None:
+                identified["handbrake_profile_id"] = transcoded["handbrake_profile_id"]
+
+            verified = _retained_reencode_verified_payload(
+                store, media_id, new_id, retained, size
+            )
             new_path.write_text(
                 json.dumps(identified, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            new_rip_path.write_text(
+                json.dumps(verified, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
             store.enqueue_reencode(
                 new_id,
                 build_artifact("identify", new_path),
-                store.rip_artifact(media_id),
+                build_artifact("rip", new_rip_path),
             )
             queued.append(new_id)
     except (
@@ -3135,6 +3375,56 @@ def retry_pipeline_item(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@router.post(
+    "/pipeline/items/{media_id}/restart-identification",
+    response_model=PipelineItemResponse,
+)
+def restart_placeholder_identification(
+    media_id: str,
+    request: PipelineControlRequest,
+    store: Annotated[PipelineQueueStore, Depends(get_pipeline_queue_store)],
+) -> dict[str, object]:
+    """Return one rejected placeholder contract to its verified-rip input."""
+
+    if request.confirm_control is not True:
+        raise HTTPException(
+            status_code=400,
+            detail="Identification restart confirmation is required",
+        )
+    try:
+        item = store.get(media_id)
+        if (
+            item.stage not in {"transcode", "organize"}
+            or item.state != "review_required"
+            or item.review_code != "placeholder_identification_required"
+        ):
+            raise PipelineQueueError(
+                "Only a held placeholder episode can restart identification here"
+            )
+        rip_artifact = store.rip_artifact(media_id)
+        payload = json.loads(rip_artifact.contract_path.read_text(encoding="utf-8"))
+        fingerprint = payload.get("disc_fingerprint")
+        title_index = payload.get("title_index")
+        if (
+            not isinstance(fingerprint, str)
+            or not re.fullmatch(r"[0-9a-f]{16}", fingerprint)
+            or not isinstance(title_index, int)
+            or isinstance(title_index, bool)
+        ):
+            raise PipelineQueueError(
+                "Verified rip identity is unavailable for identification restart"
+            )
+        restarted = store.restart_identification(
+            media_id,
+            expected_disc_fingerprint=fingerprint,
+            expected_title_index=title_index,
+        )
+        store.set_paused(False)
+        return _pipeline_item_response(restarted)
+    except (OSError, json.JSONDecodeError, PipelineQueueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 def _collision_destination(payload: dict[str, object], config) -> tuple[Path, Path]:
     relative = Path(str(payload.get("library_relative", "")))
     if (
@@ -3396,6 +3686,12 @@ def execute_pipeline_gemini_fallback(  # noqa: C901
         "gemini_audio_evidence_insufficient",
         "gemini_catalog_unavailable",
         "gemini_provider_failed",
+        "gemini_credential_rejected",
+        "gemini_rate_limited",
+        "gemini_provider_unavailable",
+        "gemini_request_rejected",
+        "gemini_network_failed",
+        "gemini_response_invalid",
     }
     selected_items = []
     try:

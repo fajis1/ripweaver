@@ -355,6 +355,6 @@ def test_faerie_drive_preparation_requires_fresh_cross_season_analysis(
     )
 
     context = private.get(response["job_id"]).media_contexts["disc-01"]
-    assert context.series_name == "Unmatched"
+    assert context.series_name == "FAERIE TALE THEATRE"
     assert context.season is None
     assert context.episode_assignments == ()

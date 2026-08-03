@@ -56,7 +56,7 @@ class ConfigManager:
                     data[key] = value
 
             config = Config(**data)
-            logger.debug(f"Config loaded from {self.config_path}")
+            logger.debug("Application configuration loaded")
             return config
 
         except json.JSONDecodeError as e:

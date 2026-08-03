@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
@@ -45,6 +46,33 @@ def _safe_feature_component(value: object) -> str:
     if not cleaned:
         raise PipelineReviewRequiredError("special_feature_name_review")
     return cleaned[:160]
+
+
+def _placeholder_series(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    normalized = re.sub(r"[^a-z0-9]+", "", value.casefold())
+    return normalized in {"unmatched", "unknown", "unknownseries"}
+
+
+def _placeholder_episode_contract(
+    payload: dict[str, Any], relative: PurePosixPath
+) -> bool:
+    """Recognize old synthetic episode labels that are not real matches."""
+
+    if not isinstance(payload.get("episode_id"), str) or not relative.parts:
+        return False
+    if _placeholder_series(relative.parts[0]):
+        return True
+    return (
+        re.fullmatch(
+            r"(?:unmatched|unknown(?: series)?)\s*-\s*s\d{1,3}e\d{1,3}"
+            r"\s*-\s*episode\s+\d+",
+            relative.stem,
+            flags=re.IGNORECASE,
+        )
+        is not None
+    )
 
 
 def _organization_collision_status(destination: Path, episode_id: object) -> str:
@@ -94,7 +122,12 @@ def _source_from_contract(
 
 
 def _write_contract(
-    root: Path, media_id: str, stage: str, payload: dict[str, Any]
+    root: Path,
+    media_id: str,
+    stage: str,
+    payload: dict[str, Any],
+    *,
+    allow_revision: bool = False,
 ) -> PipelineArtifact:
     if not root.is_dir():
         raise PipelineQueueError("Pipeline contract root is unavailable")
@@ -103,12 +136,17 @@ def _write_contract(
     if path.exists():
         try:
             if path.read_text(encoding="utf-8") != serialized:
-                raise PipelineQueueError("Pipeline output contract collision")
+                if not allow_revision:
+                    raise PipelineQueueError("Pipeline output contract collision")
+                revision = sha256(serialized.encode("utf-8")).hexdigest()[:16]
+                path = root / f"{media_id}.{stage}-{revision}.json"
+                if path.exists() and path.read_text(encoding="utf-8") != serialized:
+                    raise PipelineQueueError("Pipeline output contract collision")
         except OSError as exc:
             raise PipelineQueueError(
                 "Pipeline output contract could not be read"
             ) from exc
-    else:
+    if not path.exists():
         try:
             path.write_text(serialized, encoding="utf-8")
         except OSError as exc:
@@ -142,7 +180,11 @@ class IdentifyStageAdapter:
         self, item: QueuedPipelineItem, payload: dict[str, Any]
     ) -> PipelineArtifact | StageOutcome:
         artifact = _write_contract(
-            self.contract_root, item.media_id, "identify", payload
+            self.contract_root,
+            item.media_id,
+            "identify",
+            payload,
+            allow_revision=True,
         )
         if payload.get("existing_output_policy") == "replace-after-verification":
             return artifact
@@ -176,6 +218,13 @@ class IdentifyStageAdapter:
             raise PipelineReviewRequiredError("missing_series_context")
         episode_assignments = context.get("episode_assignments")
         if isinstance(episode_assignments, list) and episode_assignments:
+            if (
+                ".all-season-" in item.artifact.contract_path.name
+                and context.get("identification_policy_version") != 2
+            ):
+                raise PipelineReviewRequiredError("unmatched_disc_analysis_required")
+            if _placeholder_series(context.get("series_name")):
+                raise PipelineReviewRequiredError("unmatched_disc_analysis_required")
             title_index = payload.get("title_index")
             assignment = next(
                 (
@@ -439,6 +488,8 @@ class TranscodeStageAdapter:
             or relative.suffix.lower() != ".mkv"
         ):
             raise PipelineQueueError("Transcode destination contract is unsafe")
+        if _placeholder_episode_contract(payload, relative):
+            raise PipelineReviewRequiredError("placeholder_identification_required")
         self._preflight_library_collision(payload, relative)
         if not self.output_root.is_dir() or not self.run_root.is_dir():
             raise PipelineQueueError("Transcode staging or run root is unavailable")
@@ -455,11 +506,7 @@ class TranscodeStageAdapter:
 
         profile_id, selected_profile = self._select_profile(payload, source)
         attempt = 1
-        job = HandBrakeJob(
-            item.media_id, source, destination, selected_profile, attempt_number=attempt
-        )
-        while partial_output_path(job).exists():
-            attempt += 1
+        while True:
             job = HandBrakeJob(
                 item.media_id,
                 source,
@@ -467,9 +514,10 @@ class TranscodeStageAdapter:
                 selected_profile,
                 attempt_number=attempt,
             )
-        run_dir = self.run_root / f"{item.media_id}-attempt-{attempt:03d}"
-        if run_dir.exists():
-            raise PipelineQueueError("Transcode run directory collision")
+            run_dir = self.run_root / f"{item.media_id}-attempt-{attempt:03d}"
+            if not partial_output_path(job).exists() and not run_dir.exists():
+                break
+            attempt += 1
         run_dir.mkdir()
         result = execute_handbrake_job(
             self.handbrake,
@@ -548,6 +596,8 @@ class OrganizeStageAdapter:
             or relative.suffix.lower() != ".mkv"
         ):
             raise PipelineQueueError("Library destination contract is unsafe")
+        if _placeholder_episode_contract(payload, relative):
+            raise PipelineReviewRequiredError("placeholder_identification_required")
         if not self.library_root.is_dir():
             raise PipelineQueueError("Library root is unavailable")
         try:

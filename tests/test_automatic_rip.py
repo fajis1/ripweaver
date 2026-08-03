@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 from mkv_episode_matcher.backend.automatic_rip import (
     AutomaticRipCoordinator,
+    _automatic_series_name,
     _has_prior_disc_work,
 )
 from mkv_episode_matcher.disc.drive_watcher import (
@@ -20,6 +21,23 @@ def _snapshot(*loaded: int) -> DriveStatusSnapshot:
         ),
         refreshed_at="2026-08-01T00:00:00+00:00",
         status="ready",
+    )
+
+
+def test_automatic_series_name_recovers_disc_label_without_using_volume_as_season():
+    assert (
+        _automatic_series_name(
+            "Unmatched",
+            "Faerie-Tale-Theatre-1--disc-01-fingerprint-title-000",
+        )
+        == "Faerie Tale Theatre"
+    )
+    assert (
+        _automatic_series_name(
+            "Reviewed Series",
+            "Different-Disc-4--disc-01-fingerprint-title-000",
+        )
+        == "Reviewed Series"
     )
 
 
@@ -51,6 +69,30 @@ def test_disabled_automation_tracks_loaded_disc_without_launching(monkeypatch):
     coordinator.observe(_snapshot(2), enabled=True)
 
     assert launched == []
+
+
+def test_changed_disc_label_launches_without_observed_empty_tray(monkeypatch):
+    launched = []
+    coordinator = AutomaticRipCoordinator(launched.append)
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.automatic_rip.threading.Thread.start",
+        lambda thread: thread.run(),
+    )
+    first = DriveStatusSnapshot(
+        drives=(PublicDriveStatus(0, True, True, "FAERIE_TALE_THEATRE_5"),),
+        refreshed_at="2026-08-01T00:00:00+00:00",
+        status="ready",
+    )
+    replacement = DriveStatusSnapshot(
+        drives=(PublicDriveStatus(0, True, True, "FAERIE_TALE_THEATRE_6"),),
+        refreshed_at="2026-08-01T00:01:00+00:00",
+        status="ready",
+    )
+
+    coordinator.observe(first, enabled=True)
+    coordinator.observe(replacement, enabled=True)
+
+    assert launched == [0, 0]
 
 
 @dataclass

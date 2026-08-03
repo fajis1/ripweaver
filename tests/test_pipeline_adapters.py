@@ -324,6 +324,130 @@ def test_identify_adapter_uses_reviewed_cross_season_episode_assignment(tmp_path
     assert payload["identification_order"] == ["reviewed-release-catalogue"]
 
 
+def test_identify_adapter_revises_an_obsolete_identification_contract(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    obsolete = contracts / "media-1.identify.json"
+    obsolete.write_text(
+        json.dumps({
+            "mode": "identified-episode-contract",
+            "media_id": "media-1",
+            "episode_id": "S01E01",
+            "library_relative": "Unmatched/Season 01/Unmatched - S01E01.mkv",
+        }),
+        encoding="utf-8",
+    )
+    item = _queued_item(
+        tmp_path,
+        {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "title_index": 0,
+            "media_context": {
+                "series_name": "Faerie Tale Theatre",
+                "season": None,
+                "episode_assignments": [
+                    {
+                        "title_index": 0,
+                        "season": 1,
+                        "episode": 1,
+                        "title": "The Tale of the Frog Prince",
+                    }
+                ],
+            },
+        },
+    )
+
+    adapter = IdentifyStageAdapter(SimpleNamespace(), contracts)
+    artifact = adapter(item)
+    repeated = adapter(item)
+    payload = json.loads(artifact.contract_path.read_text(encoding="utf-8"))
+
+    assert artifact.contract_path != obsolete
+    assert artifact.contract_path == repeated.contract_path
+    assert artifact.contract_path.name.startswith("media-1.identify-")
+    assert payload["library_relative"] == (
+        "Faerie Tale Theatre/Season 01/"
+        "Faerie Tale Theatre - S01E01 - The Tale of the Frog Prince.mkv"
+    )
+    assert json.loads(obsolete.read_text(encoding="utf-8"))[
+        "library_relative"
+    ].startswith("Unmatched/")
+
+
+def test_identify_adapter_refuses_placeholder_episode_assignment(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    item = _queued_item(
+        tmp_path,
+        {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "title_index": 0,
+            "media_context": {
+                "series_name": "Unmatched",
+                "season": 1,
+                "episode_assignments": [
+                    {
+                        "title_index": 0,
+                        "season": 1,
+                        "episode": 1,
+                        "title": "Episode 1",
+                    }
+                ],
+            },
+        },
+    )
+
+    with pytest.raises(
+        PipelineReviewRequiredError, match="unmatched_disc_analysis_required"
+    ):
+        IdentifyStageAdapter(SimpleNamespace(), contracts)(item)
+
+
+def test_identify_adapter_rechecks_pre_policy_all_season_assignment(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    contract = tmp_path / "media-1.all-season-old.json"
+    contract.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "title_index": 0,
+            "media_context": {
+                "series_name": "Faerie Tale Theatre",
+                "season": None,
+                "episode_assignments": [
+                    {
+                        "title_index": 0,
+                        "season": 3,
+                        "episode": 1,
+                        "title": "Goldilocks and the Three Bears",
+                    }
+                ],
+            },
+        }),
+        encoding="utf-8",
+    )
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    store.enqueue_verified_rip("media-1", build_artifact("rip", contract))
+    item = store.claim_next()
+
+    with pytest.raises(
+        PipelineReviewRequiredError, match="unmatched_disc_analysis_required"
+    ):
+        IdentifyStageAdapter(SimpleNamespace(), contracts)(item)
+
+
 def test_unmatched_disc_routes_to_analysis_instead_of_missing_season(tmp_path):
     source = tmp_path / "source.mkv"
     source.write_bytes(b"synthetic")
@@ -378,6 +502,136 @@ def test_identification_holds_existing_episode_before_transcode(tmp_path):
     assert outcome.next_review_code == "library_collision"
     identified = json.loads(outcome.artifact.contract_path.read_text())
     assert identified["episode_id"] == "S01E01"
+
+
+def test_transcode_refuses_old_placeholder_episode_contract(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"raw")
+    contracts = tmp_path / "contracts"
+    encoded_root = tmp_path / "encoded"
+    run_root = tmp_path / "runs"
+    for path in (contracts, encoded_root, run_root):
+        path.mkdir()
+    identify_contract = tmp_path / "identify.json"
+    identify_contract.write_text(
+        json.dumps({
+            "mode": "identified-episode-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "episode_id": "S01E01",
+            "library_relative": "Unmatched/Season 01/Unmatched - S01E01 - Episode 1.mkv",
+        }),
+        encoding="utf-8",
+    )
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    rip = tmp_path / "rip.json"
+    rip.write_text("{}", encoding="utf-8")
+    store.enqueue_verified_rip("media-1", build_artifact("rip", rip))
+    store.claim_next()
+    store.complete_stage(
+        "media-1", "identify", build_artifact("identify", identify_contract)
+    )
+
+    with pytest.raises(
+        PipelineReviewRequiredError, match="placeholder_identification_required"
+    ):
+        TranscodeStageAdapter(
+            handbrake=tmp_path / "HandBrakeCLI.exe",
+            ffprobe=tmp_path / "ffprobe.exe",
+            output_root=encoded_root,
+            run_root=run_root,
+            contract_root=contracts,
+            profile=HandBrakeProfile(),
+        )(store.claim_next())
+
+
+def test_transcode_refuses_placeholder_filename_under_real_series(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"raw")
+    contracts = tmp_path / "contracts"
+    encoded_root = tmp_path / "encoded"
+    run_root = tmp_path / "runs"
+    for path in (contracts, encoded_root, run_root):
+        path.mkdir()
+    identify_contract = tmp_path / "identify.json"
+    identify_contract.write_text(
+        json.dumps({
+            "mode": "identified-episode-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "episode_id": "S01E01",
+            "library_relative": (
+                "Faerie Tale Theatre/Season 01/Unmatched - S01E01 - Episode 1.mkv"
+            ),
+        }),
+        encoding="utf-8",
+    )
+    item = QueuedPipelineItem(
+        media_id="media-1",
+        state="running",
+        stage="transcode",
+        artifact=build_artifact("identify", identify_contract),
+        created_at="2026-08-01T00:00:00+00:00",
+        updated_at="2026-08-01T00:00:00+00:00",
+        error_type=None,
+        review_code=None,
+    )
+
+    with pytest.raises(
+        PipelineReviewRequiredError, match="placeholder_identification_required"
+    ):
+        TranscodeStageAdapter(
+            handbrake=tmp_path / "HandBrakeCLI.exe",
+            ffprobe=tmp_path / "ffprobe.exe",
+            output_root=encoded_root,
+            run_root=run_root,
+            contract_root=contracts,
+            profile=HandBrakeProfile(),
+        )(item)
+
+
+def test_organization_refuses_placeholder_episode_contract(tmp_path):
+    encoded = tmp_path / "encoded.mkv"
+    encoded.write_bytes(b"encoded")
+    library = tmp_path / "library"
+    contracts = tmp_path / "contracts"
+    library.mkdir()
+    contracts.mkdir()
+    transcode_contract = tmp_path / "transcode.json"
+    transcode_contract.write_text(
+        json.dumps({
+            "mode": "verified-transcode-contract",
+            "encoded_path": str(encoded),
+            "encoded_size_bytes": encoded.stat().st_size,
+            "episode_id": "S01E01",
+            "library_relative": (
+                "Faerie Tale Theatre/Season 01/Unmatched - S01E01 - Episode 1.mkv"
+            ),
+        }),
+        encoding="utf-8",
+    )
+    item = QueuedPipelineItem(
+        media_id="media-1",
+        state="running",
+        stage="organize",
+        artifact=build_artifact("transcode", transcode_contract),
+        created_at="2026-08-01T00:00:00+00:00",
+        updated_at="2026-08-01T00:00:00+00:00",
+        error_type=None,
+        review_code=None,
+    )
+
+    with pytest.raises(
+        PipelineReviewRequiredError, match="placeholder_identification_required"
+    ):
+        OrganizeStageAdapter(
+            library_root=library,
+            contract_root=contracts,
+            confirm_organize=True,
+        )(item)
+
+    assert encoded.read_bytes() == b"encoded"
+    assert not any(library.rglob("*.mkv"))
 
 
 def test_transcode_and_organization_adapters_link_verified_output(
@@ -464,6 +718,77 @@ def test_transcode_and_organization_adapters_link_verified_output(
     assert organized_payload["output_size_bytes"] == 7
     assert organized_payload["archived_source_size_bytes"] == 3
     assert final.state == "completed"
+
+
+def test_transcode_retry_uses_new_attempt_when_prior_run_directory_exists(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"raw")
+    contracts = tmp_path / "contracts"
+    encoded_root = tmp_path / "encoded"
+    run_root = tmp_path / "runs"
+    for path in (contracts, encoded_root, run_root):
+        path.mkdir()
+    (run_root / "media-1-attempt-001").mkdir()
+    identify_contract = tmp_path / "identify.json"
+    identify_contract.write_text(
+        json.dumps({
+            "mode": "identified-episode-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "episode_id": "S01E01",
+            "library_relative": "Test Show/Season 01/Test Show - S01E01 - First.mkv",
+        }),
+        encoding="utf-8",
+    )
+    item = QueuedPipelineItem(
+        media_id="media-1",
+        state="running",
+        stage="transcode",
+        artifact=build_artifact("identify", identify_contract),
+        created_at="2026-08-01T00:00:00+00:00",
+        updated_at="2026-08-01T00:00:00+00:00",
+        error_type=None,
+        review_code=None,
+    )
+    observed = {}
+
+    def fake_handbrake(_executable, _ffprobe, job, run_dir, **_kwargs):
+        observed["attempt"] = job.attempt_number
+        observed["run_dir"] = run_dir.name
+        job.destination.write_bytes(b"encoded")
+        return HandBrakeResult(
+            media_id=job.media_id,
+            encoder=job.profile.encoder,
+            output_bytes=7,
+            duration_seconds=1200,
+            video_codec="hevc",
+            audio_streams=2,
+            subtitle_streams=0,
+            process_log=run_dir / "process.log",
+            event_log=run_dir / "events.jsonl",
+            width=720,
+            height=480,
+            field_order="progressive",
+        )
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.pipeline_adapters.execute_handbrake_job",
+        fake_handbrake,
+    )
+
+    artifact = TranscodeStageAdapter(
+        handbrake=tmp_path / "HandBrakeCLI.exe",
+        ffprobe=tmp_path / "ffprobe.exe",
+        output_root=encoded_root,
+        run_root=run_root,
+        contract_root=contracts,
+        profile=HandBrakeProfile(),
+    )(item)
+
+    assert observed == {"attempt": 2, "run_dir": "media-1-attempt-002"}
+    assert artifact.contract_path.is_file()
 
 
 @pytest.mark.parametrize(

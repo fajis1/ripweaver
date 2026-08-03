@@ -28,6 +28,7 @@ class DownstreamWorker:
         self._thread: threading.Thread | None = None
         self._last_automatic_transcode_plan: str | None = None
         self._automatic_transcode_media_ids: tuple[str, ...] = ()
+        self._automatic_analysis_attempts: set[str] = set()
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -76,12 +77,19 @@ class DownstreamWorker:
                 return False
             self._automatic_transcode_media_ids = ()
         groups: dict[str, list[str]] = {}
+        triggered: set[str] = set()
         for item in self.dispatcher.store.list_items():
             if (
                 item.stage != "identify"
                 or item.state != "review_required"
                 or item.review_code
-                not in {"missing_season_context", "unmatched_disc_analysis_required"}
+                not in {
+                    "missing_season_context",
+                    "unmatched_disc_analysis_required",
+                    "all_season_analysis_running",
+                    "all_season_analysis_failed",
+                    "all_season_sequence_review_required",
+                }
             ):
                 continue
             try:
@@ -93,9 +101,26 @@ class DownstreamWorker:
             fingerprint = payload.get("disc_fingerprint")
             if isinstance(fingerprint, str):
                 groups.setdefault(fingerprint, []).append(item.media_id)
-        ready = next((tuple(ids) for ids in groups.values() if len(ids) >= 2), None)
+                if item.review_code in {
+                    "missing_season_context",
+                    "unmatched_disc_analysis_required",
+                    "all_season_analysis_running",
+                }:
+                    triggered.add(fingerprint)
+        ready = next(
+            (
+                (fingerprint, tuple(ids))
+                for fingerprint, ids in groups.items()
+                if fingerprint in triggered
+                and fingerprint not in self._automatic_analysis_attempts
+                and len(ids) >= 2
+            ),
+            None,
+        )
         if ready is None:
             return False
+        fingerprint, media_ids = ready
+        self._automatic_analysis_attempts.add(fingerprint)
         from mkv_episode_matcher.backend.automatic_rip import (
             _downstream_lock,
             _resolve_automatic_unmatched_disc,
@@ -104,7 +129,7 @@ class DownstreamWorker:
 
         with _downstream_lock:
             _resolve_automatic_unmatched_disc(
-                ready,
+                media_ids,
                 self.dispatcher.store,
                 config,
                 get_pipeline_contract_root(),

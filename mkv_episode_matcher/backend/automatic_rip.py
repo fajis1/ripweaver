@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -11,6 +12,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 from loguru import logger
 
+from mkv_episode_matcher.disc.content_policy import infer_release_name_from_disc_label
 from mkv_episode_matcher.disc.drive_watcher import DriveStatusSnapshot
 from mkv_episode_matcher.disc.ripper import RipError
 
@@ -56,16 +58,26 @@ class AutomaticRipCoordinator:
     def __init__(self, worker: Callable[[int], None]):
         self._worker = worker
         self._lock = threading.Lock()
-        self._present: set[int] = set()
+        self._present: dict[int, tuple[str | None, str | None]] = {}
         self._running: set[int] = set()
 
     def observe(self, snapshot: DriveStatusSnapshot, *, enabled: bool) -> None:
-        loaded = {drive.drive_index for drive in snapshot.drives if drive.has_disc}
+        loaded = {
+            drive.drive_index: (
+                drive.disc_label.casefold() if drive.disc_label else None,
+                drive.current_disc_fingerprint,
+            )
+            for drive in snapshot.drives
+            if drive.has_disc
+        }
         with self._lock:
-            removed = self._present - loaded
-            self._present.difference_update(removed)
-            newly_loaded = loaded - self._present
-            self._present.update(loaded)
+            newly_loaded = {
+                drive_index
+                for drive_index, identity in loaded.items()
+                if drive_index not in self._present
+                or self._present[drive_index] != identity
+            }
+            self._present = loaded
             if not enabled:
                 return
             launch = sorted(newly_loaded - self._running)
@@ -279,6 +291,7 @@ def _resolve_automatic_unmatched_disc(  # noqa: C901
 
     from mkv_episode_matcher.backend.dependencies import get_engine
     from mkv_episode_matcher.backend.unmatched_disc_analysis import (
+        GeminiAnalysisError,
         execute_unmatched_disc_analysis,
     )
     from mkv_episode_matcher.pipeline_queue import PipelineQueueError
@@ -289,7 +302,13 @@ def _resolve_automatic_unmatched_disc(  # noqa: C901
         if store.get(media_id).stage == "identify"
         and store.get(media_id).state == "review_required"
         and store.get(media_id).review_code
-        in {"missing_season_context", "unmatched_disc_analysis_required"}
+        in {
+            "missing_season_context",
+            "unmatched_disc_analysis_required",
+            "all_season_analysis_running",
+            "all_season_analysis_failed",
+            "all_season_sequence_review_required",
+        }
     ]
     if not held:
         return
@@ -301,12 +320,12 @@ def _resolve_automatic_unmatched_disc(  # noqa: C901
             # all-season sequence matcher merely because they have no season.
             return
         fingerprint = payload.get("disc_fingerprint")
-        series_name = context.get("series_name")
+        series_name = _automatic_series_name(
+            context.get("series_name"), held[0].media_id
+        )
         season = context.get("season")
-        if not isinstance(fingerprint, str) or not isinstance(series_name, str):
+        if not isinstance(fingerprint, str) or series_name is None:
             raise PipelineQueueError("Automatic episode context is incomplete")
-        if not series_name.strip():
-            raise PipelineQueueError("Automatic episode series is unavailable")
         if not isinstance(season, int) or isinstance(season, bool):
             season = None
         for item in held:
@@ -322,16 +341,21 @@ def _resolve_automatic_unmatched_disc(  # noqa: C901
             allow_gemini=config.automatic_gemini_ambiguity_fallback,
         )
     except Exception as exc:
-        logger.warning(
-            "Automatic disc-sequence analysis stopped safely: {}", type(exc).__name__
-        )
-        code = (
-            "all_season_sequence_review_required"
-            if str(exc) == "All-season sequence result requires review"
-            else "gemini_provider_failed"
-            if str(exc) == "Automatic Gemini all-season fallback failed"
-            else "all_season_analysis_failed"
-        )
+        if isinstance(exc, GeminiAnalysisError):
+            logger.warning(
+                "Automatic Gemini analysis stopped safely: {}", exc.diagnostic
+            )
+            code = exc.review_code
+        else:
+            logger.warning(
+                "Automatic disc-sequence analysis stopped safely: {}",
+                type(exc).__name__,
+            )
+            code = (
+                "all_season_sequence_review_required"
+                if str(exc) == "All-season sequence result requires review"
+                else "all_season_analysis_failed"
+            )
         for item in held:
             try:
                 if store.get(item.media_id).state == "review_required":
@@ -341,3 +365,22 @@ def _resolve_automatic_unmatched_disc(  # noqa: C901
 
 
 automatic_rip_coordinator = AutomaticRipCoordinator(run_automatic_drive)
+
+
+def _automatic_series_name(series_name: object, media_id: str) -> str | None:
+    """Recover a real series name without treating a disc ordinal as a season."""
+
+    if isinstance(series_name, str):
+        normalized = re.sub(r"[^a-z0-9]+", "", series_name.casefold())
+        if normalized not in {"", "unmatched", "unknown", "unknownseries"}:
+            return series_name.strip()
+    disc_label = media_id.split("--disc-", 1)[0]
+    inferred = infer_release_name_from_disc_label(disc_label)
+    if inferred is None:
+        return None
+    normalized = re.sub(r"[^a-z0-9]+", "", inferred.casefold())
+    return (
+        inferred
+        if normalized not in {"", "unmatched", "unknown", "unknownseries"}
+        else None
+    )

@@ -794,6 +794,23 @@ Gate: one authorized title can be ripped, verified, and resumed safely.
 
 Gate: known fixtures identify correctly without source mutation.
 
+The cross-kind retry design now uses a private per-title evidence dossier.
+Classifier branches receive safe summaries of earlier results, reuse exact-source
+transcripts across restarts, and execute through a bounded route that cannot
+repeat a branch within one cycle. Public state remains dialogue-free. Provider
+episode assignments require two agreeing structured responses and must satisfy
+the configured confidence threshold plus a local runtime guard. Confident
+partial results release the worker while unresolved titles remain held.
+Jellyfin-present/missing state is a tie-break annotation over the complete
+canonical catalogue, never a candidate filter.
+
+The separately approved ten-file staged-media gate completed without injecting
+a known episode layout. It advanced seven stable provisional episode matches,
+held one inconsistent episode-length title, and rejected both play-all titles
+from one-episode assignment. No live queue or media mutation was involved. The
+next identification gate is synthetic/API composition coverage proving the
+same partial/hold behavior through the web worker boundary.
+
 ### Phase 5: Deduplication and organization plan
 
 - add media fingerprints and existing-library inventory;

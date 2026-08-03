@@ -2,11 +2,15 @@ import json
 import re
 from types import SimpleNamespace
 
-from mkv_episode_matcher.backend.gemini_fallback import execute_gemini_fallback
+from mkv_episode_matcher.backend.gemini_fallback import (
+    _descriptive_release_hint,
+    execute_gemini_fallback,
+)
 from mkv_episode_matcher.core.models import Config
 from mkv_episode_matcher.media.gemini_matcher import (
     GeminiDescriptivePlan,
     GeminiDescriptiveResult,
+    UnmatchedFileEvidence,
 )
 
 
@@ -21,6 +25,43 @@ class FakeStore:
     def apply_reviewed_identification_input(self, media_id, artifact):
         self.applied[media_id] = artifact
 
+    def choose_review_path(self, media_id, code):
+        self.items[media_id].review_code = code
+
+
+class FakeDossier:
+    def __init__(self):
+        self.attempts = []
+
+    def record_attempt(self, media_ids, **details):
+        self.attempts.append((media_ids, details))
+
+    def safe_attempts(self, _media_id):
+        return ()
+
+    def attempted(self, _media_id, _branch):
+        return False
+
+
+def test_descriptive_release_hint_prefers_real_contract_series():
+    assert (
+        _descriptive_release_hint(
+            {"media_context": {"series_name": "FAERIE TALE THEATRE"}},
+            "Faerie-Tale-Theatre-5--disc-01-deadbeef-title-000",
+        )
+        == "FAERIE TALE THEATRE"
+    )
+
+
+def test_descriptive_release_hint_recovers_legacy_semipretty_media_id():
+    assert (
+        _descriptive_release_hint(
+            {"media_context": {"series_name": "Unmatched"}},
+            "Faerie-Tale-Theatre-5--disc-01-deadbeef-title-000",
+        )
+        == "Faerie Tale Theatre 5"
+    )
+
 
 def _item(tmp_path, media_id, duration):
     source = tmp_path / f"{media_id}.mkv"
@@ -31,6 +72,7 @@ def _item(tmp_path, media_id, duration):
             "mode": "verified-rip-contract",
             "source_path": str(source),
             "source_size_bytes": source.stat().st_size,
+            "disc_fingerprint": "0123456789abcdef",
             "title_index": int(re.search(r"-title-(\d{3})", media_id).group(1)),
             "media_context": {
                 "series_name": "Example Double Feature",
@@ -57,45 +99,25 @@ def test_catalogue_free_fallback_applies_mixed_provisional_results(
         _item(tmp_path, "disc-title-003-recovery-abcd", 300),
     ]
     store = FakeStore(items)
-    ffprobe = tmp_path / "ffprobe.exe"
-    ffmpeg = tmp_path / "ffmpeg.exe"
-    ffprobe.write_bytes(b"tool")
-    ffmpeg.write_bytes(b"tool")
     durations = {
         item.media_id: 7200 if "title-000" in item.media_id else 300 for item in items
     }
 
     monkeypatch.setattr(
-        "mkv_episode_matcher.backend.gemini_fallback.resolve_ffprobe_path",
-        lambda _path: ffprobe,
-    )
-    monkeypatch.setattr(
-        "mkv_episode_matcher.backend.gemini_fallback.resolve_ffmpeg_path",
-        lambda _path: ffmpeg,
-    )
-    monkeypatch.setattr(
-        "mkv_episode_matcher.backend.gemini_fallback.inspect_mkv",
-        lambda _tool, source, timeout_seconds: SimpleNamespace(
-            media=SimpleNamespace(
-                duration_seconds=durations[source.stem], audio_streams=()
-            )
-        ),
-    )
-    monkeypatch.setattr(
-        "mkv_episode_matcher.backend.gemini_fallback.collect_transcript_batch",
-        lambda *args, **kwargs: SimpleNamespace(
-            files=tuple(
-                SimpleNamespace(
-                    file_id=item.media_id,
-                    windows=(SimpleNamespace(text="bounded evidence"),),
+        "mkv_episode_matcher.backend.gemini_fallback.collect_dossier_evidence",
+        lambda selected, *_args: (
+            tuple(
+                UnmatchedFileEvidence(
+                    item.media_id, durations[item.media_id], ("bounded evidence",)
                 )
-                for item in items
-            )
+                for item, _payload in selected
+            ),
+            FakeDossier(),
         ),
     )
     monkeypatch.setattr(
         "mkv_episode_matcher.backend.gemini_fallback.GeminiDescriptiveRanker.describe_with_configured_keys",
-        lambda self, evidence, release_hint: GeminiDescriptivePlan(
+        lambda self, evidence, release_hint, prior_attempts=None: GeminiDescriptivePlan(
             mode="gemini-descriptive-review-plan",
             model="test",
             matches=(
@@ -122,7 +144,7 @@ def test_catalogue_free_fallback_applies_mixed_provisional_results(
     applied = execute_gemini_fallback(
         store,
         tuple(item.media_id for item in items),
-        Config(ffprobe_path=ffprobe, ffmpeg_path=ffmpeg, gemini_model="test"),
+        Config(gemini_model="test"),
         SimpleNamespace(),
         tmp_path / "contracts",
     )
@@ -145,3 +167,114 @@ def test_catalogue_free_fallback_applies_mixed_provisional_results(
         extra["media_context"]["special_feature_assignments"][0]["media_kind"]
         == "extra"
     )
+
+
+def test_descriptive_tv_result_reuses_evidence_in_all_season_matcher(
+    tmp_path, monkeypatch
+):
+    items = [
+        _item(tmp_path, "disc-title-000", 1200),
+        _item(tmp_path, "disc-title-001", 1200),
+    ]
+    store = FakeStore(items)
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.gemini_fallback.collect_dossier_evidence",
+        lambda selected, *_args: (
+            tuple(
+                UnmatchedFileEvidence(item.media_id, 1200, ("episode dialogue",))
+                for item, _payload in selected
+            ),
+            FakeDossier(),
+        ),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.gemini_fallback.GeminiDescriptiveRanker.describe_with_configured_keys",
+        lambda self, evidence, release_hint, prior_attempts=None: GeminiDescriptivePlan(
+            mode="gemini-descriptive-review-plan",
+            model="test",
+            matches=tuple(
+                GeminiDescriptiveResult(
+                    item.file_id,
+                    "tv_episode",
+                    "Unnumbered television episode",
+                    None,
+                    0.7,
+                    ("Television evidence.",),
+                )
+                for item in evidence
+            ),
+        ),
+    )
+    captured = {}
+
+    def fake_all_season(
+        _store,
+        fingerprint,
+        series_name,
+        _config,
+        _asr,
+        _contract_root,
+        **options,
+    ):
+        captured.update(
+            fingerprint=fingerprint, series_name=series_name, options=options
+        )
+        return tuple(item.media_id for item in items)
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.unmatched_disc_analysis.execute_unmatched_disc_analysis",
+        fake_all_season,
+    )
+
+    applied = execute_gemini_fallback(
+        store,
+        tuple(item.media_id for item in items),
+        Config(gemini_model="test", automatic_gemini_ambiguity_fallback=True),
+        SimpleNamespace(),
+        tmp_path / "contracts",
+    )
+
+    assert applied == tuple(item.media_id for item in items)
+    assert captured["fingerprint"] == "0123456789abcdef"
+    assert captured["series_name"] == "Example Double Feature"
+    assert captured["options"]["allow_content_fallback"] is False
+
+
+def test_unresolved_descriptive_result_stops_showing_running(tmp_path, monkeypatch):
+    item = _item(tmp_path, "disc-title-000", 1200)
+    store = FakeStore([item])
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.gemini_fallback.collect_dossier_evidence",
+        lambda selected, *_args: (
+            (UnmatchedFileEvidence(item.media_id, 1200, ("episode dialogue",)),),
+            FakeDossier(),
+        ),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.gemini_fallback.GeminiDescriptiveRanker.describe_with_configured_keys",
+        lambda self, evidence, release_hint, prior_attempts=None: GeminiDescriptivePlan(
+            mode="gemini-descriptive-review-plan",
+            model="test",
+            matches=(
+                GeminiDescriptiveResult(
+                    item.media_id,
+                    "unknown",
+                    "Unresolved title",
+                    None,
+                    0.4,
+                    ("Insufficient evidence.",),
+                ),
+            ),
+        ),
+    )
+
+    applied = execute_gemini_fallback(
+        store,
+        (item.media_id,),
+        Config(gemini_model="test"),
+        SimpleNamespace(),
+        tmp_path / "contracts",
+    )
+
+    assert applied == ()
+    assert item.review_code == "gemini_descriptive_review_required"

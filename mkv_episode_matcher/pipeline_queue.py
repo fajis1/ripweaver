@@ -628,6 +628,68 @@ class PipelineQueueStore:
             for row in rows
         )
 
+    def record_sequence_diagnostic(
+        self,
+        media_ids: tuple[str, ...],
+        *,
+        catalog_episode_count: int,
+        file_count: int,
+        best_score: float,
+        runner_up_score: float,
+        global_margin: float,
+        disposition: str,
+        library_episode_count: int = 0,
+        candidate_scope: str = "all",
+    ) -> None:
+        """Persist path- and dialogue-free sequence scoring for held titles."""
+
+        checked_ids = tuple(self._check_media_id(value) for value in media_ids)
+        if (
+            not checked_ids
+            or len(set(checked_ids)) != len(checked_ids)
+            or catalog_episode_count <= 0
+            or file_count != len(checked_ids)
+            or disposition not in {"proposed", "review", "review-ambiguous"}
+            or library_episode_count < 0
+            or candidate_scope not in {"all", "missing"}
+            or any(
+                not isinstance(value, int | float) or not 0 <= value <= 1
+                for value in (best_score, runner_up_score, global_margin)
+            )
+        ):
+            raise PipelineQueueError("Sequence diagnostic is invalid")
+        details = {
+            "catalog_episode_count": catalog_episode_count,
+            "file_count": file_count,
+            "best_score": round(float(best_score), 6),
+            "runner_up_score": round(float(runner_up_score), 6),
+            "global_margin": round(float(global_margin), 6),
+            "disposition": disposition,
+            "library_episode_count": library_episode_count,
+            "candidate_scope": candidate_scope,
+        }
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for media_id in checked_ids:
+                row = connection.execute(
+                    "SELECT stage, state FROM pipeline_items WHERE media_id = ?",
+                    (media_id,),
+                ).fetchone()
+                if row is None or row["stage"] != "identify":
+                    connection.rollback()
+                    raise PipelineQueueError(
+                        "Sequence diagnostic item is unavailable for identification"
+                    )
+                self._append_event(
+                    connection,
+                    media_id=media_id,
+                    event_type="sequence_match_scored",
+                    stage="identify",
+                    state=row["state"],
+                    details=details,
+                )
+            connection.commit()
+
     def claim_next(
         self,
         *,
@@ -1146,6 +1208,12 @@ class PipelineQueueStore:
             "gemini_audio_evidence_insufficient",
             "gemini_catalog_unavailable",
             "gemini_provider_failed",
+            "gemini_credential_rejected",
+            "gemini_rate_limited",
+            "gemini_provider_unavailable",
+            "gemini_request_rejected",
+            "gemini_network_failed",
+            "gemini_response_invalid",
             "gemini_descriptive_review_required",
             "special_feature_manual_assignment_required",
             "special_feature_evidence_required",
@@ -1173,6 +1241,12 @@ class PipelineQueueStore:
                     "gemini_audio_evidence_insufficient",
                     "gemini_catalog_unavailable",
                     "gemini_provider_failed",
+                    "gemini_credential_rejected",
+                    "gemini_rate_limited",
+                    "gemini_provider_unavailable",
+                    "gemini_request_rejected",
+                    "gemini_network_failed",
+                    "gemini_response_invalid",
                     "gemini_descriptive_review_required",
                     "special_feature_manual_assignment_required",
                     "missing_season_context",
@@ -1221,9 +1295,13 @@ class PipelineQueueStore:
                 not in {
                     "gemini_evidence_required",
                     "gemini_analysis_running",
+                    "gemini_descriptive_review_required",
+                    "special_feature_manual_assignment_required",
                     "missing_season_context",
                     "unmatched_disc_analysis_required",
                     "all_season_analysis_running",
+                    "all_season_analysis_failed",
+                    "all_season_sequence_review_required",
                 }
             ):
                 connection.rollback()

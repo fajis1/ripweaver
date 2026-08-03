@@ -41,6 +41,7 @@ class DriveStatusSnapshot:
 
 DiscoveryRunner = Callable[..., CommandResult]
 NativeDriveDiscovery = Callable[[], tuple[str, ...]]
+NativeMediaDiscovery = Callable[[], dict[str, tuple[bool, str | None]]]
 
 
 def discover_windows_optical_drives() -> tuple[str, ...]:
@@ -65,6 +66,36 @@ def discover_windows_optical_drives() -> tuple[str, ...]:
     return tuple(optical)
 
 
+def discover_windows_optical_media() -> dict[str, tuple[bool, str | None]]:
+    """Read Windows volume readiness/labels without invoking MakeMKV."""
+
+    if sys.platform != "win32":
+        return {}
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    media: dict[str, tuple[bool, str | None]] = {}
+    for device_name in discover_windows_optical_drives():
+        label = ctypes.create_unicode_buffer(261)
+        ready = bool(
+            kernel32.GetVolumeInformationW(
+                f"{device_name}\\",
+                label,
+                len(label),
+                None,
+                None,
+                None,
+                None,
+                0,
+            )
+        )
+        media[device_name] = (
+            ready,
+            _public_disc_label(label.value) if ready else None,
+        )
+    return media
+
+
 def _public_disc_label(value: str) -> str | None:
     """Return a short display label without allowing control/path characters."""
 
@@ -79,12 +110,18 @@ class DriveWatcher:
         self,
         runner: DiscoveryRunner = run_info_command,
         native_discovery: NativeDriveDiscovery | None = None,
+        native_media_discovery: NativeMediaDiscovery | None = None,
     ) -> None:
         self._runner = runner
         self._native_discovery = native_discovery or (
             discover_windows_optical_drives
             if runner is run_info_command
             else lambda: ()
+        )
+        self._native_media_discovery = native_media_discovery or (
+            discover_windows_optical_media
+            if runner is run_info_command
+            else lambda: {}
         )
         self._lock = threading.Lock()
         self._snapshot = DriveStatusSnapshot((), None, "not_scanned")
@@ -144,6 +181,52 @@ class DriveWatcher:
                     for drive in self._snapshot.drives
                 ),
             )
+
+    def refresh_native_media(self) -> DriveStatusSnapshot:
+        """Update newly inserted idle-drive media while MakeMKV is busy elsewhere."""
+
+        with self._lock:
+            native_media = {
+                name.strip().upper().rstrip("\\/"): state
+                for name, state in self._native_media_discovery().items()
+                if re.fullmatch(r"[A-Z]:[\\/]?", name.strip().upper())
+            }
+            if not native_media:
+                return self._snapshot
+            by_index = {drive.drive_index: drive for drive in self._snapshot.drives}
+            reverse_devices = {
+                device.upper().rstrip("\\/"): index
+                for index, device in self._device_names.items()
+            }
+            for device_name, (has_disc, label) in native_media.items():
+                drive_index = reverse_devices.get(device_name)
+                if drive_index is None:
+                    continue
+                previous = by_index.get(
+                    drive_index,
+                    PublicDriveStatus(drive_index, True, False),
+                )
+                if not has_disc and previous.has_disc:
+                    # A busy ripping drive may not answer the Windows volume
+                    # query. Never make active media disappear on that basis.
+                    continue
+                same_disc = previous.has_disc and previous.disc_label == label
+                by_index[drive_index] = PublicDriveStatus(
+                    drive_index=drive_index,
+                    available=True,
+                    has_disc=has_disc,
+                    disc_label=label if has_disc else None,
+                    current_job_id=previous.current_job_id if same_disc else None,
+                    current_disc_fingerprint=(
+                        previous.current_disc_fingerprint if same_disc else None
+                    ),
+                )
+            self._snapshot = DriveStatusSnapshot(
+                drives=tuple(by_index[index] for index in sorted(by_index)),
+                refreshed_at=datetime.now(UTC).isoformat(),
+                status="ready",
+            )
+            return self._snapshot
 
     def refresh(
         self,

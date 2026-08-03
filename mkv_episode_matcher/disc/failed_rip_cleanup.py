@@ -69,8 +69,7 @@ def plan_failed_rip_cleanup(  # noqa: C901
                 for entry in entries
             ):
                 raise RipError("Failed-attempt directory contains unknown output")
-            if entries:
-                candidates.add(resolved)
+            candidates.add(resolved)
 
     records = []
     file_count = 0

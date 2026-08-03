@@ -11,6 +11,12 @@ const reasonText: Record<string, string> = {
   gemini_catalog_unavailable: 'The reviewed bonus-feature catalogue was missing or no longer matched this disc.',
   gemini_descriptive_review_required: 'Gemini reviewed the bounded evidence but could not safely classify the title as a movie or bonus feature.',
   gemini_provider_failed: 'The external Gemini request failed safely. Check the configured key, network access, provider status, and retry later.',
+  gemini_credential_rejected: 'Both configured Gemini credential attempts were unavailable or rejected. Check the key identifiers in Settings and rotate the rejected key.',
+  gemini_rate_limited: 'Gemini returned HTTP 429 after bounded retries. Wait for quota recovery or check billing and rate limits.',
+  gemini_provider_unavailable: 'Gemini returned a server-side 5xx response after bounded retries. Retry after the provider recovers.',
+  gemini_request_rejected: 'Gemini rejected the request with a non-credential 4xx response. Check model availability and request compatibility.',
+  gemini_network_failed: 'RipWeaver could not reach Gemini after bounded retries. Check DNS, firewall, proxy, and internet connectivity.',
+  gemini_response_invalid: 'Gemini responded, but its structured result did not satisfy the required episode-matching schema.',
   special_feature_evidence_required: 'More local evidence is required before a bonus-feature name can be assigned.',
 };
 
@@ -43,7 +49,10 @@ const LogsView = () => {
       const reviewCode = typeof event.details.review_code === 'string' ? event.details.review_code : null;
       const errorType = typeof event.details.error_type === 'string' ? event.details.error_type : null;
       const reason = reviewCode || errorType;
-      return <div key={event.sequence} className="grid gap-3 p-4 md:grid-cols-[10rem_1fr_auto]"><div className="text-xs text-[var(--text-muted)]">{new Date(event.created_at).toLocaleString()}</div><div><div className="font-mono text-sm text-white">{event.media_id}</div><div className="mt-1 text-sm text-blue-100">{event.event_type.replaceAll('_', ' ')} · {event.stage} · {event.state.replaceAll('_', ' ')}</div>{reason && <div className="mt-2 text-sm text-amber-200"><span className="font-mono">{reason}</span>: {reasonText[reason] || 'The item stopped safely and requires review.'}</div>}</div><div className="font-mono text-xs text-[var(--text-muted)]">#{event.sequence}</div></div>;
+      const sequenceScore = event.event_type === 'sequence_match_scored'
+        ? { best: Number(event.details.best_score), runnerUp: Number(event.details.runner_up_score), margin: Number(event.details.global_margin), disposition: String(event.details.disposition || 'review'), files: Number(event.details.file_count), candidates: Number(event.details.catalog_episode_count), libraryEpisodes: Number(event.details.library_episode_count || 0), scope: String(event.details.candidate_scope || 'all') }
+        : null;
+      return <div key={event.sequence} className="grid gap-3 p-4 md:grid-cols-[10rem_1fr_auto]"><div className="text-xs text-[var(--text-muted)]">{new Date(event.created_at).toLocaleString()}</div><div><div className="font-mono text-sm text-white">{event.media_id}</div><div className="mt-1 text-sm text-blue-100">{event.event_type.replaceAll('_', ' ')} · {event.stage} · {event.state.replaceAll('_', ' ')}</div>{sequenceScore && <div className="mt-2 rounded border border-blue-400/25 bg-blue-400/10 p-2 text-sm text-blue-100">Local sequence match: best {sequenceScore.best.toFixed(3)}, runner-up {sequenceScore.runnerUp.toFixed(3)}, margin {sequenceScore.margin.toFixed(3)} · {sequenceScore.disposition} · {sequenceScore.files} files compared with {sequenceScore.candidates} {sequenceScore.scope === 'missing' ? 'missing' : 'aired'} episodes. Jellyfin already contains {sequenceScore.libraryEpisodes} episode ID(s).</div>}{reason && <div className="mt-2 text-sm text-amber-200"><span className="font-mono">{reason}</span>: {reasonText[reason] || 'The item stopped safely and requires review.'}</div>}</div><div className="font-mono text-xs text-[var(--text-muted)]">#{event.sequence}</div></div>;
     })}</div>}</div>
   </div>;
 };

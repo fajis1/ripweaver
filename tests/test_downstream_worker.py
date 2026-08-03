@@ -1,6 +1,58 @@
+import json
 from types import SimpleNamespace
 
 from mkv_episode_matcher.backend.downstream_worker import DownstreamWorker
+
+
+def test_automatic_analysis_rechecks_complete_disc_when_one_old_item_failed(
+    tmp_path, monkeypatch
+):
+    fingerprint = "0123456789abcdef"
+    items = []
+    for index, review_code in enumerate((
+        "unmatched_disc_analysis_required",
+        "all_season_analysis_failed",
+    )):
+        contract = tmp_path / f"item-{index}.json"
+        contract.write_text(
+            json.dumps({
+                "disc_fingerprint": fingerprint,
+                "media_context": {"series_name": "Faerie Tale Theatre"},
+            }),
+            encoding="utf-8",
+        )
+        items.append(
+            SimpleNamespace(
+                media_id=f"media-{index}",
+                stage="identify",
+                state="review_required",
+                review_code=review_code,
+                artifact=SimpleNamespace(contract_path=contract),
+            )
+        )
+    store = SimpleNamespace(list_items=lambda: items)
+    worker = DownstreamWorker(
+        SimpleNamespace(store=store), allowed_stages=("identify",)
+    )
+    captured = []
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(automatic_processing_enabled=True)
+        ),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root",
+        lambda: tmp_path,
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.automatic_rip._resolve_automatic_unmatched_disc",
+        lambda media_ids, *_args: captured.append(media_ids),
+    )
+
+    assert worker._apply_automatic_disc_analysis() is True
+    assert worker._apply_automatic_disc_analysis() is False
+    assert captured == [("media-0", "media-1")]
 
 
 def test_automatic_transcode_uses_resolution_profiles_and_starts_once(monkeypatch):

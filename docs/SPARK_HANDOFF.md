@@ -82,3 +82,39 @@ Subtitle language retention is explicit in the profile UI, but a separate
 language-aware subtitle default-track field and execution mapping remain a
 follow-up. Do not report that a selected subtitle language becomes the
 playback default until it has a tested backend contract.
+
+## Cross-kind identification handoff (2026-08-02)
+
+The unmatched-disc workflow now has a private restart-safe dossier and bounded
+TV/movie/bonus routing. Exact-source transcript evidence is reused after a
+restart, local scores and provider rejection codes are retained as dialogue-free
+attempt summaries, and those summaries are included in later Gemini requests.
+The descriptive branch may return a previously untried television result to
+all-season matching, but the route guard prevents a recursive classifier loop.
+
+The exact ten-file Faerie Tale Theatre batch was approved and completed in an
+isolated queue. Exact-source evidence was collected once; subsequent retries
+reused the private dossiers. The live test found and fixed durable diagnostic
+validation, canonical-catalogue adjacency, partial Gemini acceptance,
+provider-history bounds, schema constraints, Jellyfin tie-break semantics, and
+play-all runtime rejection. Gemini now needs two agreeing responses before an
+ambiguous title advances. The final result was seven stable provisional episode
+matches and three review holds (one inconsistent episode result and two
+play-all titles). No physical disc or live queue was accessed and no media was
+changed. The safe audit result remains under the approved private validation
+root; transcript dossiers must never be committed or shown in public logs.
+The post-fix related suite passed 116 tests, and frontend lint, TypeScript, and
+the production build passed. The final full repository suite passed 671 tests;
+only dependency deprecations and the inaccessible repository `.pytest_cache`
+warning remained.
+
+After that validation, the live queue revealed old placeholder episode
+contracts that predated the dossier work. New local matches now use the same
+per-title runtime guard as Gemini, and both identify and transcode boundaries
+refuse an `Unmatched` placeholder episode. A held legacy item can be returned
+to its original verified-rip contract through the WebUI without touching the
+MKV. Pre-policy all-season contracts are also returned to review for cached
+recomputation. Do not use the generic stage retry for
+`placeholder_identification_required`; use the dedicated restart-identification
+action so the old identified contract cannot be submitted to HandBrake again.
+The complete post-fix repository suite passes 675 tests.

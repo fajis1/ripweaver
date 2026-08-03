@@ -62,6 +62,20 @@ def test_cleanup_refuses_unknown_files(tmp_path: Path):
     assert (failed / "notes.txt").is_file()
 
 
+def test_cleanup_removes_exact_empty_interrupted_title_directory(tmp_path: Path):
+    failed = tmp_path / ".staging/disc-01/old/0123456789abcdef/title-000"
+    failed.mkdir(parents=True)
+
+    plan = plan_failed_rip_cleanup(tmp_path, (_job(),))
+
+    assert plan.file_count == 0
+    assert plan.relative_directories == (
+        ".staging/disc-01/old/0123456789abcdef/title-000",
+    )
+    apply_failed_rip_cleanup(tmp_path, (_job(),), expected_plan_sha256=plan.plan_sha256)
+    assert not failed.exists()
+
+
 def test_verified_final_prevents_partial_cleanup(tmp_path: Path):
     failed = tmp_path / ".staging/disc-01/old/0123456789abcdef/title-000"
     failed.mkdir(parents=True)

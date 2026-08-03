@@ -47,3 +47,23 @@ def infer_tv_context_from_disc_label(label: str | None) -> tuple[str, int] | Non
     if not series or season > 999:
         return None
     return series, season
+
+
+def infer_release_name_from_disc_label(label: str | None) -> str | None:
+    """Return a useful release name without treating a volume as a season."""
+
+    if not label:
+        return None
+    normalized = re.sub(r"[_-]+", " ", label)
+    normalized = re.sub(r"\s+", " ", normalized).strip(" ._-")
+    if not normalized:
+        return None
+    normalized = re.sub(
+        r"\s+(?:disc|disk|dvd|volume|vol)\s*\d{1,3}$",
+        "",
+        normalized,
+        flags=re.IGNORECASE,
+    ).strip()
+    if re.search(r"[_-]\d{1,3}$", label):
+        normalized = re.sub(r"\s+\d{1,3}$", "", normalized).strip()
+    return normalized or None
