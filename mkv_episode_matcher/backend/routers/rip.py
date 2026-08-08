@@ -97,7 +97,10 @@ from mkv_episode_matcher.disc.special_feature_executor import (
 from mkv_episode_matcher.disc.special_feature_manifest import (
     build_diagnostic_special_feature_manifest,
 )
-from mkv_episode_matcher.disc.title_selector import load_title_plan
+from mkv_episode_matcher.disc.title_selector import (
+    load_title_plan,
+    select_pipeline_titles,
+)
 from mkv_episode_matcher.media.ffprobe_runner import FFprobeError, resolve_ffprobe_path
 from mkv_episode_matcher.media.handbrake import HandBrakeProfile
 from mkv_episode_matcher.media.handbrake_profiles import (
@@ -131,6 +134,23 @@ router = APIRouter(
 )
 
 _prepared_disc_identity_lock = threading.Lock()
+_drive_preparation_locks_guard = threading.Lock()
+_drive_preparation_locks: dict[int, threading.Lock] = {}
+
+
+def _claim_drive_preparation(drive_index: int) -> threading.Lock:
+    """Refuse concurrent inventory/planning work for one physical drive."""
+
+    with _drive_preparation_locks_guard:
+        preparation_lock = _drive_preparation_locks.setdefault(
+            drive_index, threading.Lock()
+        )
+    if not preparation_lock.acquire(blocking=False):
+        raise HTTPException(
+            status_code=409,
+            detail="This optical drive is already being prepared; wait for that scan to finish",
+        )
+    return preparation_lock
 
 
 def _preview_disc_fingerprint(preview: RipPreview | dict[str, object]) -> str | None:
@@ -261,6 +281,7 @@ class OrchestrationJobResponse(BaseModel):
     error_category: str | None = None
     failed_drive_indexes: list[int] = []
     recommendations: list[str] = []
+    rip_title_summary: dict[str, object] | None = None
     rip_progress_percent: int | None = None
     rip_transfer_mib_s: float | None = None
     rip_progress_scope: str | None = None
@@ -310,6 +331,26 @@ class PrepareDrivePipelineRequest(BaseModel):
     )
     confirm_read: bool = False
     timeout_seconds: int = Field(default=300, ge=30, le=900)
+
+
+class ForgetDiscIdentityRequest(BaseModel):
+    expected_disc_fingerprint: str = Field(pattern=r"^[0-9a-f]{16}$")
+    confirm_forget: bool = False
+    delete_staged_media: bool = False
+    expected_media_plan_sha256: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    authorized_media_file_count: int | None = Field(default=None, ge=1, le=9999)
+    confirm_delete_staged_media: bool = False
+
+
+class ForgetDiscMediaPreviewRequest(BaseModel):
+    expected_disc_fingerprint: str = Field(pattern=r"^[0-9a-f]{16}$")
+
+
+class PipelineSettingsRequest(BaseModel):
+    content_hint: str | None = Field(default=None, pattern="^(tv|movie|extras|mixed)$")
+    handbrake_profile_id: str | None = Field(default=None, max_length=80)
 
 
 class HandBrakeProfileInput(BaseModel):
@@ -689,6 +730,7 @@ def prepare_drive_pipeline(  # noqa: C901
             status_code=409,
             detail="Configure an existing MakeMKV rip staging root before preparing a pipeline",
         )
+    preparation_lock = _claim_drive_preparation(request.drive_index)
     try:
         executable = resolve_makemkv_path(config.makemkv_path)
         result = inventory_runner(
@@ -720,7 +762,15 @@ def prepare_drive_pipeline(  # noqa: C901
         disc_id = "disc-01"
         episode_plan = load_title_plan(report_path, report_id=disc_id)
         use_special_features = request.content_hint in {None, "extras", "mixed"}
-        selected_title_indexes = None
+        planned_titles = select_pipeline_titles(
+            episode_plan,
+            "tv"
+            if explicit_tv_context and request.content_hint is None
+            else request.content_hint,
+        )
+        selected_title_indexes = tuple(
+            decision.title.index for decision in planned_titles
+        )
         catalog_id = None
         release_id = None
         library_title = None
@@ -742,7 +792,8 @@ def prepare_drive_pipeline(  # noqa: C901
                 }
                 special_indexes = tuple(job.title_index for job in diagnostic.jobs)
                 episode_indexes = tuple(
-                    item.title.index for item in episode_plan.decisions if item.selected
+                    item.title.index
+                    for item in select_pipeline_titles(episode_plan, "tv")
                 )
                 selected_title_indexes = tuple(
                     sorted(
@@ -854,6 +905,212 @@ def prepare_drive_pipeline(  # noqa: C901
         return _job_response(job, public_store)
     except (PreflightError, RipError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    finally:
+        preparation_lock.release()
+
+
+def _disc_staged_mkv_plan(
+    rip_root: Path, disc_fingerprint: str
+) -> tuple[str, tuple[tuple[Path, int, int, str], ...]]:
+    """Plan exact fingerprint-named MKVs under the configured rip root."""
+
+    root = rip_root.resolve()
+    marker = re.compile(
+        rf"(?:^|--)disc-[0-9]+-{re.escape(disc_fingerprint)}-title-[0-9]{{3}}(?:-[^.]+)?\.mkv$",
+        re.IGNORECASE,
+    )
+    candidates: list[tuple[Path, int, int, str]] = []
+    for discovered in root.rglob("*.mkv"):
+        if not marker.search(discovered.name):
+            continue
+        resolved = discovered.resolve()
+        try:
+            relative = resolved.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        if not resolved.is_file():
+            continue
+        stat = resolved.stat()
+        candidates.append((resolved, stat.st_size, stat.st_mtime_ns, relative))
+    candidates.sort(key=lambda item: item[3].casefold())
+    digest = hashlib.sha256(
+        json.dumps(
+            [
+                {"relative_path": relative, "size_bytes": size, "mtime_ns": mtime}
+                for _path, size, mtime, relative in candidates
+            ],
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return digest, tuple(candidates)
+
+
+def _current_forgettable_disc(watcher: DriveWatcher, drive_index: int, fingerprint: str):
+    selected = next(
+        (
+            drive
+            for drive in watcher.snapshot().drives
+            if drive.drive_index == drive_index and drive.has_disc
+        ),
+        None,
+    )
+    if selected is None or selected.current_disc_fingerprint != fingerprint:
+        raise HTTPException(
+            status_code=409,
+            detail="The inserted disc identity changed; refresh before resetting it",
+        )
+    return selected
+
+
+def _delete_disc_staged_mkvs(
+    request: ForgetDiscIdentityRequest, rip_root: Path
+) -> int:
+    if (
+        request.confirm_delete_staged_media is not True
+        or request.expected_media_plan_sha256 is None
+        or request.authorized_media_file_count is None
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Exact staged-media deletion confirmation is required",
+        )
+    media_digest, media_candidates = _disc_staged_mkv_plan(
+        rip_root, request.expected_disc_fingerprint
+    )
+    if (
+        media_digest != request.expected_media_plan_sha256
+        or len(media_candidates) != request.authorized_media_file_count
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Staged media changed; review a fresh deletion preview",
+        )
+    for path, expected_size, expected_mtime, _relative in media_candidates:
+        stat = path.stat()
+        if stat.st_size != expected_size or stat.st_mtime_ns != expected_mtime:
+            raise HTTPException(
+                status_code=409,
+                detail="Staged media changed; review a fresh deletion preview",
+            )
+    for path, _size, _mtime, _relative in media_candidates:
+        path.unlink()
+    return len(media_candidates)
+
+
+@router.post("/drives/{drive_index}/forget-disc-identity/media-preview")
+def preview_forget_drive_disc_media(
+    drive_index: int,
+    request: ForgetDiscMediaPreviewRequest,
+    watcher: Annotated[DriveWatcher, Depends(get_drive_watcher)],
+) -> dict[str, object]:
+    """Preview exact staged MKVs that a destructive identity reset would delete."""
+
+    _current_forgettable_disc(
+        watcher, drive_index, request.expected_disc_fingerprint
+    )
+    config = get_config_manager().load()
+    if config.rip_output_root is None or not config.rip_output_root.is_dir():
+        raise HTTPException(status_code=409, detail="Rip staging root is unavailable")
+    digest, candidates = _disc_staged_mkv_plan(
+        config.rip_output_root, request.expected_disc_fingerprint
+    )
+    return {
+        "plan_sha256": digest,
+        "file_count": len(candidates),
+        "total_size_bytes": sum(size for _path, size, _mtime, _relative in candidates),
+        "candidates": [
+            {"relative_path": relative, "size_bytes": size}
+            for _path, size, _mtime, relative in candidates
+        ],
+        "jellyfin_files_affected": 0,
+        "encoded_files_affected": 0,
+    }
+
+
+@router.post("/drives/{drive_index}/forget-disc-identity")
+def forget_drive_disc_identity(
+    drive_index: int,
+    request: ForgetDiscIdentityRequest,
+    watcher: Annotated[DriveWatcher, Depends(get_drive_watcher)],
+    public_store: Annotated[OrchestrationStore, Depends(get_orchestration_store)],
+    private_store: Annotated[PrivateBindingStore, Depends(get_private_binding_store)],
+    pipeline_store: Annotated[PipelineQueueStore, Depends(get_pipeline_queue_store)],
+) -> dict[str, object]:
+    """Forget one cached disc identity, optionally deleting exact staged MKVs."""
+
+    if request.confirm_forget is not True:
+        raise HTTPException(
+            status_code=400, detail="Explicit disc-identity reset confirmation is required"
+        )
+    preparation_lock = _claim_drive_preparation(drive_index)
+    try:
+        _current_forgettable_disc(
+            watcher, drive_index, request.expected_disc_fingerprint
+        )
+        matching_items = tuple(
+            item
+            for item in pipeline_store.list_items()
+            if _pipeline_item_response(item)["disc_fingerprint"]
+            == request.expected_disc_fingerprint
+        )
+        if any(item.state == "running" for item in matching_items):
+            raise HTTPException(
+                status_code=409,
+                detail="A pipeline item for this disc is currently running",
+            )
+        jobs = public_store.jobs_for_disc(request.expected_disc_fingerprint)
+        if any(
+            job.state
+            in {"authorized", "queued", "running", "pause_requested", "paused"}
+            or job.executor_attached
+            for job in jobs
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Active rip work for this disc must be stopped first",
+            )
+        deleted_media_count = 0
+        if request.delete_staged_media:
+            config = get_config_manager().load()
+            if config.rip_output_root is None or not config.rip_output_root.is_dir():
+                raise HTTPException(status_code=409, detail="Rip staging root is unavailable")
+            deleted_media_count = _delete_disc_staged_mkvs(
+                request, config.rip_output_root
+            )
+        job_ids = public_store.forget_disc_jobs(request.expected_disc_fingerprint)
+        queue_count, history_count = pipeline_store.forget_disc_records(
+            request.expected_disc_fingerprint
+        )
+        binding_count = private_store.delete_jobs(job_ids)
+        watcher.clear_current_job(
+            drive_index,
+            expected_disc_fingerprint=request.expected_disc_fingerprint,
+        )
+    except OSError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Staged media could not be deleted; no remaining metadata was forgotten",
+        ) from exc
+    except (PipelineQueueError, RipError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    finally:
+        preparation_lock.release()
+    logger.info(
+        "Forgot disc metadata: job_count={}, queue_record_count={}, title_history_count={}",
+        len(job_ids),
+        queue_count,
+        history_count,
+    )
+    return {
+        "forgotten_disc_fingerprint": request.expected_disc_fingerprint,
+        "deleted_job_count": len(job_ids),
+        "deleted_private_binding_count": binding_count,
+        "deleted_queue_record_count": queue_count,
+        "deleted_title_history_count": history_count,
+        "media_files_changed": deleted_media_count,
+        "ready_for_fresh_preparation": True,
+    }
 
 
 class AuthorizeJobRequest(BaseModel):
@@ -1304,7 +1561,7 @@ def _pipeline_item_response(
     }
 
 
-def _exact_queued_rip_source(item, rip_root: Path) -> Path:
+def _exact_queued_rip_source(item, rip_root: Path) -> Path | None:  # noqa: C901
     """Validate and resolve one verified source inside rip staging."""
 
     expected_modes = {
@@ -1334,7 +1591,13 @@ def _exact_queued_rip_source(item, rip_root: Path) -> Path:
         source.relative_to(rip_root.resolve())
     except ValueError as exc:
         raise PipelineQueueError("The queued media source escapes rip staging") from exc
-    if source.suffix.lower() != ".mkv" or not source.is_file():
+    if source.suffix.lower() != ".mkv":
+        raise PipelineQueueError("The queued staged MKV is unavailable")
+    if not source.exists():
+        # The staging-cleanup tool may have removed this exact file already.
+        # The queue record can still be discarded without touching anything.
+        return None
+    if not source.is_file():
         raise PipelineQueueError("The queued staged MKV is unavailable")
     if source.stat().st_size != source_size:
         raise PipelineQueueError("The queued staged MKV changed after verification")
@@ -1343,7 +1606,9 @@ def _exact_queued_rip_source(item, rip_root: Path) -> Path:
 
 def _delete_exact_queued_rip(item, rip_root: Path) -> None:
     try:
-        _exact_queued_rip_source(item, rip_root).unlink()
+        source = _exact_queued_rip_source(item, rip_root)
+        if source is not None:
+            source.unlink()
     except OSError as exc:
         raise PipelineQueueError("The queued staged MKV could not be deleted") from exc
 
@@ -1383,6 +1648,7 @@ def _job_response(job, store: OrchestrationStore | None = None) -> dict[str, obj
         "error_category": None,
         "failed_drive_indexes": [],
         "recommendations": [],
+        "rip_title_summary": None,
         "rip_progress_percent": None,
         "rip_transfer_mib_s": None,
         "rip_progress_scope": None,
@@ -1431,6 +1697,30 @@ def _job_response(job, store: OrchestrationStore | None = None) -> dict[str, obj
                     category, _RIP_RECOMMENDATIONS["unknown"]
                 ),
             })
+            completed_ids = {
+                str(value) for value in details.get("completed_job_ids", [])
+            }
+            title_refs = [
+                {
+                    "job_id": str(item.get("job_id")),
+                    "title_index": int(item.get("title_index", -1)),
+                    "drive_index": int(item.get("drive_index", -1)),
+                }
+                for item in job.preview.get("jobs", [])
+                if isinstance(item, dict)
+                and isinstance(item.get("job_id"), str)
+                and isinstance(item.get("title_index"), int)
+                and isinstance(item.get("drive_index"), int)
+            ]
+            response["rip_title_summary"] = {
+                "total_titles": len(title_refs),
+                "verified_titles": [
+                    item for item in title_refs if item["job_id"] in completed_ids
+                ],
+                "unfinished_titles": [
+                    item for item in title_refs if item["job_id"] not in completed_ids
+                ],
+            }
     return response
 
 
@@ -1482,6 +1772,29 @@ def get_rip_job(
 ) -> dict[str, object]:
     try:
         return _job_response(store.get_job(job_id), store)
+    except RipError as exc:
+        raise _store_error(exc) from exc
+
+
+@router.post(
+    "/jobs/{job_id}/pipeline-settings", response_model=OrchestrationJobResponse
+)
+def update_rip_pipeline_settings(
+    job_id: str,
+    request: PipelineSettingsRequest,
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
+    store: Annotated[OrchestrationStore, Depends(get_orchestration_store)],
+) -> dict[str, object]:
+    """Update content routing and HandBrake choices before their stages start."""
+
+    try:
+        job = store.update_pipeline_settings(
+            job_id,
+            content_hint=request.content_hint,
+            handbrake_profile_id=request.handbrake_profile_id,
+            idempotency_key=idempotency_key,
+        )
+        return _job_response(job, store)
     except RipError as exc:
         raise _store_error(exc) from exc
 
@@ -1889,16 +2202,26 @@ def execute_rip_job(
         def enqueue_results(bound, results) -> None:
             try:
                 contract_root.mkdir(parents=True, exist_ok=True)
+                settings = store.get_pipeline_settings(job_id)
+                content_hint = settings["content_hint"]
+                handbrake_profile_id = settings["handbrake_profile_id"]
+                contexts = {
+                    context.disc_id: replace(
+                        context,
+                        content_hint=content_hint or context.content_hint,
+                        handbrake_profile_id=(
+                            handbrake_profile_id or context.handbrake_profile_id
+                        ),
+                    )
+                    for context in bound.manifest.media_contexts
+                }
                 enqueue_verified_rip_results(
                     pipeline_store,
                     jobs=bound.manifest.jobs,
                     results=results,
                     output_root=bound.output_root,
                     contract_root=contract_root,
-                    media_contexts={
-                        context.disc_id: context
-                        for context in bound.manifest.media_contexts
-                    },
+                    media_contexts=contexts,
                 )
             except (OSError, PipelineQueueError) as exc:
                 raise RipError(
@@ -2287,8 +2610,13 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
                 )
                 code = exc.review_code
             else:
+                diagnostic = (
+                    str(exc)
+                    if isinstance(exc, PipelineQueueError) and str(exc)
+                    else type(exc).__name__
+                )
                 logger.error(
-                    "All-season disc analysis failed safely: {}", type(exc).__name__
+                    "All-season disc analysis failed safely: {}", diagnostic
                 )
                 code = (
                     "all_season_sequence_review_required"

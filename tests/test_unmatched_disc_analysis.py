@@ -87,6 +87,30 @@ def test_library_episode_status_never_removes_aired_candidates():
     assert fallback_scope == "all-library-aware"
 
 
+def test_assigned_disc_episodes_reads_identification_history(tmp_path):
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    fingerprint = "0123456789abcdef"
+    with store._connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO disc_title_history (
+                disc_fingerprint, title_index, outcome_name,
+                library_relative, episode_id, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                fingerprint,
+                1,
+                "Example - S01E04 - Fourth.mkv",
+                "Example/Season 01/Example - S01E04 - Fourth.mkv",
+                "S01E04",
+                "2026-08-08T00:00:00+00:00",
+            ),
+        )
+
+    assert analysis.assigned_disc_episodes(store, fingerprint) == frozenset({(1, 4)})
+
+
 def test_local_sequence_keeps_full_aired_order_when_library_has_gaps(
     tmp_path, monkeypatch
 ):

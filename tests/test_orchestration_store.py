@@ -50,6 +50,22 @@ def test_create_is_idempotent_and_database_is_path_redacted(tmp_path):
     assert b"Private Disc Label" not in serialized_database
 
 
+def test_forget_disc_jobs_removes_exact_inactive_metadata(tmp_path):
+    preview, _report, _output_root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+    first = store.create_job(preview, idempotency_key="forget-disc-job-0001")
+    second = store.create_job(preview, idempotency_key="forget-disc-job-0002")
+    destination = preview.jobs[0].staging_destination
+    fingerprint = next(
+        part for part in destination.replace("\\", "/").split("/") if len(part) == 16
+    )
+
+    forgotten = store.forget_disc_jobs(fingerprint)
+
+    assert set(forgotten) == {first.job_id, second.job_id}
+    assert store.list_jobs() == ()
+
+
 def test_exact_digest_authorizes_then_queue_pause_resume(tmp_path):
     preview, _report, _root = _preview(tmp_path)
     store = OrchestrationStore(tmp_path / "jobs.sqlite3")
@@ -169,6 +185,68 @@ def test_running_job_records_path_free_progress_and_updates_timestamp(tmp_path):
         "scope": "disc-01-title-000",
     }
     assert store.get_job(job.job_id).updated_at >= job.updated_at
+
+
+def test_pipeline_settings_are_idempotent_and_changeable_while_running(tmp_path):
+    preview, _report, _root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+    job = store.create_job(preview, idempotency_key="create-settings-0001")
+    store.authorize(
+        job.job_id,
+        expected_plan_sha256=job.plan_sha256,
+        idempotency_key="authorize-settings-0001",
+    )
+    store.queue(job.job_id, idempotency_key="queue-settings-0001")
+    store.claim_for_dispatch(job.job_id, idempotency_key="claim-settings-0001")
+
+    running = store.update_pipeline_settings(
+        job.job_id,
+        content_hint="tv",
+        handbrake_profile_id="default",
+        idempotency_key="settings-update-0001",
+    )
+    retry = store.update_pipeline_settings(
+        job.job_id,
+        content_hint="tv",
+        handbrake_profile_id="default",
+        idempotency_key="settings-update-0001",
+    )
+
+    assert running.state == "running"
+    assert retry.job_id == running.job_id
+    assert store.get_pipeline_settings(job.job_id) == {
+        "content_hint": "tv",
+        "handbrake_profile_id": "default",
+    }
+    assert store.list_events(job.job_id)[-1].event_type == (
+        "job_pipeline_settings_updated"
+    )
+
+
+def test_pipeline_settings_are_refused_after_job_completion(tmp_path):
+    preview, _report, _root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+    job = store.create_job(preview, idempotency_key="create-settings-0002")
+    store.authorize(
+        job.job_id,
+        expected_plan_sha256=job.plan_sha256,
+        idempotency_key="authorize-settings-0002",
+    )
+    store.queue(job.job_id, idempotency_key="queue-settings-0002")
+    store.claim_for_dispatch(job.job_id, idempotency_key="claim-settings-0002")
+    store.complete(
+        job.job_id,
+        idempotency_key="complete-settings-0002",
+        completed_count=1,
+    )
+
+    with pytest.raises(RipError, match="can no longer change"):
+        store.update_pipeline_settings(
+            job.job_id,
+            content_hint="movie",
+            handbrake_profile_id=None,
+            idempotency_key="settings-update-0002",
+        )
 
 
 def test_failed_job_can_be_queued_for_collision_safe_retry(tmp_path):

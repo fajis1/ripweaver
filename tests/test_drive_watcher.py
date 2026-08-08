@@ -52,6 +52,28 @@ def test_watcher_exposes_only_redacted_slot_state():
     assert watcher.device_name(2) is None
 
 
+def test_clear_current_job_detaches_only_expected_disc_identity():
+    watcher = DriveWatcher(
+        lambda _executable, _source, **_kwargs: _result(
+            'DRV:0,2,999,1,"private hardware","Test Disc","D:"\n'
+        ),
+        native_discovery=lambda: (),
+    )
+    watcher.refresh(Path("makemkvcon64.exe"))
+    watcher.bind_current_job(
+        0, "rip-0123456789abcdef0123456789abcdef", "0123456789abcdef"
+    )
+
+    watcher.clear_current_job(
+        0, expected_disc_fingerprint="0123456789abcdef"
+    )
+
+    drive = watcher.snapshot().drives[0]
+    assert drive.current_job_id is None
+    assert drive.current_disc_fingerprint is None
+    assert drive.has_disc is True
+
+
 def test_snapshot_does_not_invoke_discovery():
     def runner(*args, **kwargs):
         raise AssertionError("snapshot must not access hardware")

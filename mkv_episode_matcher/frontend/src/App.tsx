@@ -8,6 +8,7 @@ import RipPipelineView from './components/RipPipelineView';
 import RecentActivityView from './components/RecentActivityView';
 import LogsView from './components/LogsView';
 import SystemCleanupView from './components/SystemCleanupView';
+import JellyfinCleanupPanel from './components/JellyfinCleanupPanel';
 
 interface ScannedFile {
   path: string;
@@ -30,6 +31,7 @@ interface JobStatus {
   status: 'pending' | 'processing' | 'completed' | 'failed' | 'not_found';
   results?: JobResult[];
   failures?: string[];
+  play_all_aggregates?: { file: string; component_episode_ids: string[]; duration_ratio: number; size_ratio: number | null }[];
   error?: string;
   error_type?: 'credential' | 'service';
   credential_url?: string;
@@ -47,6 +49,8 @@ function App() {
   const [scannedFiles, setScannedFiles] = useState<ScannedFile[]>([]);
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
+  const [unmatchedSeriesName, setUnmatchedSeriesName] = useState('');
+  const [smartGeminiFallback, setSmartGeminiFallback] = useState(false);
   const [systemStatus, setSystemStatus] = useState({ status: 'loading', model_loaded: false, version: '...' });
   const [activityLog, setActivityLog] = useState<{ time: string, message: string, type: 'info' | 'success' | 'warning' }[]>([]);
   const [showOnboarding, setShowOnboarding] = useState(false);
@@ -107,6 +111,8 @@ function App() {
       // Filter out already-processed files by default
       const unprocessedFiles = data.files.filter((f: ScannedFile) => !f.is_processed);
       setScannedFiles(unprocessedFiles);
+      const suggestedSeries = unprocessedFiles.find((file: ScannedFile) => file.series)?.series;
+      setUnmatchedSeriesName(suggestedSeries || '');
       setWorkflowState('REVIEW');
     } catch (err) {
       console.error(err);
@@ -130,6 +136,80 @@ function App() {
     } catch (err) {
       console.error(err);
       alert('Failed to start matching');
+      setWorkflowState('REVIEW');
+    }
+  };
+
+  const handleStartUnmatchedMatch = async () => {
+    const seriesName = unmatchedSeriesName.trim();
+    if (!seriesName) {
+      alert('Enter the canonical TV series name before starting unmatched analysis.');
+      return;
+    }
+    if (scannedFiles.length < 2) {
+      alert('Unmatched all-season analysis requires at least two MKV files.');
+      return;
+    }
+    if (!window.confirm(`Read audio from ${scannedFiles.length} selected MKVs and look up the aired episode catalogue for “${seriesName}”? Files will be preserved and will not be renamed, moved, deleted, or transcoded.`)) return;
+    setWorkflowState('PROCESSING');
+    setJobStatus(null);
+    try {
+      const res = await fetch('/match/start-unmatched', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          files: scannedFiles.map(file => file.path),
+          series_name: seriesName,
+          confirm_media_read: true,
+          confirm_provider_lookup: true,
+          confirm_external_fallback: false,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Unmatched analysis could not be started.');
+      setActivityLog([{ time: new Date().toLocaleTimeString(), message: `Started all-season analysis for ${data.item_count} verified MKV(s).`, type: 'info' }]);
+      setWorkflowState('DONE');
+      setCurrentView('pipeline-queue');
+    } catch (err) {
+      console.error(err);
+      alert(err instanceof Error ? err.message : 'Unmatched analysis could not be started.');
+      setWorkflowState('REVIEW');
+    }
+  };
+
+  const handleStartSmartPipeline = async () => {
+    if (scannedFiles.length === 0) return;
+    const reviewedName = unmatchedSeriesName.trim();
+    const externalText = smartGeminiFallback
+      ? ' If local analysis is ambiguous, bounded transcript excerpts and candidate metadata may be sent to Gemini.'
+      : ' Ambiguous movie or extras results will remain held for review without Gemini.';
+    if (!window.confirm(`Inspect metadata and short audio evidence from ${scannedFiles.length} selected MKV(s), classify the folder, and admit it to the durable pipeline?${externalText} Files will not be renamed, moved, deleted, or transcoded by this preparation action.`)) return;
+    setWorkflowState('PROCESSING');
+    setJobStatus(null);
+    try {
+      const response = await fetch('/match/start-smart-folder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          files: scannedFiles.map(file => file.path),
+          series_name: reviewedName || null,
+          content_hint: null,
+          confirm_media_read: true,
+          confirm_provider_lookup: true,
+          confirm_external_fallback: smartGeminiFallback,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : 'Smart pipeline preparation failed.');
+      setActivityLog([{
+        time: new Date().toLocaleTimeString(),
+        message: `Classified ${payload.item_count} MKV(s) as ${payload.classification}: ${payload.classification_reason}.`,
+        type: 'info',
+      }]);
+      setWorkflowState('DONE');
+      setCurrentView('pipeline-queue');
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Smart pipeline preparation failed.');
       setWorkflowState('REVIEW');
     }
   };
@@ -177,7 +257,8 @@ function App() {
             setJobStatus({
               status: 'completed',
               results: msg.results,
-              failures: msg.failures
+              failures: msg.failures,
+              play_all_aggregates: msg.play_all_aggregates,
             });
             setActivityLog(prev => [...prev.slice(-50), { time: timestamp, message: `✅ Completed! ${msg.results?.length || 0} matched, ${msg.failures?.length || 0} failed`, type: 'success' }]);
           }
@@ -243,7 +324,7 @@ function App() {
     }
 
     if (currentView === 'system-cleanup') {
-      return <SystemCleanupView />;
+      return <><JellyfinCleanupPanel /><SystemCleanupView /></>;
     }
 
     if (currentView === 'help') {
@@ -316,10 +397,39 @@ function App() {
                 <button className="btn btn-secondary" onClick={resetWorkflow}>Cancel</button>
                 <button
                   className="btn btn-primary"
+                  onClick={handleStartSmartPipeline}
+                  disabled={scannedFiles.length === 0}
+                >
+                  Prepare smart pipeline
+                </button>
+                <label className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
+                  <input
+                    type="checkbox"
+                    checked={smartGeminiFallback}
+                    onChange={event => setSmartGeminiFallback(event.target.checked)}
+                  />
+                  Use Gemini fallback
+                </label>
+                <button
+                  className="btn btn-primary"
                   onClick={handleStartMatch}
                   disabled={scannedFiles.length === 0}
                 >
                   Start Matching ✨
+                </button>
+                <input
+                  className="input"
+                  value={unmatchedSeriesName}
+                  onChange={event => setUnmatchedSeriesName(event.target.value)}
+                  placeholder="Canonical series name"
+                  aria-label="Canonical series name for unmatched analysis"
+                />
+                <button
+                  className="btn btn-secondary"
+                  onClick={handleStartUnmatchedMatch}
+                  disabled={scannedFiles.length < 2}
+                >
+                  Analyze as Unmatched TV
                 </button>
               </>
             )}
@@ -458,6 +568,18 @@ function App() {
                           {res.original_file.split(/[/\\]/).pop()}
                         </div>
                       </div>
+                    </div>
+                  </div>
+                ))}
+
+                {jobStatus?.play_all_aggregates?.map((aggregate, idx) => (
+                  <div key={`play-all-${idx}`} className="p-4 bg-amber-500/10 rounded-xl border border-amber-500/30">
+                    <div className="text-amber-200 font-bold">Likely play-all aggregate</div>
+                    <div className="text-sm text-amber-100/80 mt-1">
+                      {aggregate.file.split(/[/\\\\]/).pop()} was excluded from failures because it matches {aggregate.component_episode_ids.join(', ')}.
+                    </div>
+                    <div className="text-xs text-amber-100/70 mt-2">
+                      Runtime ratio: {aggregate.duration_ratio.toFixed(3)}{aggregate.size_ratio === null ? '' : ` · Size ratio: ${aggregate.size_ratio.toFixed(3)}`}. The file was preserved and not renamed.
                     </div>
                   </div>
                 ))}

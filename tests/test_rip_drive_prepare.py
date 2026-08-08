@@ -1,11 +1,105 @@
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
+
 from mkv_episode_matcher.backend.routers import rip
 from mkv_episode_matcher.disc.drive_watcher import DriveWatcher
 from mkv_episode_matcher.disc.orchestration_store import OrchestrationStore
 from mkv_episode_matcher.disc.preflight import CommandResult
 from mkv_episode_matcher.disc.private_bindings import PrivateBindingStore
 from mkv_episode_matcher.pipeline_queue import PipelineQueueStore
+
+
+def test_drive_preparation_guard_refuses_duplicate_scan_and_releases():
+    claimed = rip._claim_drive_preparation(17)
+    try:
+        with pytest.raises(HTTPException, match="already being prepared"):
+            rip._claim_drive_preparation(17)
+    finally:
+        claimed.release()
+
+    next_claim = rip._claim_drive_preparation(17)
+    next_claim.release()
+
+
+def test_disc_staged_mkv_plan_selects_only_exact_fingerprint_files(tmp_path):
+    fingerprint = "0123456789abcdef"
+    matching = (
+        tmp_path
+        / "TV Shows"
+        / "Test Show"
+        / "Unmatched"
+        / f"Test-Show--disc-02-{fingerprint}-title-004.mkv"
+    )
+    matching.parent.mkdir(parents=True)
+    matching.write_bytes(b"matching-media")
+    other_disc = matching.with_name(
+        "Test-Show--disc-02-fedcba9876543210-title-004.mkv"
+    )
+    other_disc.write_bytes(b"other-disc")
+    generic = matching.with_name("episode.mkv")
+    generic.write_bytes(b"generic")
+
+    digest, candidates = rip._disc_staged_mkv_plan(tmp_path, fingerprint)
+
+    assert len(digest) == 64
+    assert candidates == (
+        (
+            matching.resolve(),
+            matching.stat().st_size,
+            matching.stat().st_mtime_ns,
+            matching.relative_to(tmp_path).as_posix(),
+        ),
+    )
+
+
+def test_disc_staged_mkv_plan_digest_changes_with_candidate_metadata(tmp_path):
+    fingerprint = "0123456789abcdef"
+    candidate = tmp_path / f"Series--disc-01-{fingerprint}-title-001.mkv"
+    candidate.write_bytes(b"first")
+    initial_digest, _ = rip._disc_staged_mkv_plan(tmp_path, fingerprint)
+
+    candidate.write_bytes(b"changed-size")
+    changed_digest, _ = rip._disc_staged_mkv_plan(tmp_path, fingerprint)
+
+    assert changed_digest != initial_digest
+
+
+def test_delete_disc_staged_mkvs_requires_exact_unchanged_preview(tmp_path):
+    fingerprint = "0123456789abcdef"
+    candidate = tmp_path / f"Series--disc-01-{fingerprint}-title-001.mkv"
+    candidate.write_bytes(b"media")
+    digest, _ = rip._disc_staged_mkv_plan(tmp_path, fingerprint)
+    request = rip.ForgetDiscIdentityRequest(
+        expected_disc_fingerprint=fingerprint,
+        confirm_forget=True,
+        delete_staged_media=True,
+        expected_media_plan_sha256=digest,
+        authorized_media_file_count=1,
+        confirm_delete_staged_media=True,
+    )
+
+    assert rip._delete_disc_staged_mkvs(request, tmp_path) == 1
+    assert not candidate.exists()
+
+
+def test_delete_disc_staged_mkvs_refuses_stale_preview(tmp_path):
+    fingerprint = "0123456789abcdef"
+    candidate = tmp_path / f"Series--disc-01-{fingerprint}-title-001.mkv"
+    candidate.write_bytes(b"media")
+    request = rip.ForgetDiscIdentityRequest(
+        expected_disc_fingerprint=fingerprint,
+        confirm_forget=True,
+        delete_staged_media=True,
+        expected_media_plan_sha256="0" * 64,
+        authorized_media_file_count=1,
+        confirm_delete_staged_media=True,
+    )
+
+    with pytest.raises(HTTPException, match="review a fresh deletion preview"):
+        rip._delete_disc_staged_mkvs(request, tmp_path)
+    assert candidate.exists()
 
 
 def _result(

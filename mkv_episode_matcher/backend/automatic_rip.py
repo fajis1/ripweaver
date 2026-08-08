@@ -184,7 +184,11 @@ def run_automatic_drive(drive_index: int) -> None:
                 for item in job.preview.get("jobs", [])
                 if isinstance(item, dict) and isinstance(item.get("job_id"), str)
             )
-            _continue_automatic_downstream(media_ids)
+            settings = public_store.get_pipeline_settings(job_id)
+            _continue_automatic_downstream(
+                media_ids,
+                profile_id=settings["handbrake_profile_id"],
+            )
     except (HTTPException, RipError, OSError, ValueError) as exc:
         logger.warning("Automatic rip stopped safely: {}", type(exc).__name__)
 
@@ -207,7 +211,9 @@ def _wait_for_stage_to_settle(
     raise RipError(f"Automatic {stage} wait timed out")
 
 
-def _continue_automatic_downstream(media_ids: tuple[str, ...]) -> None:
+def _continue_automatic_downstream(
+    media_ids: tuple[str, ...], *, profile_id: str | None = None
+) -> None:
     """Serialize default-profile transcode and collision-free organization."""
 
     if not media_ids:
@@ -249,7 +255,7 @@ def _continue_automatic_downstream(media_ids: tuple[str, ...]) -> None:
                 store,
                 profiles,
                 config,
-                profile_id=None,
+                profile_id=profile_id,
             )
             authorize_transcode_batch(
                 AuthorizeTranscodeRequest(

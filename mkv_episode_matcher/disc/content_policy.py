@@ -64,6 +64,12 @@ def infer_release_name_from_disc_label(label: str | None) -> str | None:
         normalized,
         flags=re.IGNORECASE,
     ).strip()
+    normalized = re.sub(
+        r"\s+csr\s+dim\s*\d{1,3}$",
+        "",
+        normalized,
+        flags=re.IGNORECASE,
+    ).strip()
     if re.search(r"[_-]\d{1,3}$", label):
         normalized = re.sub(r"\s+\d{1,3}$", "", normalized).strip()
     return normalized or None

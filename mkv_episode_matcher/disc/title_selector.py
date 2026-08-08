@@ -16,6 +16,7 @@ from typing import Any, Literal
 MIN_EPISODE_SECONDS = 15 * 60
 MIN_HINTED_TITLE_SECONDS = 5 * 60
 MIN_BONUS_FEATURE_SECONDS = 3 * 60
+MIN_BONUS_SIZE_RATIO = 0.05
 MIN_RIPPABLE_TITLE_SECONDS = 8
 CLUSTER_RELATIVE_TOLERANCE = 0.12
 CLUSTER_ABSOLUTE_TOLERANCE = 120
@@ -314,12 +315,25 @@ def select_bonus_titles(plan: DiscTitlePlan) -> tuple[TitleDecision, ...]:
     review instead of being added to the rip proposal.
     """
 
+    episode_sizes = [
+        decision.title.size_bytes
+        for decision in plan.decisions
+        if decision.classification == "episode"
+        and decision.title.size_bytes is not None
+        and decision.title.size_bytes > 0
+    ]
+    minimum_size = (
+        median(episode_sizes) * MIN_BONUS_SIZE_RATIO if episode_sizes else None
+    )
     plausible = [
         decision.title
         for decision in plan.decisions
-        if decision.classification != "combined"
+        if decision.classification not in {"episode", "combined"}
         and decision.title.duration_seconds is not None
         and decision.title.duration_seconds >= MIN_BONUS_FEATURE_SECONDS
+        and decision.title.size_bytes is not None
+        and decision.title.size_bytes > 0
+        and (minimum_size is None or decision.title.size_bytes >= minimum_size)
     ]
     selected_indexes: set[int] = set()
     for title in plausible:
@@ -329,6 +343,31 @@ def select_bonus_titles(plan: DiscTitlePlan) -> tuple[TitleDecision, ...]:
         if _combined_components(duration, other_titles):
             continue
         selected_indexes.add(title.index)
+    return tuple(
+        decision
+        for decision in plan.decisions
+        if decision.title.index in selected_indexes
+    )
+
+
+def select_pipeline_titles(
+    plan: DiscTitlePlan,
+    content_hint: str | None = None,
+) -> tuple[TitleDecision, ...]:
+    """Select prepared-pipeline titles from saved metadata only."""
+
+    episodes = tuple(
+        decision for decision in plan.decisions if decision.classification == "episode"
+    )
+    if content_hint == "tv":
+        return episodes
+    if content_hint == "extras":
+        return select_bonus_titles(plan)
+
+    selected_indexes = {decision.title.index for decision in episodes}
+    selected_indexes.update(
+        decision.title.index for decision in select_bonus_titles(plan)
+    )
     return tuple(
         decision
         for decision in plan.decisions

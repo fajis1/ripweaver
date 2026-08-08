@@ -6,6 +6,7 @@ import pytest
 from mkv_episode_matcher.backend.routers.rip import (
     ManualEpisodeIdentificationRequest,
     PipelineControlRequest,
+    _delete_exact_queued_rip,
     _exact_queued_rip_source,
     apply_manual_episode_identification,
     restart_placeholder_identification,
@@ -388,6 +389,38 @@ def test_delete_queued_item_media_runs_exact_callback_and_records_change(tmp_pat
     assert event.details == {"deleted": "staged_source", "media_changed": True}
 
 
+def test_delete_queued_item_media_accepts_source_already_removed_by_cleanup(tmp_path):
+    rip_root = tmp_path / "rip-root"
+    rip_root.mkdir()
+    source = rip_root / "disc-01-0123456789abcdef-title-000.mkv"
+    source.write_bytes(b"verified")
+    contract = tmp_path / "queued-already-cleaned-rip.json"
+    contract.write_text(
+        json.dumps(
+            {
+                "mode": "verified-rip-contract",
+                "source_path": str(source),
+                "source_size_bytes": source.stat().st_size,
+            }
+        ),
+        encoding="utf-8",
+    )
+    artifact = build_artifact("rip", contract)
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    store.enqueue_verified_rip("queued-already-cleaned", artifact)
+    source.unlink()
+
+    result = store.delete_queued_item_media(
+        "queued-already-cleaned",
+        lambda item: _delete_exact_queued_rip(item, rip_root),
+    )
+
+    assert result.state == "discarded"
+    assert store.list_events("queued-already-cleaned")[-1].event_type == (
+        "pipeline_staged_media_deleted"
+    )
+
+
 def test_delete_review_held_item_media_runs_exact_callback(tmp_path):
     store = _store(tmp_path)
     store.enqueue_verified_rip("held-delete", _artifact(tmp_path, "held-delete", "rip"))
@@ -425,6 +458,38 @@ def test_delete_discarded_item_media_after_preserving_it(tmp_path):
     assert store.list_events("discarded-delete")[-1].event_type == (
         "pipeline_staged_media_deleted"
     )
+
+
+def test_forget_disc_records_removes_only_metadata_and_preserves_media(tmp_path):
+    store = _store(tmp_path)
+    sources = {}
+    for media_id, fingerprint in (
+        ("forgotten-disc-item", "0123456789abcdef"),
+        ("other-disc-item", "fedcba9876543210"),
+    ):
+        source = tmp_path / f"{media_id}.mkv"
+        source.write_bytes(media_id.encode())
+        contract = tmp_path / f"{media_id}.json"
+        contract.write_text(
+            json.dumps(
+                {
+                    "mode": "verified-rip-contract",
+                    "source_path": str(source),
+                    "source_size_bytes": source.stat().st_size,
+                    "disc_fingerprint": fingerprint,
+                    "title_index": 0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+        sources[media_id] = source
+
+    record_count, history_count = store.forget_disc_records("0123456789abcdef")
+
+    assert (record_count, history_count) == (1, 0)
+    assert {item.media_id for item in store.list_items()} == {"other-disc-item"}
+    assert all(source.is_file() for source in sources.values())
 
 
 def test_review_held_verified_rip_source_is_eligible_for_exact_deletion(tmp_path):
@@ -653,6 +718,55 @@ def test_verified_rip_result_is_admitted_without_discovering_media(tmp_path):
     assert str(source) not in json.dumps([
         event.details for event in store.list_events()
     ])
+
+
+def test_verified_rip_retry_preserves_old_contract_and_uses_digest_name(tmp_path):
+    store = _store(tmp_path)
+    output_root = tmp_path / "media-output"
+    contract_root = tmp_path / "private-contracts"
+    output_root.mkdir()
+    contract_root.mkdir()
+    job = RipJob(
+        job_id="disc-title000",
+        drive_index=0,
+        title_index=0,
+        relative_output_dir="isolated/title-000",
+        output_basename="disc-title000.mkv",
+        final_relative_dir="Test Show/Season 01",
+    )
+    source = resolve_final_output(output_root, job)
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"new-verified-rip")
+    old_contract = contract_root / "disc-title000.verified-rip.json"
+    old_contract.write_text('{"source_path":"old-attempt.mkv"}\n', encoding="utf-8")
+    result = RipResult(
+        job_id=job.job_id,
+        return_code=0,
+        output_count=1,
+        output_bytes=source.stat().st_size,
+        warning_count=0,
+        started_at="2026-01-01T00:00:00+00:00",
+        finished_at="2026-01-01T00:01:00+00:00",
+    )
+
+    queued = enqueue_verified_rip_results(
+        store,
+        jobs=(job,),
+        results=[result],
+        output_root=output_root,
+        contract_root=contract_root,
+    )
+
+    assert old_contract.read_text(encoding="utf-8") == (
+        '{"source_path":"old-attempt.mkv"}\n'
+    )
+    assert queued[0].artifact.contract_path.name.startswith(
+        "disc-title000.verified-rip-"
+    )
+    assert queued[0].artifact.contract_path.name.endswith(".json")
+    assert json.loads(queued[0].artifact.contract_path.read_text(encoding="utf-8"))[
+        "source_path"
+    ] == str(source.resolve())
 
 
 def test_retained_source_reencode_starts_at_transcode(tmp_path):

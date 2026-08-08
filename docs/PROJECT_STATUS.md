@@ -1,5 +1,40 @@
 # Project Status
 
+## 2026-08-05 - live pipeline settings during automatic ripping
+
+- Disc content hints and HandBrake profile choices now persist per orchestration
+  job through the path-free control database.
+- The dashboard sends changes for an active job, and the verified-rip handoff
+  applies the latest values before identification and transcode authorization.
+  The already-authorized MakeMKV rip remains unchanged.
+- Settings changes are refused after downstream work has started. Focused
+  orchestration/API tests, Ruff, and the packaged frontend build pass.
+- Failed rip responses now show verified and not-verified MakeMKV title indexes
+  per drive, while preserving the existing path-redacted error behavior.
+
+## 2026-08-05 - automatic title filtering before ripping
+
+- Fresh web-prepared pipelines now bind the saved title plan before execution:
+  automatic selection keeps the dominant episode runtime cluster and
+  conservative bonus candidates above a relative size floor, while an explicit
+  TV hint keeps episodes only.
+- Short navigation clips, aggregate/play-all titles, and unresolved small
+  items are no longer included merely because MakeMKV reports a nonempty file.
+- Existing immutable rip jobs are unchanged; the filter applies when a disc is
+  freshly prepared or safely retried after review.
+
+## 2026-08-05 - unmatched directory matching
+
+- The Library Scan review now retains the existing regular matcher and adds an
+  unmatched TV action for a reviewed MKV selection.
+- The unmatched action requires a canonical series name and explicit media-read
+  and episode-catalogue confirmations, FFprobe-verifies every selected MKV,
+  stores source paths only in private contracts, and admits the files to the
+  durable pipeline as an all-season review batch.
+- The existing all-season analyzer is reused after admission; files remain
+  preserved and no rename, move, delete, transcode, or library organization is
+  authorized by this action.
+
 ## 2026-08-01 — automatic sequence recovery and queue safety UX
 
 - Automatic TV batches that ordinary identification cannot place now enter the
@@ -2489,3 +2524,106 @@ tests pass; frontend lint, TypeScript, build, Ruff check, and Ruff format checks
 also pass. The complete
 repository suite now passes 675 tests with seven pre-existing dependency/cache
 warnings.
+
+## 2026-08-05 - play-all aggregate detection
+
+The regular MKV matcher and the unmatched disc analysis now share a
+metadata-only play-all detector. After at least two contiguous episode matches,
+an unmatched title is held for review when its runtime is within 5% of the
+combined episode runtime and, when sizes are available, its size is within 35%
+of the combined episode sizes. The title is preserved and excluded from the
+missing-episode count; it is never renamed, deleted, transcoded, or organized
+automatically. The UI labels these files as likely play-all aggregates and
+shows the component episodes used by the decision.
+
+## 2026-08-05 - Jellyfin-backed staging cleanup
+
+System Cleanup now includes a read-only scan of configured rip and encoded
+roots. An encoded file qualifies only when its `encoded-staging` relative path
+maps to an existing Jellyfin library file. A ripped file qualifies only when a
+private verified transcode contract links it to an existing encoded file and
+library destination. The UI supports 7-day, 14-day, and all-eligible scans.
+Deletion requires the exact fresh plan digest and file count, revalidates every
+candidate before removal, never touches Jellyfin files, and does not run as an
+unattended background action.
+
+The same panel also offers `All staging files, including unbacked`. That
+explicit broader mode scans rip staging, encoded staging, and configured
+cleanup staging without requiring a Jellyfin counterpart. It refuses
+to delete files beneath configured Jellyfin library roots and still requires a
+fresh digest-bound confirmation before deleting anything. Nested staging roots
+are de-duplicated during the scan.
+
+Cleanup previews now classify candidates as backed up or not backed up and
+group them by detected disc fingerprint. Each group has its own digest-bound
+delete action while the full-scan delete action remains available. Known pytest
+and sample scratch directories are excluded from the broad scan.
+Disk labels now use the canonical series folder from `TV Shows/<Series>` when
+available, followed by the disc ordinal; the fingerprint remains part of the
+internal group identity so same-numbered discs do not merge.
+
+Queue cleanup now treats an exact staged MKV that was already removed by the
+staging cleanup tool as an idempotent deletion. Queued items with missing
+staged sources expose a clear-record action instead of leaving stale work in
+the active queue.
+
+Disc preparation now permits only one inventory-and-planning request per
+physical drive. Automatic preparation and manual retries receive an immediate
+held response when that drive is already being prepared, preventing duplicate
+MakeMKV `info` processes from stalling each other on one disc.
+
+An inserted, inactive disc can now be explicitly forgotten from its drive
+card. The fingerprint-bound orchestration jobs, private bindings, pipeline
+records, and learned title outcomes are removed so preparation starts without
+the previous classification. This metadata reset never deletes staged MKVs,
+encoded files, Jellyfin media, or logs, and it refuses while rip or downstream
+work for that fingerprint is active.
+
+The drive card also offers a separate destructive reset for exact
+fingerprint-named MKVs beneath the configured rip staging root. It first shows
+the exact file count and size, then requires the unchanged preview digest and
+count at confirmation. It does not scan or delete encoded output, Jellyfin
+media, generic MKVs, or files belonging to another disc fingerprint.
+
+Verified-rip queue handoff now preserves an older immutable contract and uses
+a content-digest contract filename when a later retry produces different
+verified source metadata. A successful rerip therefore reaches identification
+without overwriting prior audit contracts or being mislabeled as a MakeMKV
+failure.
+
+Automatic all-season analysis now waits until every identification item for a
+disc fingerprint has left the queued/running state. This prevents an early
+subset from being matched while later titles from the same recovered disc are
+still entering the sequence-analysis hold.
+
+Disc-level all-season rematching now also excludes episode IDs already learned
+for that exact disc fingerprint, including matches still waiting in transcode
+or organization. A recovery rematch therefore cannot reassign those accepted
+episodes merely because they have not reached Jellyfin yet.
+
+The disc-level all-season review now exposes an explicit per-scan Gemini
+fallback checkbox instead of silently inheriting only the unattended global
+setting. The confirmation states the bounded external evidence scope, and the
+request sends Gemini authorization only when checked. Safe pipeline failures
+now log the specific path-free `PipelineQueueError` diagnostic rather than only
+the exception class.
+
+New verified-rip contracts also carry the complete reviewed title-index set for
+their disc. Automatic sequence analysis requires that every expected index has
+been admitted before it starts; a temporarily quiet queue is no longer treated
+as proof that the batch is complete. Older contracts retain the conservative
+legacy fallback, while new rips receive the durable admission barrier.
+
+Library Scan now offers a smart pipeline for an explicitly reviewed MKV set.
+It reads FFprobe metadata, classifies clustered episode-length titles as TV and
+dominant feature-length layouts as movie, mixed, or extras, and records the
+complete selected-file index set before queue admission. TV folders use the
+same durable all-season sequence analysis and optional Gemini fallback as the
+disc pipeline. Movie, mixed, and extras folders enter durable descriptive
+review and may use the separately confirmed Gemini fallback. The existing
+regular and unmatched-TV buttons remain available as manual overrides.
+
+A loose folder scan cannot perform exact Riplex release-catalogue matching
+without the reviewed disc inventory and release catalogue that establish title
+representation. Smart classification therefore routes likely bonus content to
+descriptive review instead of claiming an exact release match.

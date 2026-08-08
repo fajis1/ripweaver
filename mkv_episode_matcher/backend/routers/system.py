@@ -1,8 +1,11 @@
+import hashlib
+import json
 import shutil
 import string
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from loguru import logger
 
 from mkv_episode_matcher import __version__
 
@@ -283,6 +286,196 @@ def validate_config():
         "missing": missing,
         "needs_onboarding": len(missing) > 0,
     }
+
+
+def _cleanup_context(*, require_library: bool = True):
+    from mkv_episode_matcher.backend.dependencies import get_pipeline_contract_root
+    from mkv_episode_matcher.backend.jellyfin_cleanup import CleanupError, plan_cleanup
+    from mkv_episode_matcher.core.config_manager import get_config_manager
+
+    config = get_config_manager().load()
+    if (
+        config.rip_output_root is None
+        or config.transcode_output_root is None
+        or (require_library and not (config.jellyfin_tv_root or config.jellyfin_movie_root))
+    ):
+        raise CleanupError(
+            "Configure rip, encoded, and at least one Jellyfin library root first"
+        )
+    return config, get_pipeline_contract_root(), plan_cleanup
+
+
+def _cleanup_plans(payload: dict):  # noqa: C901
+    from mkv_episode_matcher.backend.jellyfin_cleanup import CleanupError, filter_plan
+
+    mode = payload.get("mode", "older_than")
+    days = payload.get("days")
+    if mode not in {"older_than", "all", "all_staging"}:
+        raise CleanupError("Cleanup mode is invalid")
+    if mode == "older_than" and days not in {7, 14}:
+        raise CleanupError("Cleanup age must be 7 or 14 days")
+    config, contract_root, planner = _cleanup_context(require_library=mode != "all_staging")
+    plans = []
+    library_roots = []
+    if mode == "all_staging":
+        protected_roots = [
+            root.resolve()
+            for root in (config.jellyfin_tv_root, config.jellyfin_movie_root)
+            if root is not None
+        ]
+        plans.append(
+            planner(
+                rip_root=config.rip_output_root,
+                encoded_root=config.transcode_output_root,
+                contract_root=contract_root,
+                library_root=None,
+                cleanup_root=config.deletion_staging_root,
+                protected_roots=tuple(protected_roots),
+                mode=mode,
+            )
+        )
+        library_roots.append(None)
+    else:
+        for library_root in (config.jellyfin_tv_root, config.jellyfin_movie_root):
+            if library_root is None:
+                continue
+            plans.append(
+                planner(
+                    rip_root=config.rip_output_root,
+                    encoded_root=config.transcode_output_root,
+                    contract_root=contract_root,
+                    library_root=library_root,
+                    mode=mode,
+                    days=days,
+                )
+            )
+            library_roots.append(library_root)
+    seen: set[tuple[str, str]] = set()
+    unique_plans = []
+    unique_roots = []
+    for plan, library_root in zip(plans, library_roots, strict=True):
+        unique_candidates_list = []
+        for candidate in plan.candidates:
+            identity = (candidate.category, candidate.relative_path)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            unique_candidates_list.append(candidate)
+        unique_candidates = tuple(unique_candidates_list)
+        unique_plans.append(filter_plan(plan, unique_candidates))
+        unique_roots.append(library_root)
+    selected_keys = payload.get("candidate_keys")
+    if selected_keys is not None:
+        if not isinstance(selected_keys, list) or not all(
+            isinstance(key, str) for key in selected_keys
+        ):
+            raise CleanupError("Cleanup candidate selection is invalid")
+        selected = set(selected_keys)
+        unique_plans = [
+            filter_plan(
+                plan,
+                tuple(
+                    candidate
+                    for candidate in plan.candidates
+                    if f"{candidate.category}:{candidate.relative_path}" in selected
+                ),
+            )
+            for plan in unique_plans
+        ]
+    combined = hashlib.sha256(
+        json.dumps([plan.plan_sha256 for plan in unique_plans], separators=(",", ":")).encode()
+    ).hexdigest()
+    return config, list(zip(unique_plans, unique_roots, strict=True)), combined
+
+
+@router.post("/cleanup/preview")
+def preview_jellyfin_cleanup(payload: dict):
+    """Scan staging roots and return a digest-bound, non-destructive cleanup plan."""
+
+    from mkv_episode_matcher.backend.jellyfin_cleanup import CleanupError
+
+    try:
+        _config, planned, combined = _cleanup_plans(payload)
+    except CleanupError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    candidates = [candidate for plan, _library in planned for candidate in plan.candidates]
+    logger.info(
+        "Cleanup preview completed: mode={}, candidate_count={}, group_selection={}",
+        payload.get("mode", "older_than"),
+        len(candidates),
+        payload.get("candidate_keys") is not None,
+    )
+    return {
+        "plan_sha256": combined,
+        "mode": payload.get("mode", "older_than"),
+        "days": payload.get("days"),
+        "file_count": len(candidates),
+        "total_size_bytes": sum(item.size_bytes for item in candidates),
+        "candidates": [
+            {
+                "category": item.category,
+                "relative_path": item.relative_path,
+                "library_relative": item.library_relative,
+                "size_bytes": item.size_bytes,
+                "modified_at": item.modified_at,
+                "backed_up": item.backed_up,
+                "disk_key": item.disk_key,
+                "disk_label": item.disk_label,
+                "candidate_key": f"{item.category}:{item.relative_path}",
+            }
+            for item in candidates
+        ],
+    }
+
+
+@router.post("/cleanup/delete")
+def delete_jellyfin_cleanup(payload: dict):
+    """Apply only the exact cleanup plan explicitly confirmed by the caller."""
+
+    from mkv_episode_matcher.backend.jellyfin_cleanup import CleanupError, apply_cleanup
+
+    if payload.get("confirm_delete") is not True:
+        raise HTTPException(status_code=400, detail="Explicit cleanup confirmation is required")
+    expected = payload.get("expected_plan_sha256")
+    authorized_count = payload.get("authorized_file_count")
+    if not isinstance(expected, str) or not isinstance(authorized_count, int):
+        raise HTTPException(status_code=400, detail="Cleanup authorization is incomplete")
+    try:
+        config, planned, combined = _cleanup_plans(payload)
+        if combined != expected or sum(len(plan.candidates) for plan, _library in planned) != authorized_count:
+            raise CleanupError("Cleanup plan changed; review a fresh scan")
+        contract_root = _cleanup_context(require_library=payload.get("mode") != "all_staging")[1]
+        deleted = 0
+        for plan, library_root in planned:
+            deleted += apply_cleanup(
+                plan=plan,
+                rip_root=config.rip_output_root,
+                encoded_root=config.transcode_output_root,
+                contract_root=contract_root,
+                library_root=library_root,
+                cleanup_root=config.deletion_staging_root,
+                protected_roots=tuple(
+                    root.resolve()
+                    for root in (config.jellyfin_tv_root, config.jellyfin_movie_root)
+                    if root is not None
+                ),
+                candidate_keys=(
+                    tuple(payload["candidate_keys"])
+                    if isinstance(payload.get("candidate_keys"), list)
+                    else None
+                ),
+                expected_plan_sha256=plan.plan_sha256,
+                authorized_file_count=len(plan.candidates),
+            )
+    except CleanupError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    logger.info(
+        "Cleanup deletion completed: mode={}, deleted_file_count={}, group_selection={}",
+        payload.get("mode", "older_than"),
+        deleted,
+        payload.get("candidate_keys") is not None,
+    )
+    return {"deleted_file_count": deleted, "jellyfin_files_affected": 0}
 
 
 @router.post("/shutdown")

@@ -76,6 +76,11 @@ interface OrchestrationJob {
   error_category?: string | null;
   failed_drive_indexes?: number[];
   recommendations?: string[];
+  rip_title_summary?: {
+    total_titles: number;
+    verified_titles: Array<{ job_id: string; title_index: number; drive_index: number }>;
+    unfinished_titles: Array<{ job_id: string; title_index: number; drive_index: number }>;
+  } | null;
   rip_progress_percent?: number | null;
   rip_transfer_mib_s?: number | null;
   rip_progress_scope?: string | null;
@@ -213,7 +218,7 @@ const pipelineStatusLabel = (item: PipelineQueueItem) => {
   }[item.stage];
   if (item.state === 'running') return action?.active || `${item.stage} running`;
   if (item.state === 'queued') return action?.waiting || `${item.stage} queued`;
-  if (item.state === 'review_required') return item.review_code === 'all_season_analysis_running' ? 'Running all-season matching' : 'Review required';
+  if (item.state === 'review_required') return item.review_code === 'all_season_analysis_running' ? 'Running all-season matching' : item.review_code === 'play_all_aggregate_detected' ? 'Likely play-all aggregate' : 'Review required';
   if (item.state === 'failed') return 'Stopped after an error';
   if (item.state === 'completed') return 'Completed';
   return `${item.stage} · ${item.state.replaceAll('_', ' ')}`;
@@ -282,6 +287,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
   const prepareQueue = useRef<Promise<void>>(Promise.resolve());
   const [handbrakeProfiles, setHandbrakeProfiles] = useState<StoredProfile[]>([]);
   const [automaticGeminiFallback, setAutomaticGeminiFallback] = useState(false);
+  const [discGeminiFallback, setDiscGeminiFallback] = useState(false);
   const [jellyfinRoots, setJellyfinRoots] = useState({ tv: '', movie: '' });
   const [unmatchedSeriesName, setUnmatchedSeriesName] = useState('');
 
@@ -330,6 +336,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
       }
       setRememberLastProfile(config.remember_last_handbrake_profile !== false);
       setAutomaticGeminiFallback(Boolean(config.automatic_gemini_ambiguity_fallback));
+      setDiscGeminiFallback(Boolean(config.automatic_gemini_ambiguity_fallback));
       setJellyfinRoots({ tv: config.jellyfin_tv_root || '', movie: config.jellyfin_movie_root || '' });
     };
     void loadConfig();
@@ -447,6 +454,68 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
     });
     ejectQueueRef.current = operation.then(() => undefined, () => undefined);
     return operation;
+  };
+
+  const forgetDiscIdentity = async (drive: DriveSlot, deleteStagedMedia = false) => {
+    if (!drive.current_disc_fingerprint) return;
+    const label = drive.disc_label || `optical drive ${drive.drive_index + 1}`;
+    setControlling(true);
+    setError('');
+    try {
+      let mediaPlan: { plan_sha256: string; file_count: number; total_size_bytes: number } | null = null;
+      if (deleteStagedMedia) {
+        const previewResponse = await fetch(`/rip/drives/${drive.drive_index}/forget-disc-identity/media-preview`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ expected_disc_fingerprint: drive.current_disc_fingerprint }),
+        });
+        const previewPayload = await responsePayload(previewResponse);
+        if (!previewResponse.ok) throw new Error(typeof previewPayload.detail === 'string' ? previewPayload.detail : 'The staged MKV deletion preview could not be created safely.');
+        mediaPlan = previewPayload as unknown as {
+          plan_sha256: string;
+          file_count: number;
+          total_size_bytes: number;
+        };
+        if (!mediaPlan || mediaPlan.file_count < 1) {
+          window.alert(`No exact fingerprint-bound staged MKVs were found for "${label}". Use the metadata-only forget action instead.`);
+          return;
+        }
+        if (!window.confirm(`Permanently delete exactly ${mediaPlan.file_count} fingerprint-bound staged MKV file(s) (${formatBytes(mediaPlan.total_size_bytes)}) and forget the saved identity and matching history for "${label}"? Encoded files and Jellyfin media will not be changed. This cannot be undone.`)) return;
+      } else if (!window.confirm(`Forget RipWeaver's saved identity and matching history for "${label}"? This removes only database records for this exact disc fingerprint. Staged MKVs, encoded files, Jellyfin media, and logs will not be deleted or changed.`)) {
+        return;
+      }
+      const response = await fetch(`/rip/drives/${drive.drive_index}/forget-disc-identity`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          expected_disc_fingerprint: drive.current_disc_fingerprint,
+          confirm_forget: true,
+          delete_staged_media: deleteStagedMedia,
+          expected_media_plan_sha256: mediaPlan?.plan_sha256,
+          authorized_media_file_count: mediaPlan?.file_count,
+          confirm_delete_staged_media: deleteStagedMedia,
+        }),
+      });
+      const payload = await responsePayload(response);
+      if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : 'The saved disc identity could not be forgotten safely.');
+      setSavedJob(null);
+      setPreview(null);
+      setReviewNotice(deleteStagedMedia
+        ? `Forgot the saved identity for "${label}" and deleted ${mediaPlan?.file_count ?? 0} exact staged MKV file(s). The disc is ready for fresh preparation.`
+        : `Forgot the saved identity for "${label}". No media files were changed. The disc is ready for fresh preparation.`);
+      const [drivesResponse, jobsResponse, queueResponse] = await Promise.all([
+        fetch('/rip/drives'), fetch('/rip/jobs'), fetch('/rip/pipeline/items'),
+      ]);
+      if (drivesResponse.ok) setDriveDashboard(await drivesResponse.json());
+      if (jobsResponse.ok) setJobDashboard(await jobsResponse.json());
+      if (queueResponse.ok) setPipelineQueue(await queueResponse.json());
+    } catch (requestError) {
+      const message = requestError instanceof Error ? requestError.message : 'The saved disc identity could not be forgotten safely.';
+      setError(message);
+      window.alert(message);
+    } finally {
+      setControlling(false);
+    }
   };
 
   const cancelRipPlanAndEject = async () => {
@@ -1197,6 +1266,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
     setControlling(true);
     setError('');
     setReviewNotice('Checking durable verification records…');
+    let shouldPreviewRecovery = false;
     try {
       if (allSeasonReady && selectedDiscFingerprint) {
         const analysisResponse = await fetch('/rip/pipeline/analyze-unmatched-disc', {
@@ -1228,7 +1298,10 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
         }),
       });
       const payload = await response.json();
-      if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : 'Existing rips could not be restarted safely.');
+      if (!response.ok) {
+        shouldPreviewRecovery = response.status === 409;
+        throw new Error(typeof payload.detail === 'string' ? payload.detail : 'Existing rips could not be restarted safely.');
+      }
       const queueResponse = await fetch('/rip/pipeline/items');
       if (queueResponse.ok) setPipelineQueue(await queueResponse.json());
       setReviewNotice(`Restarted matching for ${payload.restarted_count} verified title(s). ${payload.verification_required_count} title(s) still require verification.`);
@@ -1237,7 +1310,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
       const message = requestError instanceof Error ? requestError.message : 'Existing rips could not be restarted safely.';
       setReviewNotice(message);
       setError(message);
-      if (message.includes('require verification') && savedJob) {
+      if (shouldPreviewRecovery && savedJob) {
         const previewResponse = await fetch(`/rip/jobs/${savedJob.job_id}/existing-rips/preview`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1337,6 +1410,33 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
     if (!currentJobId) return undefined;
     return (jobDashboard?.jobs ?? []).find((candidate) => candidate.job_id === currentJobId);
   }, [driveDashboard?.drives, jobDashboard?.jobs]);
+
+  const persistDiscSetup = async (drive: DriveSlot, update: Partial<DiscSetup>) => {
+    const key = driveSetupKey(drive);
+    const next = { ...getDiscSetup(key), ...update };
+    updateDiscSetup(key, update);
+    const job = latestJobForDrive(drive.drive_index);
+    if (!job || !['awaiting_review', 'authorized', 'queued', 'running'].includes(job.state)) return;
+    try {
+      const response = await fetch(`/rip/jobs/${job.job_id}/pipeline-settings`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': `pipeline-settings-${job.job_id}-${crypto.randomUUID()}`,
+        },
+        body: JSON.stringify({
+          content_hint: next.contentType || null,
+          handbrake_profile_id: next.handbrakeProfile || null,
+        }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(typeof payload?.detail === 'string' ? payload.detail : 'Pipeline settings could not be saved.');
+      }
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Pipeline settings could not be saved.');
+    }
+  };
 
   useEffect(() => {
     const selectedDriveIndex = savedJob?.preview?.drives[0]?.drive_index;
@@ -1510,7 +1610,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
       return;
     }
     const scopeLabel = suggestedSeason === null ? 'across every aired season' : `against Season ${suggestedSeason}`;
-    if (!window.confirm(`Analyze the held MKVs as “${reviewedSeries}” ${scopeLabel}? This reads short audio samples, transcribes them locally, and queries TMDb episode metadata.${automaticGeminiFallback ? ' If local matching remains ambiguous, the configured Gemini fallback may receive bounded transcript excerpts and candidate episode metadata.' : ' Gemini fallback is disabled in Settings.'} It does not rename, move, delete, or transcode media.`)) return;
+    if (!window.confirm(`Analyze the held MKVs as “${reviewedSeries}” ${scopeLabel}? This reads short audio samples, transcribes them locally, and queries TMDb episode metadata.${discGeminiFallback ? ' If local matching remains ambiguous, the configured Gemini fallback may receive bounded transcript excerpts and candidate episode metadata.' : ' Gemini fallback is disabled for this scan.'} It does not rename, move, delete, or transcode media.`)) return;
     setControlling(true);
     try {
       const response = await fetch('/rip/pipeline/analyze-unmatched-disc', {
@@ -1522,7 +1622,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
           season: suggestedSeason,
           confirm_media_read: true,
           confirm_provider_lookup: true,
-          confirm_external_fallback: automaticGeminiFallback,
+          confirm_external_fallback: discGeminiFallback,
         }),
       });
       const payload = await response.json();
@@ -1733,7 +1833,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                   {drive.has_disc && <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <label className="space-y-1">
                       <span className="text-xs font-semibold text-white">Disc contains</span>
-                      <select className="w-full rounded-lg bg-[var(--bg-primary)] border border-[var(--border-color)] p-2 text-sm text-white" value={setup.contentType} onChange={(event) => updateDiscSetup(driveKey, { contentType: event.target.value as DiscContentType })}>
+                      <select className="w-full rounded-lg bg-[var(--bg-primary)] border border-[var(--border-color)] p-2 text-sm text-white" value={setup.contentType} onChange={(event) => { void persistDiscSetup(drive, { contentType: event.target.value as DiscContentType }); }}>
                         <option value="">Automatic (no hint)</option>
                         <option value="tv">TV episodes</option>
                         <option value="movie">Movie</option>
@@ -1743,7 +1843,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                     </label>
                     <label className="space-y-1">
                       <span className="text-xs font-semibold text-white">HandBrake profile</span>
-                      <select className="w-full rounded-lg bg-[var(--bg-primary)] border border-[var(--border-color)] p-2 text-sm text-white" value={setup.handbrakeProfile} onChange={(event) => { const profileId = event.target.value; if (profileId === '__custom__') { updateDiscSetup(driveKey, { handbrakeProfile: '' }); onOpenSettings?.(); return; } updateDiscSetup(driveKey, { handbrakeProfile: profileId }); void rememberDefaultProfile(profileId); }}>
+                      <select className="w-full rounded-lg bg-[var(--bg-primary)] border border-[var(--border-color)] p-2 text-sm text-white" value={setup.handbrakeProfile} onChange={(event) => { const profileId = event.target.value; if (profileId === '__custom__') { updateDiscSetup(driveKey, { handbrakeProfile: '' }); onOpenSettings?.(); return; } void persistDiscSetup(drive, { handbrakeProfile: profileId }); void rememberDefaultProfile(profileId); }}>
                         <option value="">Automatic by source resolution (general fallback: {setup.automaticProfile})</option>
                         <option value="__custom__">Custom… open profile settings</option>
                         {handbrakeProfiles.map((profile) => <option key={profile.profile_id} value={profile.profile_id}>{profile.display_name}{profile.built_in ? '' : ' (custom)'}</option>)}
@@ -1839,9 +1939,27 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                       {selectedDriveJob ? 'This disc is shown below' : driveNeedsReview ? 'Review this disc' : driveFailed ? 'Review error and retry options' : 'Open this disc’s controls'}
                     </button>
                   )}
+                  {drive.has_disc && drive.current_disc_fingerprint && job && !['authorized', 'queued', 'running', 'pause_requested', 'paused'].includes(job.state) && (
+                    <div className="space-y-2">
+                      <button type="button" className="btn btn-secondary w-full text-xs" disabled={controlling} onClick={() => void forgetDiscIdentity(drive)}>
+                        Forget saved disc identity and matching history
+                      </button>
+                      <button type="button" className="btn w-full text-xs border border-red-400/50 bg-red-500/15 text-red-100 hover:bg-red-500/25" disabled={controlling} onClick={() => void forgetDiscIdentity(drive, true)}>
+                        Forget identity and permanently delete staged MKVs
+                      </button>
+                    </div>
+                  )}
                   {drive.has_disc && driveFailed && job && (
                     <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 space-y-2">
                       <div className="font-semibold text-red-200">Rip stopped safely{job.error_category ? ` · ${job.error_category.replaceAll('_', ' ')}` : ''}</div>
+                      {job.rip_title_summary && (
+                        <div className="rounded border border-red-300/20 bg-black/15 p-2 text-xs text-red-50">
+                          <div className="font-semibold">Rip result: {job.rip_title_summary.verified_titles.length} of {job.rip_title_summary.total_titles} titles verified</div>
+                          <div className="mt-1">Verified: {job.rip_title_summary.verified_titles.length ? job.rip_title_summary.verified_titles.map((title) => `title index ${title.title_index} (drive ${title.drive_index + 1})`).join(', ') : 'none'}</div>
+                          <div className="mt-1 font-semibold text-amber-100">Not verified: {job.rip_title_summary.unfinished_titles.length ? job.rip_title_summary.unfinished_titles.map((title) => `title index ${title.title_index} (drive ${title.drive_index + 1})`).join(', ') : 'none'}</div>
+                          <div className="mt-1 text-red-100/70">Not verified means the rip did not produce an exact completed result for that title; preserved partials may still require review.</div>
+                        </div>
+                      )}
                       <div className="text-xs text-red-100/80">Partials were preserved. A retry never writes into an incomplete MKV and will use a new run directory.</div>
                       {(job.recommendations ?? []).map((recommendation) => <div key={recommendation} className="text-xs text-amber-100">• {recommendation}</div>)}
                       <button type="button" className="btn btn-secondary" onClick={() => void retryDriveJob(job)}>Retry unfinished titles</button>
@@ -1999,6 +2117,15 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                   placeholder={suggestedUnmatchedSeries || 'Enter the TV series name'}
                 />
               </label>
+              <label className="flex items-start gap-2 text-xs text-indigo-100">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={discGeminiFallback}
+                  onChange={(event) => setDiscGeminiFallback(event.target.checked)}
+                />
+                <span>Use Gemini when local sequence matching remains ambiguous. Bounded transcript excerpts and candidate episode metadata may be sent externally.</span>
+              </label>
               <div className="flex flex-wrap gap-2">
                 <button type="button" className="btn btn-primary" disabled={controlling} onClick={runAllSeasonAnalysis}>Analyze as TV {suggestedSeason === null ? 'series (all seasons)' : `series (Season ${suggestedSeason})`}</button>
                 <button type="button" className="btn btn-secondary" disabled={controlling} onClick={classifyAsMovieExtras}>Analyze as movie / TV-movie bonus features</button>
@@ -2134,9 +2261,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                   {item.state === 'queued' && (
                     <div className="flex flex-wrap gap-2">
                       <button type="button" className="btn btn-secondary text-xs" disabled={controlling} onClick={() => cancelQueuedPipelineItems([item.media_id])}>
-                        Remove from queue — keep staged files
+                        {item.staged_source_available ? 'Remove from queue — keep staged files' : 'Clear missing staged record'}
                       </button>
-                      {item.stage === 'transcode' && (
+                      {item.stage === 'transcode' && item.staged_source_available && (
                         <button type="button" className="btn text-xs border border-red-400/50 bg-red-500/15 text-red-100 hover:bg-red-500/25" disabled={controlling} onClick={() => deleteQueuedStagedSource(item)}>
                           Delete staged rip permanently
                         </button>
@@ -2212,6 +2339,8 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                           <button type="button" className="btn text-xs border border-red-400/50 bg-red-500/15 text-red-100 hover:bg-red-500/25" disabled={controlling} onClick={() => deleteQueuedStagedSource(item)}>Delete staged rip permanently</button>
                         </div>
                       </div>
+                    ) : item.review_code === 'play_all_aggregate_detected' ? (
+                      <div className="mt-2">This unmatched file closely matches the combined runtime and size of already matched contiguous episodes. It is being preserved as a likely play-all aggregate and is excluded from the missing-episode count.</div>
                     ) : ['special_feature_evidence_required', 'gemini_evidence_required', 'gemini_analysis_running', 'gemini_analysis_failed', 'gemini_audio_evidence_insufficient', 'gemini_catalog_unavailable', 'gemini_provider_failed', 'gemini_credential_rejected', 'gemini_rate_limited', 'gemini_provider_unavailable', 'gemini_request_rejected', 'gemini_network_failed', 'gemini_response_invalid', 'gemini_descriptive_review_required', 'special_feature_manual_assignment_required'].includes(item.review_code || '') ? (
                       <div className="max-w-md rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-100">
                         <div>This title has two or more plausible bonus-feature names. It remains held; unrelated titles can continue through the queue.</div>

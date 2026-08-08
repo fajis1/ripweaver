@@ -10,7 +10,7 @@ import threading
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from mkv_episode_matcher.disc.rip_preview import RipPreview
@@ -29,6 +29,8 @@ JOB_STATES = {
 }
 _IDEMPOTENCY_PATTERN = re.compile(r"[A-Za-z0-9._:-]{8,128}")
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+_PROFILE_ID_PATTERN = re.compile(r"[a-z][a-z0-9-]{1,47}")
+_CONTENT_HINTS = {"tv", "movie", "extras", "mixed"}
 
 
 @dataclass(frozen=True)
@@ -108,6 +110,12 @@ class OrchestrationStore:
                 CREATE TABLE IF NOT EXISTS creation_keys (
                     idempotency_key TEXT PRIMARY KEY,
                     job_id TEXT NOT NULL UNIQUE REFERENCES jobs(job_id)
+                );
+                CREATE TABLE IF NOT EXISTS job_pipeline_settings (
+                    job_id TEXT PRIMARY KEY REFERENCES jobs(job_id),
+                    content_hint TEXT,
+                    handbrake_profile_id TEXT,
+                    updated_at TEXT NOT NULL
                 );
                 """
             )
@@ -258,6 +266,105 @@ class OrchestrationStore:
             raise RipError("Orchestration job was not found")
         return self._decode_job(row)
 
+    def get_pipeline_settings(self, job_id: str) -> dict[str, str | None]:
+        """Return the latest path-free settings for a job."""
+
+        self.get_job(job_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT content_hint, handbrake_profile_id
+                FROM job_pipeline_settings WHERE job_id = ?
+                """,
+                (job_id,),
+            ).fetchone()
+        if row is None:
+            return {"content_hint": None, "handbrake_profile_id": None}
+        return {
+            "content_hint": row["content_hint"],
+            "handbrake_profile_id": row["handbrake_profile_id"],
+        }
+
+    def update_pipeline_settings(
+        self,
+        job_id: str,
+        *,
+        content_hint: str | None,
+        handbrake_profile_id: str | None,
+        idempotency_key: str,
+    ) -> OrchestrationJob:
+        """Update downstream settings while their stages remain unstarted."""
+
+        if content_hint is not None and content_hint not in _CONTENT_HINTS:
+            raise RipError("Pipeline content hint is invalid")
+        if handbrake_profile_id is not None and not _PROFILE_ID_PATTERN.fullmatch(
+            handbrake_profile_id
+        ):
+            raise RipError("HandBrake profile ID is invalid")
+        key = self._validate_idempotency_key(idempotency_key)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT state FROM jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise RipError("Orchestration job was not found")
+            existing = connection.execute(
+                """
+                SELECT resulting_state FROM commands
+                WHERE job_id = ? AND action = 'pipeline-settings'
+                  AND idempotency_key = ?
+                """,
+                (job_id, key),
+            ).fetchone()
+            if existing is not None:
+                connection.commit()
+                return self.get_job(job_id)
+            if row["state"] not in {"awaiting_review", "authorized", "queued", "running"}:
+                connection.rollback()
+                raise RipError(
+                    "Pipeline settings can no longer change after downstream work starts"
+                )
+            timestamp = self._now()
+            connection.execute(
+                """
+                INSERT INTO job_pipeline_settings (
+                    job_id, content_hint, handbrake_profile_id, updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    content_hint = excluded.content_hint,
+                    handbrake_profile_id = excluded.handbrake_profile_id,
+                    updated_at = excluded.updated_at
+                """,
+                (job_id, content_hint, handbrake_profile_id, timestamp),
+            )
+            self._append_event(
+                connection,
+                job_id=job_id,
+                event_type="job_pipeline_settings_updated",
+                from_state=row["state"],
+                to_state=row["state"],
+                details={
+                    "content_hint": content_hint,
+                    "handbrake_profile_id": handbrake_profile_id,
+                },
+            )
+            connection.execute(
+                """
+                INSERT INTO commands (
+                    job_id, action, idempotency_key, resulting_state, created_at
+                ) VALUES (?, 'pipeline-settings', ?, ?, ?)
+                """,
+                (job_id, key, row["state"], timestamp),
+            )
+            connection.execute(
+                "UPDATE jobs SET updated_at = ? WHERE job_id = ?",
+                (timestamp, job_id),
+            )
+            connection.commit()
+        return self.get_job(job_id)
+
     def list_jobs(self, *, limit: int = 50) -> tuple[OrchestrationJob, ...]:
         """Return recent path-redacted jobs for the local monitoring dashboard."""
 
@@ -268,6 +375,59 @@ class OrchestrationStore:
                 "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
             ).fetchall()
         return tuple(self._decode_job(row) for row in rows)
+
+    @staticmethod
+    def _preview_has_disc_fingerprint(
+        preview: dict[str, Any], disc_fingerprint: str
+    ) -> bool:
+        jobs = preview.get("jobs", [])
+        if not isinstance(jobs, list):
+            return False
+        return any(
+            isinstance(item, dict)
+            and isinstance(item.get("staging_destination"), str)
+            and disc_fingerprint
+            in PurePosixPath(
+                item["staging_destination"].replace("\\", "/")
+            ).parts
+            for item in jobs
+        )
+
+    def jobs_for_disc(self, disc_fingerprint: str) -> tuple[OrchestrationJob, ...]:
+        if re.fullmatch(r"[0-9a-f]{16}", disc_fingerprint) is None:
+            raise RipError("Disc fingerprint is invalid")
+        return tuple(
+            job
+            for job in self.list_jobs(limit=200)
+            if self._preview_has_disc_fingerprint(job.preview, disc_fingerprint)
+        )
+
+    def forget_disc_jobs(self, disc_fingerprint: str) -> tuple[str, ...]:
+        """Delete non-running orchestration metadata for one exact fingerprint."""
+
+        jobs = self.jobs_for_disc(disc_fingerprint)
+        if any(
+            job.state
+            in {"authorized", "queued", "running", "pause_requested", "paused"}
+            or job.executor_attached
+            for job in jobs
+        ):
+            raise RipError("Active rip work for this disc must be stopped first")
+        job_ids = tuple(job.job_id for job in jobs)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for job_id in job_ids:
+                connection.execute(
+                    "DELETE FROM job_pipeline_settings WHERE job_id = ?", (job_id,)
+                )
+                connection.execute("DELETE FROM commands WHERE job_id = ?", (job_id,))
+                connection.execute("DELETE FROM events WHERE job_id = ?", (job_id,))
+                connection.execute(
+                    "DELETE FROM creation_keys WHERE job_id = ?", (job_id,)
+                )
+                connection.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
+            connection.commit()
+        return job_ids
 
     def list_events(self, job_id: str) -> tuple[OrchestrationEvent, ...]:
         self.get_job(job_id)

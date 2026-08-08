@@ -51,6 +51,7 @@ def test_explicit_season_label_context(label, expected):
     ("label", "expected"),
     [
         ("FAERIE_TALE_THEATRE_5", "FAERIE TALE THEATRE"),
+        ("The_Flintstones_CSR_DIM1", "The Flintstones"),
         (
             "Dragons Race to the Edge Season 1 DVD2",
             "Dragons Race to the Edge Season 1",

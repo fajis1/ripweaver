@@ -175,6 +175,21 @@ class PrivateBindingStore:
             connection.commit()
         return self.get(checked_job_id)
 
+    def delete_jobs(self, job_ids: tuple[str, ...]) -> int:
+        """Delete exact private bindings selected by a disc metadata reset."""
+
+        checked = tuple(self._validate_job_id(job_id) for job_id in job_ids)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            deleted = 0
+            for job_id in checked:
+                cursor = connection.execute(
+                    "DELETE FROM private_bindings WHERE job_id = ?", (job_id,)
+                )
+                deleted += cursor.rowcount
+            connection.commit()
+        return deleted
+
     def get(self, job_id: str) -> PrivateExecutionBinding:
         checked_job_id = self._validate_job_id(job_id)
         with self._connect() as connection:

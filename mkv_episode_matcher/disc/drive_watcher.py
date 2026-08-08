@@ -182,6 +182,39 @@ class DriveWatcher:
                 ),
             )
 
+    def clear_current_job(
+        self, drive_index: int, *, expected_disc_fingerprint: str
+    ) -> None:
+        """Detach one exact cached disc identity without accessing hardware."""
+
+        with self._lock:
+            selected = next(
+                (
+                    drive
+                    for drive in self._snapshot.drives
+                    if drive.drive_index == drive_index
+                ),
+                None,
+            )
+            if (
+                selected is None
+                or selected.current_disc_fingerprint != expected_disc_fingerprint
+            ):
+                raise ValueError("Current disc identity changed before reset")
+            self._snapshot = replace(
+                self._snapshot,
+                drives=tuple(
+                    replace(
+                        drive,
+                        current_job_id=None,
+                        current_disc_fingerprint=None,
+                    )
+                    if drive.drive_index == drive_index
+                    else drive
+                    for drive in self._snapshot.drives
+                ),
+            )
+
     def refresh_native_media(self) -> DriveStatusSnapshot:
         """Update newly inserted idle-drive media while MakeMKV is busy elsewhere."""
 

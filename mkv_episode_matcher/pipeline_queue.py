@@ -129,6 +129,16 @@ def enqueue_verified_rip_results(  # noqa: C901
     ):
         raise PipelineQueueError("Verified rip result set does not match its jobs")
 
+    expected_titles_by_disc: dict[str, set[int]] = {}
+    for job in jobs:
+        basename_match = _RIP_BASENAME.fullmatch(job.output_basename or "")
+        if basename_match is None:
+            continue
+        disc_id = job.job_id.rsplit("-title-", 1)[0]
+        expected_titles_by_disc.setdefault(disc_id, set()).add(
+            int(basename_match.group(2))
+        )
+
     queued: list[QueuedPipelineItem] = []
     for job in jobs:
         result = results_by_id[job.job_id]
@@ -188,13 +198,29 @@ def enqueue_verified_rip_results(  # noqa: C901
         if basename_match is not None:
             payload["disc_fingerprint"] = basename_match.group(1)
             payload["title_index"] = int(basename_match.group(2))
+            payload["disc_expected_title_indexes"] = sorted(
+                expected_titles_by_disc.get(disc_id, ())
+            )
         serialized = json.dumps(payload, indent=2, sort_keys=True) + "\n"
         contract = contract_root / f"{queue_media_id}.verified-rip.json"
         if contract.exists():
             try:
                 if contract.read_text(encoding="utf-8") != serialized:
+                    contract_digest = hashlib.sha256(
+                        serialized.encode("utf-8")
+                    ).hexdigest()[:16]
+                    contract = contract_root / (
+                        f"{queue_media_id}.verified-rip-{contract_digest}.json"
+                    )
+            except OSError as exc:
+                raise PipelineQueueError(
+                    "Verified rip contract could not be read"
+                ) from exc
+        if contract.exists():
+            try:
+                if contract.read_text(encoding="utf-8") != serialized:
                     raise PipelineQueueError(
-                        "Verified rip contract exists with different content"
+                        "Digest-bound verified rip contract has different content"
                     )
             except OSError as exc:
                 raise PipelineQueueError(
@@ -302,6 +328,50 @@ class PipelineQueueStore:
             }
             for row in rows
         }
+
+    def forget_disc_records(self, disc_fingerprint: str) -> tuple[int, int]:
+        """Delete inactive queue metadata and learned outcomes for one exact disc."""
+
+        if re.fullmatch(r"[0-9a-f]{16}", disc_fingerprint) is None:
+            raise PipelineQueueError("Disc fingerprint is invalid")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "SELECT media_id, state, rip_artifact_path FROM pipeline_items"
+            ).fetchall()
+            media_ids: list[str] = []
+            for row in rows:
+                try:
+                    payload = json.loads(
+                        Path(row["rip_artifact_path"]).read_text(encoding="utf-8")
+                    )
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if payload.get("disc_fingerprint") != disc_fingerprint:
+                    continue
+                if row["state"] == "running":
+                    connection.rollback()
+                    raise PipelineQueueError(
+                        "A pipeline item for this disc is currently running"
+                    )
+                media_ids.append(row["media_id"])
+            history_count = connection.execute(
+                "SELECT COUNT(*) FROM disc_title_history WHERE disc_fingerprint = ?",
+                (disc_fingerprint,),
+            ).fetchone()[0]
+            for media_id in media_ids:
+                connection.execute(
+                    "DELETE FROM pipeline_events WHERE media_id = ?", (media_id,)
+                )
+                connection.execute(
+                    "DELETE FROM pipeline_items WHERE media_id = ?", (media_id,)
+                )
+            connection.execute(
+                "DELETE FROM disc_title_history WHERE disc_fingerprint = ?",
+                (disc_fingerprint,),
+            )
+            connection.commit()
+        return len(media_ids), int(history_count)
 
     def rebuild_title_history(self) -> int:
         """Backfill safe outcomes from existing private pipeline contracts."""
@@ -915,6 +985,40 @@ class PipelineQueueStore:
             raise PipelineQueueError("Pipeline review code is invalid")
         return self._stop_item(media_id, state="review_required", value=code)
 
+    def hold_for_review(self, media_id: str, code: str) -> QueuedPipelineItem:
+        """Hold a newly admitted queued item before a worker can claim it."""
+
+        if re.fullmatch(r"[a-z][a-z0-9_-]{2,63}", code) is None:
+            raise PipelineQueueError("Pipeline review code is invalid")
+        checked_id = self._check_media_id(media_id)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT stage, state FROM pipeline_items WHERE media_id = ?",
+                (checked_id,),
+            ).fetchone()
+            if row is None or row["state"] != "queued":
+                connection.rollback()
+                raise PipelineQueueError("Only a queued pipeline item can be held")
+            now = self._now()
+            connection.execute(
+                """
+                UPDATE pipeline_items SET state = 'review_required',
+                    review_code = ?, updated_at = ? WHERE media_id = ?
+                """,
+                (code, now, checked_id),
+            )
+            self._append_event(
+                connection,
+                media_id=checked_id,
+                event_type="stage_review_required",
+                stage=row["stage"],
+                state="review_required",
+                details={"review_code": code},
+            )
+            connection.commit()
+        return self.get(checked_id)
+
     def fail(self, media_id: str, error_type: str) -> QueuedPipelineItem:
         if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", error_type) is None:
             raise PipelineQueueError("Pipeline error type is invalid")
@@ -1220,6 +1324,7 @@ class PipelineQueueStore:
             "all_season_analysis_running",
             "all_season_analysis_failed",
             "all_season_sequence_review_required",
+            "play_all_aggregate_detected",
         }:
             raise PipelineQueueError("Pipeline review choice is invalid")
         with self._connect() as connection:

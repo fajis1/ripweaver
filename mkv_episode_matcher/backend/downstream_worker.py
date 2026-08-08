@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 
 from loguru import logger
 
 from mkv_episode_matcher.core.config_manager import get_config_manager
 from mkv_episode_matcher.pipeline_queue import DownstreamDispatcher
+
+_DISC_TITLE_ID = re.compile(
+    r"-disc-\d+-([0-9a-f]{16})-title-(\d{3})(?:-|$)", re.IGNORECASE
+)
 
 
 class DownstreamWorker:
@@ -59,7 +64,7 @@ class DownstreamWorker:
                 item.media_id, "gemini_evidence_required"
             )
 
-    def _apply_automatic_disc_analysis(self) -> bool:
+    def _apply_automatic_disc_analysis(self) -> bool:  # noqa: C901
         """Recover automatic TV batches that settled into a sequence hold."""
 
         config = get_config_manager().load()
@@ -78,19 +83,18 @@ class DownstreamWorker:
             self._automatic_transcode_media_ids = ()
         groups: dict[str, list[str]] = {}
         triggered: set[str] = set()
-        for item in self.dispatcher.store.list_items():
-            if (
-                item.stage != "identify"
-                or item.state != "review_required"
-                or item.review_code
-                not in {
-                    "missing_season_context",
-                    "unmatched_disc_analysis_required",
-                    "all_season_analysis_running",
-                    "all_season_analysis_failed",
-                    "all_season_sequence_review_required",
-                }
-            ):
+        pending: set[str] = set()
+        expected: dict[str, set[int]] = {}
+        observed: dict[str, set[int]] = {}
+        items = self.dispatcher.store.list_items()
+        for item in items:
+            media_match = _DISC_TITLE_ID.search(item.media_id)
+            if media_match is not None:
+                observed.setdefault(media_match.group(1).lower(), set()).add(
+                    int(media_match.group(2))
+                )
+        for item in items:
+            if item.stage != "identify":
                 continue
             try:
                 payload = json.loads(
@@ -100,6 +104,29 @@ class DownstreamWorker:
                 continue
             fingerprint = payload.get("disc_fingerprint")
             if isinstance(fingerprint, str):
+                expected_indexes = payload.get("disc_expected_title_indexes")
+                if isinstance(expected_indexes, list) and all(
+                    isinstance(index, int)
+                    and not isinstance(index, bool)
+                    and index >= 0
+                    for index in expected_indexes
+                ):
+                    expected.setdefault(fingerprint, set()).update(expected_indexes)
+                if item.state in {"queued", "running"}:
+                    pending.add(fingerprint)
+                    continue
+                if (
+                    item.state != "review_required"
+                    or item.review_code
+                    not in {
+                        "missing_season_context",
+                        "unmatched_disc_analysis_required",
+                        "all_season_analysis_running",
+                        "all_season_analysis_failed",
+                        "all_season_sequence_review_required",
+                    }
+                ):
+                    continue
                 groups.setdefault(fingerprint, []).append(item.media_id)
                 if item.review_code in {
                     "missing_season_context",
@@ -112,7 +139,12 @@ class DownstreamWorker:
                 (fingerprint, tuple(ids))
                 for fingerprint, ids in groups.items()
                 if fingerprint in triggered
+                and fingerprint not in pending
                 and fingerprint not in self._automatic_analysis_attempts
+                and (
+                    not expected.get(fingerprint)
+                    or expected[fingerprint].issubset(observed.get(fingerprint, set()))
+                )
                 and len(ids) >= 2
             ),
             None,

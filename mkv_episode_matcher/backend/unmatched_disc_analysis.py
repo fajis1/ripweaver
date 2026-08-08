@@ -20,6 +20,10 @@ from mkv_episode_matcher.media.gemini_matcher import (
     GeminiEpisodeRanker,
     GeminiResponseError,
 )
+from mkv_episode_matcher.media.play_all_detection import (
+    MatchedEpisodeEvidence,
+    detect_play_all,
+)
 from mkv_episode_matcher.media.sequence_matcher import (
     SequenceGroup,
     plan_disc_sequences,
@@ -107,6 +111,22 @@ def prioritize_missing_catalog(
     if library_episodes:
         return catalog, "all-library-aware"
     return catalog, "all"
+
+
+def assigned_disc_episodes(
+    store: PipelineQueueStore, disc_fingerprint: str
+) -> frozenset[tuple[int, int]]:
+    """Return episode numbers already identified for this exact disc."""
+
+    assigned: set[tuple[int, int]] = set()
+    for outcome in store.title_history(disc_fingerprint).values():
+        episode_id = outcome.get("episode_id")
+        if not isinstance(episode_id, str):
+            continue
+        match = _EPISODE_FILE.fullmatch(episode_id)
+        if match is not None:
+            assigned.add((int(match.group(1)), int(match.group(2))))
+    return frozenset(assigned)
 
 
 def classify_gemini_failure(exc: Exception) -> GeminiAnalysisError:
@@ -204,19 +224,30 @@ def execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflow
     library_episodes = existing_library_episodes(
         getattr(config, "jellyfin_tv_root", None), series_name
     )
+    disc_episodes = assigned_disc_episodes(store, disc_fingerprint)
+    candidate_catalog = tuple(
+        entry
+        for entry in catalog
+        if (entry.season, entry.episode) not in disc_episodes
+    )
+    if len(candidate_catalog) < len(selected):
+        raise PipelineQueueError(
+            "Episode catalogue has too few unassigned entries for this disc"
+        )
+    known_episodes = library_episodes | disc_episodes
     gemini_catalog, gemini_candidate_scope = prioritize_missing_catalog(
-        catalog, library_episodes, len(selected)
+        candidate_catalog, known_episodes, len(selected)
     )
     existing_episode_ids = frozenset(
         entry.episode_id
         for entry in catalog
-        if (entry.season, entry.episode) in library_episodes
+        if (entry.season, entry.episode) in known_episodes
     )
     local_evidence_available = all(item.windows for item in evidence)
     plan = (
         plan_disc_sequences(
             evidence,
-            catalog,
+            candidate_catalog,
             (
                 SequenceGroup(
                     f"disc-{disc_fingerprint}",
@@ -229,7 +260,7 @@ def execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflow
     )
     store.record_sequence_diagnostic(
         tuple(item.media_id for item, _payload in selected),
-        catalog_episode_count=len(catalog),
+        catalog_episode_count=len(candidate_catalog),
         file_count=len(selected),
         best_score=plan.score,
         runner_up_score=max(0.0, plan.score - plan.global_margin),
@@ -239,7 +270,7 @@ def execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflow
         candidate_scope="all",
     )
     media_ids = tuple(item.media_id for item, _payload in selected)
-    catalog_by_id = {entry.episode_id: entry for entry in catalog}
+    catalog_by_id = {entry.episode_id: entry for entry in candidate_catalog}
     duration_by_id = {item.file_id: item.duration_seconds for item in gemini_evidence}
     provisional: dict[str, float] = {}
     if plan.disposition == "proposed":
@@ -443,6 +474,52 @@ def execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflow
             },
         )
         raise PipelineQueueError("All-season sequence result requires review")
+    matched_evidence = tuple(
+        MatchedEpisodeEvidence(
+            file_id=file_id,
+            season=entry.season,
+            episode=entry.episode,
+            duration_seconds=duration_by_id[file_id],
+            size_bytes=next(
+                (
+                    payload.get("source_size_bytes")
+                    for item, payload in selected
+                    if item.media_id == file_id
+                ),
+                None,
+            ),
+        )
+        for file_id, entry in proposed.items()
+    )
+    play_all_ids: set[str] = set()
+    for item, payload in selected:
+        if item.media_id in proposed:
+            continue
+        evidence = detect_play_all(
+            candidate_file_id=item.media_id,
+            candidate_duration_seconds=duration_by_id[item.media_id],
+            candidate_size_bytes=payload.get("source_size_bytes"),
+            matched_episodes=matched_evidence,
+        )
+        if evidence is None:
+            continue
+        play_all_ids.add(item.media_id)
+        dossier.record_attempt(
+            (item.media_id,),
+            branch="tv-play-all",
+            disposition="matched",
+            summary={
+                "component_episode_ids": list(evidence.component_episode_ids),
+                "duration_ratio": round(evidence.duration_ratio, 6),
+                "size_ratio": (
+                    round(evidence.size_ratio, 6)
+                    if evidence.size_ratio is not None
+                    else None
+                ),
+                "reason": "matched_episode_coverage_supports_play_all",
+            },
+        )
+        store.choose_review_path(item.media_id, "play_all_aggregate_detected")
     assignments = [
         {
             "title_index": title_index,
@@ -478,7 +555,11 @@ def execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflow
             item.media_id, build_artifact("rip", path)
         )
         applied.append(item.media_id)
-    unresolved = tuple(media_id for media_id in media_ids if media_id not in applied)
+    unresolved = tuple(
+        media_id
+        for media_id in media_ids
+        if media_id not in applied and media_id not in play_all_ids
+    )
     if unresolved and allow_content_fallback:
         try:
             from mkv_episode_matcher.backend.gemini_fallback import (

@@ -7,6 +7,7 @@ from mkv_episode_matcher.disc.title_selector import (
     build_title_plan,
     normalize_title,
     parse_duration_seconds,
+    select_pipeline_titles,
 )
 
 
@@ -158,6 +159,29 @@ def test_combined_title_and_short_extra_are_excluded_with_reasons():
     assert "avoid" in decisions[2].reasons[1]
     assert decisions[3].classification == "extra"
     assert decisions[3].selected is False
+
+
+def test_pipeline_selection_keeps_episodes_and_conservative_bonus_titles():
+    inventory = _inventory([
+        _title(0, "0:22:00", size_bytes=2_500_000_000),
+        _title(1, "0:22:10", size_bytes=2_480_000_000),
+        _title(2, "0:22:05", size_bytes=2_490_000_000),
+        _title(3, "0:08:00", size_bytes=170_000_000),
+        _title(4, "0:04:00", size_bytes=40_000_000),
+        _title(5, "0:00:45", size_bytes=10_000_000),
+    ])
+
+    plan = build_title_plan(inventory, report_id="pipeline-selection")
+
+    assert [decision.title.index for decision in select_pipeline_titles(plan)] == [
+        0,
+        1,
+        2,
+        3,
+    ]
+    assert [
+        decision.title.index for decision in select_pipeline_titles(plan, "tv")
+    ] == [0, 1, 2]
 
 
 def test_expected_episode_count_can_expand_an_ambiguous_cluster():
