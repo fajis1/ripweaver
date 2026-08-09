@@ -4,22 +4,34 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from mkv_episode_matcher.backend.identification_dossier import collect_dossier_evidence
+from mkv_episode_matcher.backend.identification_dossier import (
+    IdentificationDossierStore,
+    collect_dossier_evidence,
+)
 from mkv_episode_matcher.core.credentials import ApiCredentialError, ApiServiceError
 from mkv_episode_matcher.core.models import Config
-from mkv_episode_matcher.media.episode_catalog import EpisodeCatalogEntry
+from mkv_episode_matcher.core.providers.subtitles import OpenSubtitlesProvider
+from mkv_episode_matcher.core.utils import SubtitleReader, clean_text
+from mkv_episode_matcher.media.episode_catalog import (
+    EpisodeCatalogEntry,
+    rank_catalog_candidates,
+)
 from mkv_episode_matcher.media.evidence_bundle import (
     SavedFileEvidence,
     SavedTranscriptWindow,
 )
 from mkv_episode_matcher.media.gemini_matcher import (
     GeminiEpisodeRanker,
+    GeminiMatchError,
     GeminiResponseError,
+    UnmatchedFileEvidence,
 )
+from mkv_episode_matcher.media.gemini_series_resolver import GeminiSeriesResolver
 from mkv_episode_matcher.media.play_all_detection import (
     MatchedEpisodeEvidence,
     detect_play_all,
@@ -28,12 +40,17 @@ from mkv_episode_matcher.media.sequence_matcher import (
     SequenceGroup,
     plan_disc_sequences,
 )
+from mkv_episode_matcher.media.transcript_batch import TranscriptBatchError
 from mkv_episode_matcher.pipeline_queue import (
     PipelineQueueError,
     PipelineQueueStore,
     build_artifact,
 )
-from mkv_episode_matcher.tmdb_client import fetch_aired_episode_catalog_for_show
+from mkv_episode_matcher.tmdb_client import (
+    TvShowCandidate,
+    fetch_aired_episode_catalog,
+    search_tv_show_candidates,
+)
 
 
 class GeminiAnalysisError(PipelineQueueError):
@@ -51,6 +68,285 @@ class _ReviewSequencePlan:
     score: float = 0.0
     global_margin: float = 0.0
     groups: tuple = ()
+
+
+def dominant_season_scope(
+    assigned: frozenset[tuple[int, int]],
+    catalog: tuple[EpisodeCatalogEntry, ...],
+) -> tuple[int, ...]:
+    """Prefer a dominant season and order neighbors from episode position."""
+
+    counts = Counter(season for season, _episode in assigned)
+    if not counts:
+        return ()
+    ranked = counts.most_common()
+    dominant, count = ranked[0]
+    if count < 2 or (len(ranked) > 1 and ranked[1][1] == count):
+        return ()
+    dominant_episodes = [episode for season, episode in assigned if season == dominant]
+    return _ordered_neighbor_scope(dominant, tuple(dominant_episodes), catalog)
+
+
+def _subtitle_reference_windows(content: str, excerpt: str) -> tuple[str, ...]:
+    words = clean_text(re.sub(r"<[^>]+>", " ", content)).split()
+    excerpt_words = max(8, len(clean_text(excerpt).split()))
+    width = max(24, excerpt_words * 2)
+    step = max(8, width // 3)
+    if len(words) <= width:
+        return (" ".join(words),) if words else ()
+    starts = range(0, len(words) - width + 1, step)
+    windows = [" ".join(words[start : start + width]) for start in starts]
+    windows.append(" ".join(words[-width:]))
+    return tuple(windows)
+
+
+def _score_subtitle(
+    asr,
+    excerpts: tuple[str, ...],
+    content: str,
+    duration_seconds: float,
+) -> tuple[float, tuple[float, ...]]:
+    scores = []
+    starts = tuple(
+        max(0.0, duration_seconds * position / (len(excerpts) + 1) - 15.0)
+        for position in range(1, len(excerpts) + 1)
+    )
+    for excerpt, start in zip(excerpts, starts, strict=False):
+        cleaned = clean_text(excerpt)
+        if not cleaned:
+            continue
+        aligned = []
+        for offset in (-60.0, -30.0, 0.0, 30.0, 60.0):
+            window_start = max(0.0, start + offset)
+            reference = clean_text(
+                " ".join(
+                    SubtitleReader.extract_subtitle_chunk(
+                        content, window_start, window_start + 45.0
+                    )
+                )
+            )
+            if reference:
+                aligned.append(asr.calculate_match_score(cleaned, reference))
+        if aligned:
+            scores.append(max(aligned))
+            continue
+        # Synthetic/plain-text references and malformed timing still get one
+        # bounded fallback without scanning every possible word window.
+        windows = _subtitle_reference_windows(content, cleaned)
+        if windows:
+            scores.append(
+                max(asr.calculate_match_score(cleaned, window) for window in windows)
+            )
+    if not scores:
+        return 0.0, ()
+    scores.sort(reverse=True)
+    return sum(scores) / len(scores), tuple(scores)
+
+
+def _subtitle_candidates(
+    files, references, catalog_by_number, asr, *, min_confidence
+):
+    scored = {}
+    for item in files:
+        candidates = []
+        for subtitle in references:
+            info = subtitle.episode_info
+            if info is None:
+                continue
+            entry = catalog_by_number.get((info.season, info.episode))
+            if entry is None or not _episode_runtime_consistent(
+                item.duration_seconds, entry
+            ):
+                continue
+            try:
+                content = subtitle.content or SubtitleReader.read_srt_file(
+                    subtitle.path
+                )
+            except (OSError, ValueError):
+                continue
+            average_score, window_scores = _score_subtitle(
+                    asr,
+                    item.transcript_excerpts,
+                    content,
+                    item.duration_seconds,
+                )
+            qualifying = tuple(
+                score for score in window_scores if score >= min_confidence
+            )
+            consensus_score = (
+                sum(qualifying) / len(qualifying)
+                if qualifying
+                else average_score
+            )
+            candidates.append((
+                consensus_score,
+                len(qualifying),
+                entry,
+            ))
+        scored[item.file_id] = sorted(
+            candidates, key=lambda value: value[0], reverse=True
+        )
+    return scored
+
+
+def _accept_subtitle_candidates(scored, min_confidence, used):
+    proposals = []
+    diagnostics = {}
+    for file_id, ranked in scored.items():
+        if not ranked:
+            continue
+        best_score, best_votes, best = ranked[0]
+        runner_up = ranked[1][0] if len(ranked) > 1 else 0.0
+        margin = best_score - runner_up
+        diagnostics[file_id] = (best_score, margin)
+        if (
+            best_score >= min_confidence
+            and (best_votes >= 2 or best_score >= 0.92)
+            and margin >= 0.08
+        ):
+            proposals.append((best_score, margin, file_id, best))
+    accepted = {}
+    for _score, _margin, file_id, entry in sorted(proposals, reverse=True):
+        if entry.episode_id in used:
+            continue
+        accepted[file_id] = entry
+        used.add(entry.episode_id)
+    return accepted, diagnostics
+
+
+def _ordered_neighbor_scope(
+    season: int,
+    episodes: tuple[int, ...],
+    catalog: tuple[EpisodeCatalogEntry, ...],
+) -> tuple[int, ...]:
+    available = {entry.season for entry in catalog}
+    episode_count = max(
+        (entry.episode for entry in catalog if entry.season == season), default=0
+    )
+    position = (
+        sum(episodes) / len(episodes) / episode_count
+        if episodes and episode_count
+        else 0.5
+    )
+    neighbor = season - 1 if position <= 0.35 else season + 1
+    return (season, neighbor) if neighbor in available else (season,)
+
+
+def discover_opensubtitles_season(
+    files: tuple[UnmatchedFileEvidence, ...],
+    catalog: tuple[EpisodeCatalogEntry, ...],
+    series_name: str,
+    tmdb_id: int,
+    asr,
+    *,
+    min_confidence: float,
+    provider,
+    reference_cache: dict[int, tuple] | None = None,
+) -> tuple[int, ...]:
+    """Discover a season from independent transcript matches across the series."""
+
+    usable = tuple(item for item in files if item.transcript_excerpts)
+    if not usable:
+        return ()
+    median_duration = sorted(item.duration_seconds for item in usable)[len(usable) // 2]
+    representatives = tuple(
+        sorted(
+            usable,
+            key=lambda item: abs(item.duration_seconds - median_duration),
+        )[:4]
+    )
+    catalog_by_number = {(entry.season, entry.episode): entry for entry in catalog}
+    season_results = []
+    reference_cache = reference_cache if reference_cache is not None else {}
+    for season in sorted({entry.season for entry in catalog}):
+        references = reference_cache.get(season)
+        if references is None:
+            references = tuple(
+                provider.get_subtitles(series_name, season, [], tmdb_id)
+            )
+            reference_cache[season] = references
+        scored = _subtitle_candidates(
+            representatives,
+            references,
+            catalog_by_number,
+            asr,
+            min_confidence=min_confidence,
+        )
+        accepted, diagnostics = _accept_subtitle_candidates(
+            scored, min_confidence, set()
+        )
+        confidence_sum = sum(diagnostics[file_id][0] for file_id in accepted)
+        margin_sum = sum(diagnostics[file_id][1] for file_id in accepted)
+        season_results.append((
+            len(accepted),
+            confidence_sum,
+            margin_sum,
+            season,
+            accepted,
+        ))
+    season_results.sort(reverse=True)
+    if not season_results or season_results[0][0] == 0:
+        return ()
+    winner = season_results[0]
+    runner_up = season_results[1] if len(season_results) > 1 else None
+    if runner_up is not None and winner[:3] == runner_up[:3]:
+        return ()
+    # A single seed must be exceptionally strong; multiple independent seeds
+    # may establish the season at the normal configured threshold.
+    if winner[0] == 1 and winner[1] < max(0.82, min_confidence + 0.08):
+        return ()
+    episodes = tuple(entry.episode for entry in winner[4].values())
+    return _ordered_neighbor_scope(winner[3], episodes, catalog)
+
+
+def match_opensubtitles_seasons(
+    files: tuple[UnmatchedFileEvidence, ...],
+    catalog: tuple[EpisodeCatalogEntry, ...],
+    series_name: str,
+    tmdb_id: int,
+    seasons: tuple[int, ...],
+    asr,
+    *,
+    min_confidence: float,
+    provider_factory=OpenSubtitlesProvider,
+    provider=None,
+    reference_cache: dict[int, tuple] | None = None,
+) -> tuple[dict[str, EpisodeCatalogEntry], dict[str, tuple[float, float]]]:
+    """Match cached Whisper excerpts independently against bounded season subtitles."""
+
+    if not seasons or not files:
+        return {}, {}
+    provider = provider or provider_factory()
+    reference_cache = reference_cache if reference_cache is not None else {}
+    catalog_by_number = {(entry.season, entry.episode): entry for entry in catalog}
+    remaining = {item.file_id: item for item in files}
+    accepted = {}
+    diagnostics = {}
+    used = set()
+    for season in seasons:
+        if not remaining:
+            break
+        references = reference_cache.get(season)
+        if references is None:
+            references = tuple(
+                provider.get_subtitles(series_name, season, [], tmdb_id)
+            )
+            reference_cache[season] = references
+        scored = _subtitle_candidates(
+            tuple(remaining.values()),
+            references,
+            catalog_by_number,
+            asr,
+            min_confidence=min_confidence,
+        )
+        season_matches, season_diagnostics = _accept_subtitle_candidates(
+            scored, min_confidence, used
+        )
+        accepted.update(season_matches)
+        diagnostics.update(season_diagnostics)
+        for file_id in season_matches:
+            remaining.pop(file_id, None)
+    return accepted, diagnostics
 
 
 def _episode_runtime_consistent(
@@ -113,6 +409,65 @@ def prioritize_missing_catalog(
     return catalog, "all"
 
 
+def _gemini_chunks(
+    files: tuple[UnmatchedFileEvidence, ...], size: int = 4
+) -> tuple[tuple[UnmatchedFileEvidence, ...], ...]:
+    return tuple(files[index : index + size] for index in range(0, len(files), size))
+
+
+def _shortlist_catalog(
+    files: tuple[UnmatchedFileEvidence, ...],
+    catalog: tuple[EpisodeCatalogEntry, ...],
+    excluded: set[str],
+    *,
+    top_k: int = 10,
+) -> tuple[EpisodeCatalogEntry, ...]:
+    selected: set[str] = set()
+    available = tuple(entry for entry in catalog if entry.episode_id not in excluded)
+    for item in files:
+        ranked = rank_catalog_candidates(
+            item.transcript_excerpts,
+            item.duration_seconds,
+            available,
+            top_k=min(top_k, len(available)),
+        )
+        selected.update(candidate.episode_id for candidate in ranked)
+    return tuple(entry for entry in catalog if entry.episode_id in selected)
+
+
+def _rank_gemini_chunks(
+    ranker: GeminiEpisodeRanker,
+    files: tuple[UnmatchedFileEvidence, ...],
+    catalog: tuple[EpisodeCatalogEntry, ...],
+    dossier: IdentificationDossierStore,
+    known_existing_ids: frozenset[str],
+) -> dict[str, object]:
+    matches: dict[str, object] = {}
+    assigned: set[str] = set()
+    for chunk in _gemini_chunks(files):
+        chunk_catalog = _shortlist_catalog(chunk, catalog, assigned)
+        if not chunk_catalog:
+            raise PipelineQueueError("Local Gemini candidate shortlist is empty")
+        chunk_ids = {entry.episode_id for entry in chunk_catalog}
+        review = ranker.rank_with_configured_keys(
+            chunk,
+            chunk_catalog,
+            prior_attempts={
+                item.file_id: dossier.safe_attempts(item.file_id) for item in chunk
+            },
+            existing_episode_ids=frozenset(
+                episode_id
+                for episode_id in known_existing_ids
+                if episode_id in chunk_ids
+            ),
+        )
+        for match in review.matches:
+            matches[match.file_id] = match
+            if match.episode_id is not None:
+                assigned.add(match.episode_id)
+    return matches
+
+
 def assigned_disc_episodes(
     store: PipelineQueueStore, disc_fingerprint: str
 ) -> frozenset[tuple[int, int]]:
@@ -152,12 +507,89 @@ def classify_gemini_failure(exc: Exception) -> GeminiAnalysisError:
         )
     if isinstance(exc, GeminiResponseError):
         return GeminiAnalysisError("gemini_response_invalid", str(exc))
+    if isinstance(exc, GeminiMatchError):
+        return GeminiAnalysisError("gemini_analysis_failed", str(exc))
     if isinstance(exc, PipelineQueueError):
         return GeminiAnalysisError("gemini_response_invalid", str(exc))
     return GeminiAnalysisError(
         "gemini_provider_failed",
         f"Gemini provider failure: {type(exc).__name__}",
     )
+
+
+def _normalized_series(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.casefold())
+
+
+def _exact_series_candidates(
+    series_name: str, candidates: tuple[TvShowCandidate, ...]
+) -> tuple[TvShowCandidate, ...]:
+    expected = _normalized_series(series_name)
+    return tuple(
+        item
+        for item in candidates
+        if expected
+        in {_normalized_series(item.name), _normalized_series(item.original_name)}
+    )
+
+
+def _resolve_series_catalog_details(
+    series_name: str,
+    config: Config,
+    *,
+    allow_gemini: bool,
+) -> tuple[TvShowCandidate, tuple[EpisodeCatalogEntry, ...]]:
+    """Resolve one canonical TV series and require a valid TMDb catalogue."""
+
+    candidates = search_tv_show_candidates(series_name)
+    exact = _exact_series_candidates(series_name, candidates)
+    selected = exact[0] if len(exact) == 1 else None
+    if selected is None and len(candidates) == 1:
+        selected = candidates[0]
+    if selected is None and allow_gemini:
+        try:
+            resolution = GeminiSeriesResolver(
+                model=config.gemini_model
+            ).resolve_with_configured_keys(series_name, candidates)
+        except Exception as exc:
+            raise classify_gemini_failure(exc) from exc
+        if resolution.confidence < config.min_confidence:
+            raise GeminiAnalysisError(
+                "gemini_series_resolution_uncertain",
+                "Gemini series resolution did not meet the confidence threshold",
+            )
+        if resolution.tmdb_id is not None:
+            selected = next(
+                (item for item in candidates if item.tmdb_id == resolution.tmdb_id),
+                None,
+            )
+        else:
+            validated = search_tv_show_candidates(resolution.series_name)
+            validated_exact = _exact_series_candidates(
+                resolution.series_name, validated
+            )
+            if len(validated_exact) == 1:
+                selected = validated_exact[0]
+    if selected is None:
+        raise PipelineQueueError("No TV series matched the reviewed series name")
+    catalog = tuple(fetch_aired_episode_catalog(selected.tmdb_id) or ())
+    if not catalog:
+        raise PipelineQueueError(
+            "TMDb returned no aired episodes for the resolved TV series"
+        )
+    return selected, catalog
+
+
+def resolve_series_catalog(
+    series_name: str,
+    config: Config,
+    *,
+    allow_gemini: bool,
+) -> tuple[str, tuple[EpisodeCatalogEntry, ...]]:
+    selected, catalog = _resolve_series_catalog_details(
+        series_name, config, allow_gemini=allow_gemini
+    )
+    return selected.name, catalog
 
 
 def execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflow
@@ -198,16 +630,24 @@ def execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflow
             "At least two held titles are required for disc sequence analysis"
         )
 
-    catalog = fetch_aired_episode_catalog_for_show(series_name)
+    selected_series, catalog = _resolve_series_catalog_details(
+        series_name, config, allow_gemini=allow_gemini
+    )
+    series_name = selected_series.name
     if season is not None:
         catalog = tuple(item for item in catalog if item.season == season)
     if not catalog:
         raise PipelineQueueError(
             "Episode catalogue is unavailable for the reviewed scope"
         )
-    gemini_evidence, dossier = collect_dossier_evidence(
-        tuple(selected), config, asr, contract_root
-    )
+    try:
+        gemini_evidence, dossier = collect_dossier_evidence(
+            tuple(selected), config, asr, contract_root
+        )
+    except TranscriptBatchError as exc:
+        raise PipelineQueueError(
+            "Audio evidence collection failed before episode matching"
+        ) from exc
     evidence = tuple(
         SavedFileEvidence(
             file_id=item.file_id,
@@ -226,9 +666,7 @@ def execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflow
     )
     disc_episodes = assigned_disc_episodes(store, disc_fingerprint)
     candidate_catalog = tuple(
-        entry
-        for entry in catalog
-        if (entry.season, entry.episode) not in disc_episodes
+        entry for entry in catalog if (entry.season, entry.episode) not in disc_episodes
     )
     if len(candidate_catalog) < len(selected):
         raise PipelineQueueError(
@@ -238,12 +676,14 @@ def execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflow
     gemini_catalog, gemini_candidate_scope = prioritize_missing_catalog(
         candidate_catalog, known_episodes, len(selected)
     )
+    gemini_catalog_ids = frozenset(entry.episode_id for entry in gemini_catalog)
     existing_episode_ids = frozenset(
         entry.episode_id
         for entry in catalog
         if (entry.season, entry.episode) in known_episodes
+        and entry.episode_id in gemini_catalog_ids
     )
-    local_evidence_available = all(item.windows for item in evidence)
+    local_evidence_available = bool(evidence) and all(item.windows for item in evidence)
     plan = (
         plan_disc_sequences(
             evidence,
@@ -273,6 +713,7 @@ def execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflow
     catalog_by_id = {entry.episode_id: entry for entry in candidate_catalog}
     duration_by_id = {item.file_id: item.duration_seconds for item in gemini_evidence}
     provisional: dict[str, float] = {}
+    opensubtitles_diagnostics: dict[str, tuple[float, float]] = {}
     if plan.disposition == "proposed":
         raw_proposed = {
             item.file_id: catalog_by_id[item.proposed_episode]
@@ -310,7 +751,7 @@ def execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflow
                     ),
                 },
             )
-    elif allow_gemini:
+    else:
         dossier.record_attempt(
             media_ids,
             branch="tv-local",
@@ -328,27 +769,111 @@ def execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflow
                 ),
             },
         )
+        season_scope = (
+            (season,)
+            if season is not None
+            else dominant_season_scope(
+                disc_episodes,
+                catalog,
+            )
+        )
+        proposed = {}
+        if any(item.transcript_excerpts for item in gemini_evidence):
+            try:
+                subtitle_provider = OpenSubtitlesProvider()
+                subtitle_reference_cache: dict[int, tuple] = {}
+                if not season_scope:
+                    season_scope = discover_opensubtitles_season(
+                        gemini_evidence,
+                        candidate_catalog,
+                        series_name,
+                        selected_series.tmdb_id,
+                        asr,
+                        min_confidence=config.min_confidence,
+                        provider=subtitle_provider,
+                        reference_cache=subtitle_reference_cache,
+                    )
+                proposed, opensubtitles_diagnostics = match_opensubtitles_seasons(
+                    gemini_evidence,
+                    candidate_catalog,
+                    series_name,
+                    selected_series.tmdb_id,
+                    season_scope,
+                    asr,
+                    min_confidence=config.min_confidence,
+                    provider=subtitle_provider,
+                    reference_cache=subtitle_reference_cache,
+                )
+                for item in gemini_evidence:
+                    score, margin = opensubtitles_diagnostics.get(
+                        item.file_id, (0.0, 0.0)
+                    )
+                    dossier.record_attempt(
+                        (item.file_id,),
+                        branch="tv-opensubtitles",
+                        disposition=(
+                            "matched" if item.file_id in proposed else "review"
+                        ),
+                        summary={
+                            "candidate_scope": ",".join(
+                                f"S{value:02d}" for value in season_scope
+                            ),
+                            "best_score": round(score, 6),
+                            "margin": round(margin, 6),
+                            "candidate_episode_id": (
+                                proposed[item.file_id].episode_id
+                                if item.file_id in proposed
+                                else None
+                            ),
+                        },
+                    )
+            except Exception as exc:
+                dossier.record_attempt(
+                    media_ids,
+                    branch="tv-opensubtitles",
+                    disposition="failed",
+                    summary={"reason": type(exc).__name__},
+                )
+
+    unresolved_for_gemini = tuple(
+        item for item in gemini_evidence if item.file_id not in proposed
+    )
+    # Once independent subtitle evidence establishes a disc block, do not let
+    # broad episode-name inference force the leftovers into unrelated seasons.
+    # They continue to play-all/bonus/review handling below.
+    if unresolved_for_gemini and allow_gemini and not proposed:
+        proposed_episode_ids = {entry.episode_id for entry in proposed.values()}
+        bounded_seasons = set(season_scope)
+        remaining_gemini_catalog = tuple(
+            entry
+            for entry in gemini_catalog
+            if entry.episode_id not in proposed_episode_ids
+            and (not bounded_seasons or entry.season in bounded_seasons)
+        )
+        effective_gemini_scope = (
+            ",".join(f"S{value:02d}" for value in season_scope)
+            if season_scope
+            else gemini_candidate_scope
+        )
         try:
             dossier.record_attempt(
-                media_ids,
+                tuple(item.file_id for item in unresolved_for_gemini),
                 branch="tv-gemini",
                 disposition="started",
                 summary={
-                    "candidate_scope": gemini_candidate_scope,
-                    "candidate_count": len(gemini_catalog),
+                    "candidate_scope": effective_gemini_scope,
+                    "candidate_count": len(remaining_gemini_catalog),
                 },
             )
             ranker = GeminiEpisodeRanker(model=config.gemini_model)
-            initial_review = ranker.rank_with_configured_keys(
-                gemini_evidence,
-                gemini_catalog,
-                prior_attempts={
-                    media_id: dossier.safe_attempts(media_id) for media_id in media_ids
-                },
-                existing_episode_ids=existing_episode_ids,
+            initial_matches = _rank_gemini_chunks(
+                ranker,
+                unresolved_for_gemini,
+                remaining_gemini_catalog,
+                dossier,
+                existing_episode_ids,
             )
-            initial_matches = {item.file_id: item for item in initial_review.matches}
-            if set(initial_matches) != {item.file_id for item in evidence}:
+            if set(initial_matches) != {item.file_id for item in unresolved_for_gemini}:
                 raise PipelineQueueError("Gemini did not review every disc title")
             for file_id, match in initial_matches.items():
                 dossier.record_attempt(
@@ -361,16 +886,14 @@ def execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflow
                         "confidence": round(match.confidence, 6),
                     },
                 )
-            confirmation_review = ranker.rank_with_configured_keys(
-                gemini_evidence,
-                gemini_catalog,
-                prior_attempts={
-                    media_id: dossier.safe_attempts(media_id) for media_id in media_ids
-                },
-                existing_episode_ids=existing_episode_ids,
+            matches = _rank_gemini_chunks(
+                ranker,
+                unresolved_for_gemini,
+                remaining_gemini_catalog,
+                dossier,
+                existing_episode_ids,
             )
-            matches = {item.file_id: item for item in confirmation_review.matches}
-            if set(matches) != {item.file_id for item in evidence}:
+            if set(matches) != {item.file_id for item in unresolved_for_gemini}:
                 raise PipelineQueueError("Gemini did not review every disc title")
             gemini_catalog_by_id = {entry.episode_id: entry for entry in gemini_catalog}
             duration_by_id = {
@@ -392,10 +915,10 @@ def execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflow
                 raise PipelineQueueError(
                     "Gemini did not identify any disc title confidently"
                 )
-            proposed = {
+            proposed.update({
                 file_id: gemini_catalog_by_id[str(match.episode_id)]
                 for file_id, match in resolved_matches.items()
-            }
+            })
             provisional = {
                 file_id: min(match.confidence, initial_matches[file_id].confidence)
                 for file_id, match in resolved_matches.items()
@@ -407,7 +930,7 @@ def execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflow
                     disposition="matched" if file_id in proposed else "review",
                     summary={
                         "phase": "confirmation",
-                        "candidate_scope": gemini_candidate_scope,
+                        "candidate_scope": effective_gemini_scope,
                         "candidate_episode_id": match.episode_id,
                         "confidence": round(match.confidence, 6),
                         "consistent_with_initial": (
@@ -455,24 +978,7 @@ def execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflow
                     summary={"reason": type(fallback_exc).__name__},
                 )
             raise failure from exc
-    else:
-        dossier.record_attempt(
-            media_ids,
-            branch="tv-local",
-            disposition="review",
-            summary={
-                "best_score": round(plan.score, 6),
-                "runner_up_score": round(max(0.0, plan.score - plan.global_margin), 6),
-                "margin": round(plan.global_margin, 6),
-                "candidate_scope": "all",
-                "candidate_count": len(catalog),
-                "reason": (
-                    "scored"
-                    if local_evidence_available
-                    else "usable_transcript_unavailable"
-                ),
-            },
-        )
+    elif not proposed:
         raise PipelineQueueError("All-season sequence result requires review")
     matched_evidence = tuple(
         MatchedEpisodeEvidence(

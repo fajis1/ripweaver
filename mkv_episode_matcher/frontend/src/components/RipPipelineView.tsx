@@ -85,6 +85,9 @@ interface OrchestrationJob {
   rip_transfer_mib_s?: number | null;
   rip_progress_scope?: string | null;
   rip_progress_updated_at?: string | null;
+  rip_overall_progress_percent?: number | null;
+  rip_completed_title_count?: number | null;
+  rip_total_title_count?: number | null;
 }
 
 interface JobDashboard {
@@ -1256,6 +1259,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
         'missing_season_context',
         'unmatched_disc_analysis_required',
         'all_season_analysis_failed',
+        'all_season_series_not_found',
+        'all_season_evidence_failed',
+        'all_season_catalog_unavailable',
         'all_season_sequence_review_required',
       ].includes(item.review_code || '')),
     );
@@ -1567,7 +1573,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
   const existingRipsNeedAnalysis = visiblePipelineItems.some((item) =>
     item.stage === 'identify'
     && item.state === 'review_required'
-    && ['missing_season_context', 'unmatched_disc_analysis_required', 'all_season_analysis_failed', 'all_season_sequence_review_required'].includes(item.review_code || '')
+    && ['missing_season_context', 'unmatched_disc_analysis_required', 'all_season_analysis_failed', 'all_season_series_not_found', 'all_season_evidence_failed', 'all_season_catalog_unavailable', 'all_season_sequence_review_required'].includes(item.review_code || '')
   );
   const existingRipsInPipeline = existingRipsRestarted || visiblePipelineItems.some(
     (item) => item.disc_fingerprint === selectedDiscFingerprint && item.media_id.includes('-recovery-'),
@@ -1596,6 +1602,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
   const suggestedUnmatchedSeries = selectedDriveLabel
     .replace(/[_-]+/g, ' ')
     .replace(/\b(?:DVD|DISC|DISK|VOLUME|VOL)\s*\d+\b.*$/i, '')
+    .replace(/\bCSR\s+DIM\s*\d+\b.*$/i, '')
     .replace(/\bSEASON\s*\d+\b.*$/i, '')
     .replace(/\s+\d+\s*$/i, '')
     .replace(/\s+/g, ' ')
@@ -1854,11 +1861,18 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                   {drive.has_disc && job?.state === 'running' && (
                     <div className="rounded-lg border border-blue-400/30 bg-blue-400/10 p-3 text-sm text-blue-100">
                       <div className="flex items-center justify-between gap-3">
-                        <span className="font-semibold">MakeMKV ripping</span>
-                        <span>{job.rip_progress_percent ?? 0}%{job.rip_transfer_mib_s ? ` · ${job.rip_transfer_mib_s.toFixed(2)} MiB/s` : ''}</span>
+                        <span className="font-semibold">Whole disc</span>
+                        <span>{job.rip_overall_progress_percent ?? 0}%{job.rip_completed_title_count !== null && job.rip_completed_title_count !== undefined ? ` · ${job.rip_completed_title_count} of ${job.rip_total_title_count ?? 0} titles finished` : ''}</span>
                       </div>
                       <div className="mt-2 h-2 overflow-hidden rounded bg-black/30">
-                        <div className="h-full bg-blue-400 transition-all" style={{ width: `${job.rip_progress_percent ?? 0}%` }} />
+                        <div className="h-full bg-blue-400 transition-all" style={{ width: `${job.rip_overall_progress_percent ?? 0}%` }} />
+                      </div>
+                      <div className="mt-3 flex items-center justify-between gap-3 text-xs text-blue-100/80">
+                        <span>{job.rip_progress_scope === 'batch' || job.rip_progress_scope === 'batch-phase' ? 'Current MakeMKV phase' : 'Current title'}</span>
+                        <span>{job.rip_progress_percent ?? 0}%{job.rip_transfer_mib_s ? ` · ${job.rip_transfer_mib_s.toFixed(2)} MiB/s` : ''}</span>
+                      </div>
+                      <div className="mt-1 h-1.5 overflow-hidden rounded bg-black/30">
+                        <div className="h-full bg-cyan-300 transition-all" style={{ width: `${job.rip_progress_percent ?? 0}%` }} />
                       </div>
                       <div className="mt-1 text-xs text-blue-100/70">{job.rip_progress_scope && job.rip_progress_scope !== 'batch' ? `${job.rip_progress_scope} · ` : ''}rate appears after two MakeMKV progress samples.</div>
                       {job.rip_progress_updated_at && Date.now() - Date.parse(job.rip_progress_updated_at) > 120000 && (
@@ -2094,7 +2108,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
               <div className="font-semibold">Active MakeMKV rip work</div>
               {visibleRipJobs.map((job) => (
                 <div key={job.job_id} className="rounded border border-blue-300/20 bg-black/10 p-3">
-                  <div>{job.state === 'running' ? `MakeMKV is ripping now${job.rip_progress_percent !== null && job.rip_progress_percent !== undefined ? ` · ${job.rip_progress_percent}%` : ''}${job.rip_transfer_mib_s ? ` · ${job.rip_transfer_mib_s.toFixed(2)} MiB/s` : ''}.` : job.state === 'pause_requested' ? 'The rip will pause safely after active work settles.' : 'The reviewed rip is waiting to start.'}</div>
+                  <div>{job.state === 'running' ? `MakeMKV is ripping now${job.rip_overall_progress_percent !== null && job.rip_overall_progress_percent !== undefined ? ` · whole disc ${job.rip_overall_progress_percent}%` : ''}${job.rip_progress_percent !== null && job.rip_progress_percent !== undefined ? ` · current title ${job.rip_progress_percent}%` : ''}${job.rip_transfer_mib_s ? ` · ${job.rip_transfer_mib_s.toFixed(2)} MiB/s` : ''}.` : job.state === 'pause_requested' ? 'The rip will pause safely after active work settles.' : 'The reviewed rip is waiting to start.'}</div>
                   <div className="mt-1 text-xs text-blue-100/75">
                     {job.preview?.jobs.length ?? 0} reviewed title(s). Each title enters identification only after its MKV finishes and verifies, so the downstream list may remain unchanged during a long title.
                   </div>
@@ -2105,7 +2119,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
               ))}
             </div>
           )}
-          {!queueOnly && !attentionOnly && visiblePipelineItems.some((item) => ['missing_season_context', 'unmatched_disc_analysis_required', 'all_season_analysis_failed', 'all_season_sequence_review_required'].includes(item.review_code || '')) && (
+          {!queueOnly && !attentionOnly && visiblePipelineItems.some((item) => ['missing_season_context', 'unmatched_disc_analysis_required', 'all_season_analysis_failed', 'all_season_series_not_found', 'all_season_evidence_failed', 'all_season_catalog_unavailable', 'all_season_sequence_review_required'].includes(item.review_code || '')) && (
             <div className="rounded-lg border border-indigo-400/30 bg-indigo-400/10 p-3 text-sm text-indigo-100 space-y-2">
               <div className="font-semibold">{suggestedSeason === null ? 'Run general all-season episode matching' : `Run Season ${suggestedSeason} episode matching`}</div>
               <p>{suggestedSeason === null ? 'The disc has no reliable season context. The matcher will compare the complete ordered disc sequence against every aired episode for the reviewed series.' : `The disc label explicitly identifies Season ${suggestedSeason}. The matcher will restrict candidates to that season.`} It transcribes each title once, queues confident results, and does not use a saved disc layout.</p>
@@ -2200,7 +2214,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
           {visiblePipelineItems.some((item) => item.state === 'review_required' && item.review_code !== 'all_season_analysis_running') && (
             <div className="rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-sm text-amber-100 space-y-2">
               <div className="font-semibold">Review choices required</div>
-              {visiblePipelineItems.some((item) => ['missing_season_context', 'unmatched_disc_analysis_required', 'all_season_analysis_failed', 'all_season_sequence_review_required'].includes(item.review_code || '')) && (
+              {visiblePipelineItems.some((item) => ['missing_season_context', 'unmatched_disc_analysis_required', 'all_season_analysis_failed', 'all_season_series_not_found', 'all_season_evidence_failed', 'all_season_catalog_unavailable', 'all_season_sequence_review_required'].includes(item.review_code || '')) && (
                 <div>Episode identification needs a series/season analysis choice. Use the analysis panel above.</div>
               )}
               {visiblePipelineItems.some((item) => item.review_code === 'library_collision') && (
@@ -2302,9 +2316,12 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                           <button type="button" className="btn text-xs border border-red-400/50 bg-red-500/15 text-red-100 hover:bg-red-500/25" disabled={controlling} onClick={() => deleteQueuedStagedSource(item)}>Delete staged rip permanently</button>
                         </div>
                       </div>
-                    ) : ['missing_season_context', 'unmatched_disc_analysis_required', 'all_season_analysis_failed', 'all_season_sequence_review_required'].includes(item.review_code || '') ? (
+                    ) : ['missing_season_context', 'unmatched_disc_analysis_required', 'all_season_analysis_failed', 'all_season_series_not_found', 'all_season_evidence_failed', 'all_season_catalog_unavailable', 'all_season_sequence_review_required'].includes(item.review_code || '') ? (
                       <div className="max-w-md rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-100">
                         <div>This title needs episode-sequence analysis before it can continue.</div>
+                        {item.review_code === 'all_season_catalog_unavailable' && <div className="mt-2">TMDb did not return an aired episode catalogue for the reviewed series name. Open the disc dashboard, confirm the canonical series name, and retry.</div>}
+                        {item.review_code === 'all_season_series_not_found' && <div className="mt-2">No TMDb television series matched the canonical series name. Correct the series name on the Disc Dashboard and retry.</div>}
+                        {item.review_code === 'all_season_evidence_failed' && <div className="mt-2">Audio evidence collection failed before episode matching began. Review the server diagnostic for the safe failure category, then retry.</div>}
                         <div className="mt-3 flex flex-wrap gap-2">
                           {item.staged_source_available && (
                             <>
@@ -2341,7 +2358,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                       </div>
                     ) : item.review_code === 'play_all_aggregate_detected' ? (
                       <div className="mt-2">This unmatched file closely matches the combined runtime and size of already matched contiguous episodes. It is being preserved as a likely play-all aggregate and is excluded from the missing-episode count.</div>
-                    ) : ['special_feature_evidence_required', 'gemini_evidence_required', 'gemini_analysis_running', 'gemini_analysis_failed', 'gemini_audio_evidence_insufficient', 'gemini_catalog_unavailable', 'gemini_provider_failed', 'gemini_credential_rejected', 'gemini_rate_limited', 'gemini_provider_unavailable', 'gemini_request_rejected', 'gemini_network_failed', 'gemini_response_invalid', 'gemini_descriptive_review_required', 'special_feature_manual_assignment_required'].includes(item.review_code || '') ? (
+                    ) : ['special_feature_evidence_required', 'gemini_evidence_required', 'gemini_analysis_running', 'gemini_analysis_failed', 'gemini_audio_evidence_insufficient', 'gemini_catalog_unavailable', 'gemini_provider_failed', 'gemini_credential_rejected', 'gemini_rate_limited', 'gemini_provider_unavailable', 'gemini_request_rejected', 'gemini_network_failed', 'gemini_response_invalid', 'gemini_series_resolution_uncertain', 'gemini_descriptive_review_required', 'special_feature_manual_assignment_required'].includes(item.review_code || '') ? (
                       <div className="max-w-md rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-100">
                         <div>This title has two or more plausible bonus-feature names. It remains held; unrelated titles can continue through the queue.</div>
                         {item.review_code === 'gemini_evidence_required' && <div className="mt-2">Gemini fallback selected. Local evidence must be prepared first; selecting this did not contact Gemini or start HandBrake.</div>}
@@ -2357,6 +2374,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                         {item.review_code === 'gemini_request_rejected' && <div className="mt-2">Gemini rejected the model/request combination. Check model availability and request compatibility.</div>}
                         {item.review_code === 'gemini_network_failed' && <div className="mt-2">RipWeaver could not reach Gemini after bounded retries. Check DNS, firewall, proxy, and internet access.</div>}
                         {item.review_code === 'gemini_response_invalid' && <div className="mt-2">Gemini responded, but its structured episode assignments did not pass validation.</div>}
+                        {item.review_code === 'gemini_series_resolution_uncertain' && <div className="mt-2">Gemini could not resolve the disc label to one TMDb-validated television series with sufficient confidence. Confirm the canonical series name on the Disc Dashboard and retry.</div>}
                         {item.review_code === 'gemini_analysis_running' && geminiProgress[item.media_id] && <div className="mt-2 rounded border border-blue-400/30 bg-blue-400/10 p-2 text-blue-100">{geminiProgress[item.media_id]}</div>}
                         {item.review_code === 'special_feature_manual_assignment_required' && <div className="mt-2">Manual feature-name assignment selected.</div>}
                         <div className="mt-3 flex flex-wrap gap-2">

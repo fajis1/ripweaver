@@ -1323,7 +1323,11 @@ class PipelineQueueStore:
             "special_feature_evidence_required",
             "all_season_analysis_running",
             "all_season_analysis_failed",
+            "all_season_series_not_found",
+            "all_season_evidence_failed",
+            "all_season_catalog_unavailable",
             "all_season_sequence_review_required",
+            "gemini_series_resolution_uncertain",
             "play_all_aggregate_detected",
         }:
             raise PipelineQueueError("Pipeline review choice is invalid")
@@ -1358,7 +1362,11 @@ class PipelineQueueStore:
                     "unmatched_disc_analysis_required",
                     "all_season_analysis_running",
                     "all_season_analysis_failed",
+                    "all_season_series_not_found",
+                    "all_season_evidence_failed",
+                    "all_season_catalog_unavailable",
                     "all_season_sequence_review_required",
+                    "gemini_series_resolution_uncertain",
                 }
             ):
                 connection.rollback()
@@ -1406,7 +1414,11 @@ class PipelineQueueStore:
                     "unmatched_disc_analysis_required",
                     "all_season_analysis_running",
                     "all_season_analysis_failed",
+                    "all_season_series_not_found",
+                    "all_season_evidence_failed",
+                    "all_season_catalog_unavailable",
                     "all_season_sequence_review_required",
+                    "gemini_series_resolution_uncertain",
                 }
             ):
                 connection.rollback()
@@ -1544,6 +1556,32 @@ class PipelineQueueStore:
                     event_type="stage_restart_requeued",
                     stage=row["stage"],
                     state="queued",
+                )
+                recovered.append(row["media_id"])
+            interrupted_reviews = connection.execute(
+                """
+                SELECT media_id FROM pipeline_items
+                WHERE state = 'review_required'
+                  AND stage = 'identify'
+                  AND review_code = 'all_season_analysis_running'
+                """
+            ).fetchall()
+            for row in interrupted_reviews:
+                connection.execute(
+                    """
+                    UPDATE pipeline_items
+                    SET review_code = 'all_season_analysis_failed', updated_at = ?
+                    WHERE media_id = ?
+                    """,
+                    (self._now(), row["media_id"]),
+                )
+                self._append_event(
+                    connection,
+                    media_id=row["media_id"],
+                    event_type="analysis_restart_review_required",
+                    stage="identify",
+                    state="review_required",
+                    details={"review_code": "all_season_analysis_failed"},
                 )
                 recovered.append(row["media_id"])
             connection.commit()

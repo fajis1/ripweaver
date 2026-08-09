@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 from mkv_episode_matcher.backend.automatic_rip import (
+    _AUTOMATIC_UNMATCHED_CODES,
     AutomaticRipCoordinator,
     _automatic_series_name,
     _has_prior_disc_work,
@@ -39,6 +40,12 @@ def test_automatic_series_name_recovers_disc_label_without_using_volume_as_seaso
         )
         == "Reviewed Series"
     )
+
+
+def test_failed_all_season_analysis_requires_explicit_retry():
+    assert "unmatched_disc_analysis_required" in _AUTOMATIC_UNMATCHED_CODES
+    assert "all_season_analysis_failed" not in _AUTOMATIC_UNMATCHED_CODES
+    assert "all_season_analysis_running" not in _AUTOMATIC_UNMATCHED_CODES
 
 
 def test_insertions_launch_once_and_removal_rearms_drive(monkeypatch):

@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from mkv_episode_matcher.backend.routers.rip import _job_response
 from mkv_episode_matcher.disc.orchestration_store import OrchestrationStore
 from mkv_episode_matcher.disc.rip_manifest import MediaContext
 from mkv_episode_matcher.disc.rip_preview import build_rip_preview
@@ -185,6 +186,84 @@ def test_running_job_records_path_free_progress_and_updates_timestamp(tmp_path):
         "scope": "disc-01-title-000",
     }
     assert store.get_job(job.job_id).updated_at >= job.updated_at
+
+
+def test_job_response_reports_size_weighted_whole_disc_progress(tmp_path):
+    preview, _report, _root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+    job = store.create_job(preview, idempotency_key="create-overall-progress-0001")
+    store.authorize(
+        job.job_id,
+        expected_plan_sha256=job.plan_sha256,
+        idempotency_key="authorize-overall-progress-0001",
+    )
+    store.queue(job.job_id, idempotency_key="queue-overall-progress-0001")
+    store.claim_for_dispatch(
+        job.job_id, idempotency_key="claim-overall-progress-0001"
+    )
+    first, second, _third = preview.jobs
+
+    store.record_progress(job.job_id, "progress", f"{first.job_id}: 100%")
+    store.record_progress(job.job_id, "completed", f"{first.job_id}: completed")
+    store.record_progress(job.job_id, "progress", f"{second.job_id}: 50%")
+
+    response = _job_response(store.get_job(job.job_id), store)
+
+    assert response["rip_progress_percent"] == 50
+    assert response["rip_progress_scope"] == second.job_id
+    assert response["rip_overall_progress_percent"] == 50
+    assert response["rip_completed_title_count"] == 1
+    assert response["rip_total_title_count"] == 3
+
+
+def test_job_response_uses_batch_progress_as_whole_disc_progress(tmp_path):
+    preview, _report, _root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+    job = store.create_job(preview, idempotency_key="create-batch-progress-0001")
+    store.authorize(
+        job.job_id,
+        expected_plan_sha256=job.plan_sha256,
+        idempotency_key="authorize-batch-progress-0001",
+    )
+    store.queue(job.job_id, idempotency_key="queue-batch-progress-0001")
+    store.claim_for_dispatch(job.job_id, idempotency_key="claim-batch-progress-0001")
+
+    store.record_progress(job.job_id, "progress", "batch: 37%")
+
+    response = _job_response(store.get_job(job.job_id), store)
+
+    assert response["rip_progress_percent"] == 37
+    assert response["rip_overall_progress_percent"] == 37
+    assert response["rip_completed_title_count"] == 0
+    assert response["rip_total_title_count"] == 3
+
+
+def test_job_response_separates_batch_phase_from_monotonic_overall_progress(
+    tmp_path,
+):
+    preview, _report, _root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+    job = store.create_job(preview, idempotency_key="create-batch-overall-0001")
+    store.authorize(
+        job.job_id,
+        expected_plan_sha256=job.plan_sha256,
+        idempotency_key="authorize-batch-overall-0001",
+    )
+    store.queue(job.job_id, idempotency_key="queue-batch-overall-0001")
+    store.claim_for_dispatch(job.job_id, idempotency_key="claim-batch-overall-0001")
+
+    store.record_progress(job.job_id, "progress", "batch-phase: 100%")
+    store.record_progress(job.job_id, "progress", "overall: 19%")
+    first_scope = preview.jobs[0].job_id
+    store.record_progress(job.job_id, "output-closed", f"{first_scope}: completed")
+    store.record_progress(job.job_id, "progress", "batch-phase: 40%")
+
+    response = _job_response(store.get_job(job.job_id), store)
+
+    assert response["rip_progress_percent"] == 40
+    assert response["rip_progress_scope"] == "batch-phase"
+    assert response["rip_overall_progress_percent"] == 19
+    assert response["rip_completed_title_count"] == 1
 
 
 def test_pipeline_settings_are_idempotent_and_changeable_while_running(tmp_path):

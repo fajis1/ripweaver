@@ -258,6 +258,21 @@ def test_restart_requeues_interrupted_stage_and_preserves_contract(tmp_path):
     assert recovered.artifact == original
 
 
+def test_restart_restores_interrupted_all_season_analysis_to_review(tmp_path):
+    store = _store(tmp_path)
+    original = _artifact(tmp_path, "media-1", "rip")
+    store.enqueue_verified_rip("media-1", original)
+    store.claim_next()
+    store.require_review("media-1", "unmatched_disc_analysis_required")
+    store.choose_review_path("media-1", "all_season_analysis_running")
+
+    reopened = PipelineQueueStore(store.database_path)
+    assert reopened.reconcile_incomplete() == ("media-1",)
+    recovered = reopened.get("media-1")
+    assert recovered.state == "review_required"
+    assert recovered.review_code == "all_season_analysis_failed"
+
+
 def test_changed_contract_and_path_leaking_events_are_refused(tmp_path):
     store = _store(tmp_path)
     original = _artifact(tmp_path, "media-1", "rip")

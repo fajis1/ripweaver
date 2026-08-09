@@ -319,7 +319,7 @@ def _attempt_stream(
 
 def _collection_windows(
     item: TranscriptBatchItem,
-    sampling_mode: Literal["standard", "intro"],
+    sampling_mode: Literal["standard", "expanded", "intro"],
     *,
     intro_start_seconds: float,
 ) -> tuple[SampleWindow, ...]:
@@ -328,6 +328,24 @@ def _collection_windows(
             item.media,
             media_id=item.file_id,
         ).sample_windows
+    if sampling_mode == "expanded":
+        duration = item.media.duration_seconds
+        sample_duration = min(30, max(5, round(duration)))
+        latest_start = max(0.0, duration - sample_duration)
+        starts = {
+            round(
+                min(
+                    latest_start,
+                    max(0.0, duration * position / 7 - sample_duration / 2),
+                ),
+                3,
+            )
+            for position in range(1, 7)
+        }
+        return tuple(
+            SampleWindow(start_seconds=start, duration_seconds=sample_duration)
+            for start in sorted(starts)
+        )
     if sampling_mode == "intro":
         duration = min(30, max(5, round(item.media.duration_seconds)))
         latest_start = max(0.0, item.media.duration_seconds - duration)
@@ -391,7 +409,7 @@ def collect_transcript_batch(
     model_name: str,
     minimum_words: int = 8,
     maximum_streams: int = 3,
-    sampling_mode: Literal["standard", "intro"] = "standard",
+    sampling_mode: Literal["standard", "expanded", "intro"] = "standard",
     intro_start_seconds: float = 60.0,
     preferred_stream_index: int | None = None,
     temporary_directory: Callable[..., tempfile.TemporaryDirectory] = (

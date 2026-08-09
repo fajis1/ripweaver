@@ -95,6 +95,28 @@ def _batch_output_name(prefix: str, batch_ordinal: int) -> str:
     return f"{prefix}_t{batch_ordinal:0{width}d}.mkv"
 
 
+def _report_closed_batch_outputs(
+    workspace: Path,
+    plan: SingleOpenBatchPlan,
+    reported_job_ids: set[str],
+    on_event: Callable[[str, str], None] | None,
+) -> None:
+    """Report outputs MakeMKV has closed after starting the following title."""
+
+    if on_event is None:
+        return
+    for index in range(len(plan.jobs) - 1):
+        job = plan.jobs[index]
+        if job.job_id in reported_job_ids:
+            continue
+        current = workspace / plan.batch_output_names[index]
+        following = workspace / plan.batch_output_names[index + 1]
+        if not current.is_file() or current.stat().st_size <= 0 or not following.is_file():
+            break
+        reported_job_ids.add(job.job_id)
+        on_event("output-closed", f"{job.job_id}: completed")
+
+
 def plan_single_open_batch(  # noqa: C901
     jobs: tuple[RipJob, ...],
     inventory_titles: tuple[BatchInventoryTitle, ...],
@@ -309,12 +331,32 @@ def run_single_open_batch(  # noqa: C901
     warnings = 0
     fatal = False
     last_progress = -1
+    last_overall_progress = -1
+    reported_job_ids: set[str] = set()
+    estimated_total_bytes = sum(
+        int(job.estimated_bytes or 0) for job in plan.jobs
+    )
     throughput_sample = (time.monotonic(), 0)
     try:
         while not stream_finished or process.poll() is None:
             throughput_sample = sample_output_throughput(
                 workspace, throughput_sample, "batch", on_event
             )
+            _report_closed_batch_outputs(
+                workspace, plan, reported_job_ids, on_event
+            )
+            if estimated_total_bytes > 0:
+                overall_percent = min(
+                    99,
+                    int(throughput_sample[1] * 100 / estimated_total_bytes),
+                )
+                if overall_percent > last_overall_progress:
+                    last_overall_progress = overall_percent
+                    event_log.write(
+                        "batch_overall_progress", percent=overall_percent
+                    )
+                    if on_event is not None:
+                        on_event("progress", f"overall: {overall_percent}%")
             if cancel_file is not None and cancel_file.exists():
                 event_log.write("batch_cancel_requested")
                 _stop_process(process)
@@ -350,7 +392,7 @@ def run_single_open_batch(  # noqa: C901
                     last_progress = percent
                     event_log.write("batch_progress", percent=percent)
                     if on_event is not None:
-                        on_event("progress", f"batch: {percent}%")
+                        on_event("progress", f"batch-phase: {percent}%")
             elif level == "warning" and on_event is not None:
                 on_event(level, line)
     except KeyboardInterrupt as exc:
@@ -417,6 +459,8 @@ def run_single_open_batch(  # noqa: C901
             finished_at=finished.isoformat(),
         )
         event_log.write("job_completed", **asdict(result))
+        if on_event is not None:
+            on_event("completed", f"{job.job_id}: completed")
         results.append(result)
     event_log.write("batch_completed", completed_count=len(results))
     return results

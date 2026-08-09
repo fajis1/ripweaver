@@ -286,6 +286,9 @@ class OrchestrationJobResponse(BaseModel):
     rip_transfer_mib_s: float | None = None
     rip_progress_scope: str | None = None
     rip_progress_updated_at: str | None = None
+    rip_overall_progress_percent: int | None = None
+    rip_completed_title_count: int | None = None
+    rip_total_title_count: int | None = None
 
 
 class OrchestrationEventResponse(BaseModel):
@@ -1411,15 +1414,39 @@ def _pipeline_item_display_name(item) -> str | None:
     except (OSError, json.JSONDecodeError):
         return None
     relative = payload.get("library_relative")
-    if not isinstance(relative, str) or not relative.strip():
+    if isinstance(relative, str) and relative.strip():
+        parts = tuple(part for part in relative.replace("\\", "/").split("/") if part)
+        if parts and not any(part in {".", ".."} for part in parts):
+            name = parts[-1]
+            if name.casefold().endswith(".mkv"):
+                name = name[:-4]
+            return name.strip() or None
+
+    context = payload.get("media_context")
+    title_index = payload.get("title_index")
+    if not isinstance(context, dict) or not isinstance(title_index, int):
         return None
-    parts = tuple(part for part in relative.replace("\\", "/").split("/") if part)
-    if not parts or any(part in {".", ".."} for part in parts):
+    series_name = context.get("series_name")
+    assignments = context.get("episode_assignments")
+    if not isinstance(series_name, str) or not isinstance(assignments, list):
         return None
-    name = parts[-1]
-    if name.casefold().endswith(".mkv"):
-        name = name[:-4]
-    return name.strip() or None
+    for assignment in assignments:
+        if not isinstance(assignment, dict) or assignment.get("title_index") != title_index:
+            continue
+        season = assignment.get("season")
+        episode = assignment.get("episode")
+        title = assignment.get("title")
+        if (
+            isinstance(season, int)
+            and isinstance(episode, int)
+            and isinstance(title, str)
+            and title.strip()
+        ):
+            return (
+                f"{' '.join(series_name.split())} - "
+                f"S{season:02d}E{episode:02d} - {' '.join(title.split())}"
+            )
+    return None
 
 
 def _pipeline_item_location(item) -> tuple[str, str | None, str | None]:
@@ -1641,6 +1668,94 @@ _RIP_RECOMMENDATIONS = {
 }
 
 
+def _aggregate_rip_progress(job, events) -> dict[str, int | str | None]:
+    preview_jobs = [
+        item for item in job.preview.get("jobs", []) if isinstance(item, dict)
+    ]
+    samples = [event for event in events if event.event_type == "rip_progress"]
+    completed_scopes = {
+        str(event.details.get("scope", ""))
+        for event in events
+        if event.event_type in {"rip_title_completed", "rip_title_output_closed"}
+    }
+    fields: dict[str, int | str | None] = {
+        "rip_progress_percent": None,
+        "rip_progress_scope": None,
+        "rip_overall_progress_percent": None,
+        "rip_completed_title_count": None,
+        "rip_total_title_count": len(preview_jobs),
+    }
+    if not samples:
+        if job.state == "completed":
+            fields["rip_overall_progress_percent"] = 100
+            fields["rip_completed_title_count"] = len(preview_jobs)
+        return fields
+
+    active_samples = [
+        event
+        for event in samples
+        if str(event.details.get("scope", "")) != "overall"
+    ]
+    latest = active_samples[-1] if active_samples else samples[-1]
+    scope = str(latest.details.get("scope", "batch"))
+    fields["rip_progress_percent"] = int(latest.details.get("percent", 0))
+    fields["rip_progress_scope"] = scope
+    latest_by_scope = {
+        str(event.details.get("scope", "")): int(event.details.get("percent", 0))
+        for event in samples
+    }
+    if "overall" in latest_by_scope:
+        fields["rip_overall_progress_percent"] = latest_by_scope["overall"]
+        fields["rip_completed_title_count"] = len(completed_scopes)
+        if job.state == "completed":
+            fields["rip_overall_progress_percent"] = 100
+            fields["rip_completed_title_count"] = len(preview_jobs)
+        return fields
+    if "batch" in latest_by_scope:
+        if job.state == "completed":
+            fields["rip_overall_progress_percent"] = 100
+            fields["rip_completed_title_count"] = len(preview_jobs)
+        else:
+            fields["rip_overall_progress_percent"] = latest_by_scope["batch"]
+            fields["rip_completed_title_count"] = len(completed_scopes)
+        return fields
+    if not preview_jobs:
+        return fields
+
+    known_weights = [
+        int(item["estimated_bytes"])
+        for item in preview_jobs
+        if isinstance(item.get("estimated_bytes"), int)
+        and int(item["estimated_bytes"]) > 0
+    ]
+    fallback_weight = (
+        sorted(known_weights)[len(known_weights) // 2] if known_weights else 1
+    )
+    weighted_progress = 0
+    total_weight = 0
+    completed_titles = 0
+    for item in preview_jobs:
+        estimated = item.get("estimated_bytes")
+        weight = (
+            int(estimated)
+            if isinstance(estimated, int) and estimated > 0
+            else fallback_weight
+        )
+        item_scope = str(item.get("job_id"))
+        item_percent = (
+            100 if item_scope in completed_scopes else latest_by_scope.get(item_scope, 0)
+        )
+        weighted_progress += weight * item_percent
+        total_weight += weight
+        completed_titles += int(item_scope in completed_scopes)
+    fields["rip_overall_progress_percent"] = round(weighted_progress / total_weight)
+    fields["rip_completed_title_count"] = completed_titles
+    if job.state == "completed":
+        fields["rip_overall_progress_percent"] = 100
+        fields["rip_completed_title_count"] = len(preview_jobs)
+    return fields
+
+
 def _job_response(job, store: OrchestrationStore | None = None) -> dict[str, object]:
     response = asdict(job)
     response.update({
@@ -1653,18 +1768,14 @@ def _job_response(job, store: OrchestrationStore | None = None) -> dict[str, obj
         "rip_transfer_mib_s": None,
         "rip_progress_scope": None,
         "rip_progress_updated_at": None,
+        "rip_overall_progress_percent": None,
+        "rip_completed_title_count": None,
+        "rip_total_title_count": None,
     })
     if store is not None:
         events = store.list_events(job.job_id)
         samples = [event for event in events if event.event_type == "rip_progress"]
-        if samples:
-            latest = samples[-1]
-            scope = str(latest.details.get("scope", "batch"))
-            percent = int(latest.details.get("percent", 0))
-            response.update({
-                "rip_progress_percent": percent,
-                "rip_progress_scope": scope,
-            })
+        response.update(_aggregate_rip_progress(job, events))
         throughput = next(
             (
                 event
@@ -2545,7 +2656,7 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
             status_code=400,
             detail="Media-read and episode-catalogue lookup confirmations are required",
         )
-    series_name = " ".join(request.series_name.split())
+    requested_series_name = " ".join(request.series_name.split())
     selected_by_title = {}
     for item in store.list_items():
         title_match = re.search(r"-title-(\d{3})(?:-|$)", item.media_id)
@@ -2560,6 +2671,9 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
                 "missing_season_context",
                 "unmatched_disc_analysis_required",
                 "all_season_analysis_failed",
+                "all_season_series_not_found",
+                "all_season_evidence_failed",
+                "all_season_catalog_unavailable",
                 "all_season_sequence_review_required",
                 "gemini_descriptive_review_required",
                 "gemini_analysis_failed",
@@ -2572,6 +2686,7 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
                 "gemini_request_rejected",
                 "gemini_network_failed",
                 "gemini_response_invalid",
+                "gemini_series_resolution_uncertain",
             }
         ):
             continue
@@ -2586,9 +2701,29 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
         raise HTTPException(
             status_code=409, detail="No unmatched disc titles are ready"
         )
+    contract_series_names: set[str] = set()
+    for media_id in selected:
+        try:
+            payload = json.loads(
+                store.rip_artifact(media_id).contract_path.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError, PipelineQueueError):
+            continue
+        context = payload.get("media_context")
+        candidate = context.get("series_name") if isinstance(context, dict) else None
+        if (
+            isinstance(candidate, str)
+            and candidate.strip()
+            and candidate.strip().casefold() not in {"unmatched", "unknown", "series"}
+        ):
+            contract_series_names.add(" ".join(candidate.split()))
+    series_name = (
+        next(iter(contract_series_names))
+        if len(contract_series_names) == 1
+        else requested_series_name
+    )
     for media_id in selected:
         store.choose_review_path(media_id, "all_season_analysis_running")
-    store.set_paused(False)
 
     def run() -> None:
         try:
@@ -2602,6 +2737,7 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
                 contract_root,
                 season=request.season,
                 allow_gemini=request.confirm_external_fallback,
+                allow_content_fallback=False,
             )
         except Exception as exc:
             if isinstance(exc, GeminiAnalysisError):
@@ -2619,9 +2755,25 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
                     "All-season disc analysis failed safely: {}", diagnostic
                 )
                 code = (
-                    "all_season_sequence_review_required"
-                    if str(exc) == "All-season sequence result requires review"
-                    else "all_season_analysis_failed"
+                    {
+                        "No TV series matched the reviewed series name": (
+                            "all_season_series_not_found"
+                        ),
+                        "TMDb returned no aired episodes for the resolved TV series": (
+                            "all_season_catalog_unavailable"
+                        ),
+                        "Episode catalogue is unavailable for the reviewed scope": (
+                            "all_season_catalog_unavailable"
+                        ),
+                        "Audio evidence collection failed before episode matching": (
+                            "all_season_evidence_failed"
+                        ),
+                    }.get(
+                        str(exc),
+                        "all_season_sequence_review_required"
+                        if str(exc) == "All-season sequence result requires review"
+                        else "all_season_analysis_failed",
+                    )
                 )
             for media_id in selected:
                 try:
@@ -2631,7 +2783,11 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
                     pass
 
     threading.Thread(target=run, name="all-season-disc-analysis", daemon=True).start()
-    return {"started": True, "item_count": len(selected)}
+    return {
+        "started": True,
+        "item_count": len(selected),
+        "series_name": series_name,
+    }
 
 
 @router.post("/pipeline/classify-unmatched-disc")
@@ -3347,7 +3503,7 @@ def verify_existing_rip_candidates(
             media_id_overrides={
                 job.job_id: (
                     f"{Path(candidate.basename).stem}-recovery-"
-                    f"{candidate.candidate_id[:12]}"
+                    f"{candidate.candidate_id[:8]}-{uuid4().hex[:8]}"
                 )
                 for job, candidate in zip(jobs, candidates, strict=True)
             },

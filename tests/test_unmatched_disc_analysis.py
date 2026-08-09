@@ -5,12 +5,93 @@ import pytest
 
 from mkv_episode_matcher.backend import unmatched_disc_analysis as analysis
 from mkv_episode_matcher.core.credentials import ApiCredentialError, ApiServiceError
+from mkv_episode_matcher.core.models import EpisodeInfo, SubtitleFile
 from mkv_episode_matcher.media.episode_catalog import EpisodeCatalogEntry
 from mkv_episode_matcher.media.gemini_matcher import (
     GeminiResponseError,
     UnmatchedFileEvidence,
 )
+from mkv_episode_matcher.media.gemini_series_resolver import GeminiSeriesResolution
 from mkv_episode_matcher.pipeline_queue import PipelineQueueStore, build_artifact
+from mkv_episode_matcher.tmdb_client import TvShowCandidate
+
+
+def _show(tmdb_id: int, name: str) -> TvShowCandidate:
+    return TvShowCandidate(tmdb_id, name, name, 1960, "Animated family sitcom")
+
+
+def _episode_catalog() -> tuple[EpisodeCatalogEntry, ...]:
+    return (EpisodeCatalogEntry("S01E01", 1, 1, "Pilot", "", 1500),)
+
+
+def test_series_catalog_uses_one_exact_tmdb_name_without_gemini(monkeypatch):
+    monkeypatch.setattr(
+        analysis,
+        "search_tv_show_candidates",
+        lambda _name: (_show(33, "The Flintstones"), _show(44, "Flintstone Kids")),
+    )
+    monkeypatch.setattr(
+        analysis, "fetch_aired_episode_catalog", lambda show_id: _episode_catalog()
+    )
+
+    name, catalog = analysis.resolve_series_catalog(
+        "The Flintstones",
+        SimpleNamespace(gemini_model="test", min_confidence=0.7),
+        allow_gemini=True,
+    )
+
+    assert name == "The Flintstones"
+    assert catalog == _episode_catalog()
+
+
+def test_series_catalog_uses_gemini_to_choose_ambiguous_tmdb_candidate(monkeypatch):
+    candidates = (_show(33, "The Flintstones"), _show(44, "Flintstone Kids"))
+    monkeypatch.setattr(analysis, "search_tv_show_candidates", lambda _name: candidates)
+    monkeypatch.setattr(
+        analysis, "fetch_aired_episode_catalog", lambda show_id: _episode_catalog()
+    )
+    resolver = SimpleNamespace(
+        resolve_with_configured_keys=lambda _hint, _candidates: GeminiSeriesResolution(
+            33, "The Flintstones", 0.95, ("Packaging marker removed.",)
+        )
+    )
+    monkeypatch.setattr(analysis, "GeminiSeriesResolver", lambda **_kwargs: resolver)
+
+    name, _catalog = analysis.resolve_series_catalog(
+        "Flintstones complete collection",
+        SimpleNamespace(gemini_model="test", min_confidence=0.7),
+        allow_gemini=True,
+    )
+
+    assert name == "The Flintstones"
+
+
+def test_series_catalog_validates_gemini_proposed_name_through_tmdb(monkeypatch):
+    calls = []
+
+    def search(name):
+        calls.append(name)
+        return () if len(calls) == 1 else (_show(33, "The Flintstones"),)
+
+    monkeypatch.setattr(analysis, "search_tv_show_candidates", search)
+    monkeypatch.setattr(
+        analysis, "fetch_aired_episode_catalog", lambda show_id: _episode_catalog()
+    )
+    resolver = SimpleNamespace(
+        resolve_with_configured_keys=lambda _hint, _candidates: GeminiSeriesResolution(
+            None, "The Flintstones", 0.95, ("Canonical title inferred.",)
+        )
+    )
+    monkeypatch.setattr(analysis, "GeminiSeriesResolver", lambda **_kwargs: resolver)
+
+    name, _catalog = analysis.resolve_series_catalog(
+        "The Flintstones CSR DIM2",
+        SimpleNamespace(gemini_model="test", min_confidence=0.7),
+        allow_gemini=True,
+    )
+
+    assert calls == ["The Flintstones CSR DIM2", "The Flintstones"]
+    assert name == "The Flintstones"
 
 
 @pytest.mark.parametrize(
@@ -111,6 +192,119 @@ def test_assigned_disc_episodes_reads_identification_history(tmp_path):
     assert analysis.assigned_disc_episodes(store, fingerprint) == frozenset({(1, 4)})
 
 
+def test_dominant_season_scope_tries_previous_near_season_start():
+    catalog = tuple(
+        EpisodeCatalogEntry(
+            f"S{season:02d}E{episode:02d}", season, episode, "", "", 1200
+        )
+        for season in (1, 2, 3)
+        for episode in range(1, 11)
+    )
+
+    assert analysis.dominant_season_scope(
+        frozenset({(2, 1), (2, 2), (2, 3)}), catalog
+    ) == (2, 1)
+    assert analysis.dominant_season_scope(
+        frozenset({(2, 8), (2, 9), (2, 10)}), catalog
+    ) == (2, 3)
+
+
+def test_opensubtitles_matches_independently_and_only_falls_forward(tmp_path):
+    catalog = tuple(
+        EpisodeCatalogEntry(f"S0{season}E01", season, 1, str(season), "", 1200)
+        for season in (1, 2)
+    )
+    files = (
+        UnmatchedFileEvidence("late-title", 1200, ("alpha dialogue",)),
+        UnmatchedFileEvidence("early-title", 1200, ("beta dialogue",)),
+    )
+    calls = []
+
+    class Provider:
+        def get_subtitles(self, _series, season, _files, _tmdb_id):
+            calls.append(season)
+            text = "alpha dialogue" if season == 1 else "beta dialogue"
+            path = tmp_path / f"season-{season}.srt"
+            path.write_text("", encoding="utf-8")
+            return [
+                SubtitleFile(
+                    path=path,
+                    content=text,
+                    episode_info=EpisodeInfo(
+                        series_name="Example", season=season, episode=1
+                    ),
+                )
+            ]
+
+    class ASR:
+        @staticmethod
+        def calculate_match_score(transcript, reference):
+            return 0.95 if transcript in reference else 0.1
+
+    matched, _diagnostics = analysis.match_opensubtitles_seasons(
+        files,
+        catalog,
+        "Example",
+        1,
+        (1, 2),
+        ASR(),
+        min_confidence=0.7,
+        provider_factory=Provider,
+    )
+
+    assert calls == [1, 2]
+    assert matched["late-title"].episode_id == "S01E01"
+    assert matched["early-title"].episode_id == "S02E01"
+
+
+def test_opensubtitles_bootstraps_season_without_existing_matches(tmp_path):
+    catalog = tuple(
+        EpisodeCatalogEntry(
+            f"S{season:02d}E{episode:02d}", season, episode, "", "", 1200
+        )
+        for season in (1, 2, 3)
+        for episode in (1, 2)
+    )
+    files = (
+        UnmatchedFileEvidence("one", 1200, ("season 2 first",)),
+        UnmatchedFileEvidence("two", 1201, ("season 2 second",)),
+    )
+
+    class Provider:
+        def get_subtitles(self, _series, season, _files, _tmdb_id):
+            results = []
+            for episode in (1, 2):
+                path = tmp_path / f"s{season}e{episode}.srt"
+                path.write_text("", encoding="utf-8")
+                results.append(
+                    SubtitleFile(
+                        path=path,
+                        content=f"season {season} {'first' if episode == 1 else 'second'}",
+                        episode_info=EpisodeInfo(
+                            series_name="Example", season=season, episode=episode
+                        ),
+                    )
+                )
+            return results
+
+    class ASR:
+        @staticmethod
+        def calculate_match_score(transcript, reference):
+            return 0.95 if transcript == reference else 0.2
+
+    scope = analysis.discover_opensubtitles_season(
+        files,
+        catalog,
+        "Example",
+        1,
+        ASR(),
+        min_confidence=0.7,
+        provider=Provider(),
+    )
+
+    assert scope == (2, 3)
+
+
 def test_local_sequence_keeps_full_aired_order_when_library_has_gaps(
     tmp_path, monkeypatch
 ):
@@ -147,7 +341,12 @@ def test_local_sequence_keeps_full_aired_order_when_library_has_gaps(
         for index in range(1, 5)
     )
     monkeypatch.setattr(
-        analysis, "fetch_aired_episode_catalog_for_show", lambda _name: catalog
+        analysis,
+        "search_tv_show_candidates",
+        lambda _name: (TvShowCandidate(1, "Example Series", "", None, ""),),
+    )
+    monkeypatch.setattr(
+        analysis, "fetch_aired_episode_catalog", lambda _show_id: catalog
     )
     monkeypatch.setattr(
         analysis, "existing_library_episodes", lambda *_args: frozenset({(1, 2)})
@@ -266,7 +465,12 @@ def test_all_season_analysis_applies_sequence_without_saved_release_map(
         for index, title in enumerate(("First", "Second"))
     )
     monkeypatch.setattr(
-        analysis, "fetch_aired_episode_catalog_for_show", lambda _name: catalog
+        analysis,
+        "search_tv_show_candidates",
+        lambda _name: (TvShowCandidate(1, "Example Series", "", None, ""),),
+    )
+    monkeypatch.setattr(
+        analysis, "fetch_aired_episode_catalog", lambda _show_id: catalog
     )
 
     class FakeDossier:

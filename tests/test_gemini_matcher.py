@@ -49,6 +49,26 @@ def test_runtime_only_evidence_requests_a_provisional_best_choice():
     )
 
 
+def test_episode_request_accepts_six_bounded_excerpts_but_not_seven():
+    catalog = (EpisodeCatalogEntry("S01E01", 1, 1, "Pilot", "", 1200),)
+    build_gemini_request(
+        "gemini-test",
+        (UnmatchedFileEvidence("title-001", 1200, tuple("text" for _ in range(6))),),
+        catalog,
+    )
+
+    with pytest.raises(GeminiMatchError, match="up to six"):
+        build_gemini_request(
+            "gemini-test",
+            (
+                UnmatchedFileEvidence(
+                    "title-001", 1200, tuple("text" for _ in range(7))
+                ),
+            ),
+            catalog,
+        )
+
+
 def test_descriptive_request_is_path_free_and_classifies_mixed_titles():
     files = (
         UnmatchedFileEvidence("title-000", 7727, ("Two sisters meet at camp.",)),

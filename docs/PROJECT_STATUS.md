@@ -2627,3 +2627,48 @@ A loose folder scan cannot perform exact Riplex release-catalogue matching
 without the reviewed disc inventory and release catalogue that establish title
 representation. Smart classification therefore routes likely bonus content to
 descriptive review instead of claiming an exact release match.
+
+The Disc Dashboard now reports both current-title MakeMKV progress and
+size-weighted whole-disc progress. Per-title runs aggregate every reviewed
+title using its estimated byte size, with a median-size fallback when an
+estimate is unavailable; single-open runs use MakeMKV's batch percentage.
+Completed-title counts advance only after the existing MKV verification
+boundary emits a path-free completion event, not merely when MakeMKV prints an
+internal 100-percent progress sample.
+
+Seasonless TV analysis now resolves the canonical series before requesting an
+episode catalogue. An exact TMDb title is accepted directly; ambiguous or
+empty searches may use the explicitly authorized schema-constrained Gemini
+fallback, whose selected TMDb ID or proposed canonical title must validate
+back through TMDb before episode matching begins. Disc Dashboard rematching
+prefers the unanimous canonical series stored in the verified-rip contracts
+over a drive-label-derived request such as a box-set volume suffix. Catalogue
+and low-confidence series failures now retain distinct review codes instead of
+appearing as a generic all-season failure. Existing cross-kind routing remains
+in force: automatic evidence analysis can still classify unresolved content as
+TV, movie/TV movie, bonus feature, menu, or unknown, and uncertain results stop
+for review rather than forcing a TV identity.
+## Season-bounded OpenSubtitles recovery (2026-08-08)
+
+- Disc-level unmatched TV recovery now uses confirmed title history to establish
+  a dominant-season hypothesis after at least two non-tied assignments.
+- Cached Whisper excerpts are compared independently against OpenSubtitles for
+  that season before Gemini fallback. Strong matches require both the configured
+  confidence threshold and a best-versus-runner-up margin; duplicate episode
+  claims are held rather than resolved from DVD title order.
+- Remaining titles expand to adjacent seasons directionally. Matches near the
+  start of a season try the previous season first, while matches near the end
+  try the next season. Only that evidence-supported neighbor is included in the
+  automatic episode pass.
+- OpenSubtitles attempts now have distinct private provenance and their accepted
+  episode IDs are removed from subsequent Gemini candidate sets.
+- With no prior episode history, representative cached transcripts survey the
+  available seasons and establish the first season from independent strong
+  matches. The focused pass reuses those downloaded references. Once subtitle
+  evidence establishes a season block, Gemini cannot force unresolved leftovers
+  into unrelated seasons; those files continue to play-all, bonus, or review
+  handling.
+- If season discovery succeeds but subtitle dialogue remains below the automatic
+  acceptance threshold, Gemini episode ranking is restricted to the discovered
+  season and its one evidence-supported neighbor. It must never silently expand
+  that retry back to the complete series catalogue.

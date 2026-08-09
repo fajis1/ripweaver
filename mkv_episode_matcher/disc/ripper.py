@@ -515,6 +515,8 @@ def run_rip_job(  # noqa: C901 - guarded external-process state machine
         finished_at=finished.isoformat(),
     )
     event_log.write("job_completed", **asdict(result))
+    if on_event is not None:
+        on_event("completed", f"{job.job_id}: completed")
     return result
 
 

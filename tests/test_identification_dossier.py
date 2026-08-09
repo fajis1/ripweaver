@@ -94,6 +94,70 @@ def test_collect_reuses_cache_without_reinvoking_media_tools(tmp_path, monkeypat
     assert evidence[0].transcript_excerpts == ("cached evidence",)
 
 
+def test_collect_reuses_exact_source_cache_after_media_id_changes(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    payload = _payload(source)
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    store = IdentificationDossierStore(tmp_path / "identification-evidence")
+    identity = source_identity(payload, source, "small")
+    store.save_evidence(
+        identity, UnmatchedFileEvidence("original-id", 1200, ("cached evidence",))
+    )
+    monkeypatch.setattr(
+        dossier_module,
+        "resolve_ffprobe_path",
+        lambda _path: pytest.fail("FFprobe must not run for an exact-source alias"),
+    )
+
+    evidence, restored = collect_dossier_evidence(
+        ((SimpleNamespace(media_id="recovery-id"), payload),),
+        Config(asr_model_name="small"),
+        object(),
+        contracts,
+    )
+
+    assert evidence == (
+        UnmatchedFileEvidence("recovery-id", 1200, ("cached evidence",)),
+    )
+    assert restored.load_evidence("recovery-id", identity) == evidence[0]
+
+
+def test_collect_keeps_audio_less_title_as_runtime_only_evidence(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "menu-like.mkv"
+    source.write_bytes(b"synthetic")
+    payload = _payload(source)
+    item = SimpleNamespace(media_id="media-1")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    media = SimpleNamespace(duration_seconds=142.0, audio_streams=())
+    monkeypatch.setattr(dossier_module, "resolve_ffprobe_path", lambda _path: "ffprobe")
+    monkeypatch.setattr(dossier_module, "resolve_ffmpeg_path", lambda _path: "ffmpeg")
+    monkeypatch.setattr(
+        dossier_module,
+        "inspect_mkv",
+        lambda *_args, **_kwargs: SimpleNamespace(media=media),
+    )
+    monkeypatch.setattr(
+        dossier_module,
+        "collect_transcript_batch",
+        lambda *_args, **_kwargs: pytest.fail(
+            "Audio-less titles must not enter transcript batch validation"
+        ),
+    )
+
+    evidence, _dossier = collect_dossier_evidence(
+        ((item, payload),), Config(asr_model_name="small"), object(), contracts
+    )
+
+    assert evidence == (UnmatchedFileEvidence("media-1", 142.0, ()),)
+
+
 def test_attempt_history_is_bounded_and_rejects_nested_private_data(tmp_path):
     source = tmp_path / "source.mkv"
     source.write_bytes(b"synthetic")

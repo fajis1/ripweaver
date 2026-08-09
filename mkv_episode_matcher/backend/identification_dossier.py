@@ -23,10 +23,16 @@ from mkv_episode_matcher.media.transcript_batch import (
 from mkv_episode_matcher.pipeline_queue import PipelineQueueError
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$")
-_BRANCHES = {"tv-local", "tv-gemini", "movie-bonus", "gemini-synthesis"}
+_BRANCHES = {
+    "tv-local",
+    "tv-opensubtitles",
+    "tv-gemini",
+    "movie-bonus",
+    "gemini-synthesis",
+}
 _DISPOSITIONS = {"started", "matched", "review", "failed", "skipped"}
 SCHEMA_VERSION = 1
-SAMPLING_VERSION = "three-window-v1"
+SAMPLING_VERSION = "six-window-v2"
 
 
 @dataclass(frozen=True)
@@ -120,6 +126,12 @@ class IdentificationDossierStore:
         payload = self._load(media_id)
         if payload is None or payload.get("source_identity") != identity.digest():
             return None
+        return self._evidence_from_payload(media_id, payload)
+
+    @staticmethod
+    def _evidence_from_payload(
+        media_id: str, payload: dict
+    ) -> UnmatchedFileEvidence | None:
         evidence = payload.get("evidence")
         if not isinstance(evidence, dict):
             return None
@@ -129,7 +141,7 @@ class IdentificationDossierStore:
             not isinstance(duration, int | float)
             or duration <= 0
             or not isinstance(excerpts, list)
-            or not 0 <= len(excerpts) <= 3
+            or not 0 <= len(excerpts) <= 6
             or any(
                 not isinstance(value, str) or not value.strip() or len(value) > 600
                 for value in excerpts
@@ -137,6 +149,27 @@ class IdentificationDossierStore:
         ):
             return None
         return UnmatchedFileEvidence(media_id, float(duration), tuple(excerpts))
+
+    def load_evidence_by_identity(
+        self, media_id: str, identity: SourceIdentity
+    ) -> UnmatchedFileEvidence | None:
+        """Reuse private evidence after a queue ID changes for the exact source."""
+
+        if not self.root.is_dir():
+            return None
+        expected = identity.digest()
+        for path in self.root.glob("*.private.json"):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if (
+                payload.get("schema_version") != SCHEMA_VERSION
+                or payload.get("source_identity") != expected
+            ):
+                continue
+            return self._evidence_from_payload(media_id, payload)
+        return None
 
     def save_evidence(
         self, identity: SourceIdentity, evidence: UnmatchedFileEvidence
@@ -217,7 +250,7 @@ class IdentificationDossierStore:
         )
 
 
-def collect_dossier_evidence(
+def collect_dossier_evidence(  # noqa: C901 - linear cache/probe/audio guards
     items: tuple[tuple[object, dict], ...],
     config: Config,
     asr,
@@ -246,6 +279,10 @@ def collect_dossier_evidence(
         identities[media_id] = identity
         evidence = dossier.load_evidence(media_id, identity)
         if evidence is None:
+            evidence = dossier.load_evidence_by_identity(media_id, identity)
+            if evidence is not None:
+                dossier.save_evidence(identity, evidence)
+        if evidence is None:
             missing.append((item, source))
         else:
             cached[media_id] = evidence
@@ -254,19 +291,33 @@ def collect_dossier_evidence(
         ffprobe = resolve_ffprobe_path(config.ffprobe_path)
         ffmpeg = resolve_ffmpeg_path(config.ffmpeg_path)
         transcript_items = []
+        runtime_only: dict[str, UnmatchedFileEvidence] = {}
         for item, source in missing:
             inspection = inspect_mkv(ffprobe, source, timeout_seconds=60)
-            transcript_items.append(
-                TranscriptBatchItem(item.media_id, source, inspection.media)
+            if inspection.media.audio_streams:
+                transcript_items.append(
+                    TranscriptBatchItem(item.media_id, source, inspection.media)
+                )
+            else:
+                runtime_only[item.media_id] = UnmatchedFileEvidence(
+                    item.media_id, float(inspection.media.duration_seconds), ()
+                )
+        collected = {}
+        if transcript_items:
+            transcripts = collect_transcript_batch(
+                tuple(transcript_items),
+                asr,
+                FFmpegSampleExtractor(ffmpeg),
+                model_name=config.asr_model_name,
+                sampling_mode="expanded",
             )
-        transcripts = collect_transcript_batch(
-            tuple(transcript_items),
-            asr,
-            FFmpegSampleExtractor(ffmpeg),
-            model_name=config.asr_model_name,
-        )
-        collected = {item.file_id: item for item in transcripts.files}
+            collected = {item.file_id: item for item in transcripts.files}
         for item, _source in missing:
+            runtime_evidence = runtime_only.get(item.media_id)
+            if runtime_evidence is not None:
+                dossier.save_evidence(identities[item.media_id], runtime_evidence)
+                cached[item.media_id] = runtime_evidence
+                continue
             transcript = collected.get(item.media_id)
             if transcript is None:
                 raise PipelineQueueError(
@@ -279,7 +330,7 @@ def collect_dossier_evidence(
                     window.text[:600]
                     for window in transcript.windows
                     if window.text.strip()
-                )[:3],
+                )[:6],
             )
             dossier.save_evidence(identities[item.media_id], evidence)
             cached[item.media_id] = evidence

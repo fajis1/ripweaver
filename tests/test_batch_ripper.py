@@ -5,6 +5,7 @@ import pytest
 
 from mkv_episode_matcher.disc.batch_ripper import (
     BatchInventoryTitle,
+    _report_closed_batch_outputs,
     build_single_open_batch_command,
     plan_single_open_batch,
     run_single_open_batch,
@@ -23,6 +24,30 @@ def _job(index: int) -> RipJob:
         estimated_bytes=2_000_000,
         output_basename=f"safe-title-{index:03d}.mkv",
     )
+
+
+def test_reports_closed_outputs_when_next_batch_file_starts(tmp_path):
+    jobs = (_job(1), _job(2), _job(3))
+    plan = plan_single_open_batch(
+        jobs,
+        tuple(
+            BatchInventoryTitle(
+                job.title_index, 1200, f"disc_t{job.title_index:02d}.mkv"
+            )
+            for job in jobs
+        ),
+    )
+    events: list[tuple[str, str]] = []
+    reported: set[str] = set()
+    (tmp_path / plan.batch_output_names[0]).write_bytes(b"first")
+    (tmp_path / plan.batch_output_names[1]).write_bytes(b"second")
+
+    _report_closed_batch_outputs(
+        tmp_path, plan, reported, lambda kind, message: events.append((kind, message))
+    )
+
+    assert events == [("output-closed", f"{jobs[0].job_id}: completed")]
+    assert reported == {jobs[0].job_id}
 
 
 def _titles() -> tuple[BatchInventoryTitle, ...]:

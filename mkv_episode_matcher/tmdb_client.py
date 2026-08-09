@@ -1,6 +1,7 @@
 # tmdb_client.py
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from functools import wraps
 from threading import Lock
 from typing import Any, TypeVar
@@ -61,6 +62,15 @@ from mkv_episode_matcher.core.config_manager import get_config_manager
 
 BASE_IMAGE_URL = "https://image.tmdb.org/t/p/original"
 BASE_API_URL = "https://api.themoviedb.org/3"
+
+
+@dataclass(frozen=True)
+class TvShowCandidate:
+    tmdb_id: int
+    name: str
+    original_name: str
+    first_air_year: int | None
+    overview: str
 
 
 class RateLimitedRequest:
@@ -175,15 +185,71 @@ def fetch_show_id(show_name: str) -> str | None:
     return None
 
 
-def fetch_aired_episode_catalog_for_show(show_name: str):
-    """Return one validated, all-season aired catalogue for a reviewed TV name."""
+def search_tv_show_candidates(
+    show_name: str, *, limit: int = 8
+) -> tuple[TvShowCandidate, ...]:
+    """Return a bounded, path-free TMDb TV candidate set."""
+
+    if limit < 1 or limit > 20:
+        raise ValueError("TMDb TV candidate limit is invalid")
+    results = _tmdb_get_json("/search/tv", query=show_name).get("results", [])
+    candidates = []
+    for item in results[:limit] if isinstance(results, list) else []:
+        if not isinstance(item, dict):
+            continue
+        tmdb_id = item.get("id")
+        name = item.get("name")
+        if (
+            not isinstance(tmdb_id, int)
+            or not isinstance(name, str)
+            or not name.strip()
+        ):
+            continue
+        first_air_date = item.get("first_air_date")
+        year = (
+            int(first_air_date[:4])
+            if isinstance(first_air_date, str)
+            and len(first_air_date) >= 4
+            and first_air_date[:4].isdigit()
+            else None
+        )
+        original_name = item.get("original_name")
+        overview = item.get("overview")
+        candidates.append(
+            TvShowCandidate(
+                tmdb_id=tmdb_id,
+                name=" ".join(name.split())[:160],
+                original_name=(
+                    " ".join(original_name.split())[:160]
+                    if isinstance(original_name, str)
+                    else ""
+                ),
+                first_air_year=year,
+                overview=(
+                    " ".join(overview.split())[:500]
+                    if isinstance(overview, str)
+                    else ""
+                ),
+            )
+        )
+    return tuple(candidates)
+
+
+def fetch_aired_episode_catalog(show_id: int):
+    """Return the validated aired catalogue for one reviewed TMDb TV ID."""
 
     from mkv_episode_matcher.media.episode_catalog import build_tmdb_aired_catalog
+
+    return build_tmdb_aired_catalog(show_id, _tmdb_get_json)
+
+
+def fetch_aired_episode_catalog_for_show(show_name: str):
+    """Return one validated, all-season aired catalogue for a reviewed TV name."""
 
     show_id = fetch_show_id(show_name)
     if show_id is None:
         return None
-    return build_tmdb_aired_catalog(int(show_id), _tmdb_get_json)
+    return fetch_aired_episode_catalog(int(show_id))
 
 
 @retry_network_operation(max_retries=3, base_delay=1.0)
@@ -275,11 +341,3 @@ def get_number_of_seasons(show_id: str) -> int:
     num_seasons = show_data.get("number_of_seasons", 0)
     logger.info(f"Found {num_seasons} seasons")
     return num_seasons
-
-
-def fetch_aired_episode_catalog(show_id: int):
-    """Fetch a path-free, aired-order episode catalogue for unmatched planning."""
-
-    from mkv_episode_matcher.media.episode_catalog import build_tmdb_aired_catalog
-
-    return build_tmdb_aired_catalog(show_id, _tmdb_get_json)

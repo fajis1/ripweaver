@@ -221,8 +221,8 @@ def _validate_file_evidence(item: UnmatchedFileEvidence) -> None:
         raise GeminiMatchError("Unmatched evidence contains an invalid file ID")
     if item.duration_seconds <= 0:
         raise GeminiMatchError("Unmatched evidence duration must be positive")
-    if len(item.transcript_excerpts) > 3:
-        raise GeminiMatchError("Each file permits up to three excerpts")
+    if len(item.transcript_excerpts) > 6:
+        raise GeminiMatchError("Each file permits up to six excerpts")
     for excerpt in item.transcript_excerpts:
         if not excerpt.strip() or len(excerpt) > 600:
             raise GeminiMatchError("Transcript excerpts must contain 1-600 characters")
@@ -609,7 +609,7 @@ def _output_text(payload: dict) -> str:
                     and isinstance(item.get("text"), str)
                 ):
                     return item["text"]
-    raise GeminiMatchError("Gemini response contained no structured text")
+    raise GeminiResponseError("Gemini response contained no structured text")
 
 
 def _parse_and_validate_response(
@@ -620,7 +620,7 @@ def _parse_and_validate_response(
     try:
         parsed = _ResponseModel.model_validate_json(_output_text(payload))
     except (ValidationError, ValueError) as exc:
-        raise GeminiMatchError("Gemini returned invalid structured output") from exc
+        raise GeminiResponseError("Gemini returned invalid structured output") from exc
 
     allowed_files = {item.file_id for item in files}
     allowed_episodes = {item.episode_id for item in catalog}
@@ -628,18 +628,22 @@ def _parse_and_validate_response(
     if set(returned_files) != allowed_files or len(returned_files) != len(
         allowed_files
     ):
-        raise GeminiMatchError("Gemini response did not cover each supplied file once")
+        raise GeminiResponseError(
+            "Gemini response did not cover each supplied file once"
+        )
 
     assigned: set[str] = set()
     results: list[GeminiMatchResult] = []
     for item in parsed.matches:
         if item.episode_id is not None:
             if item.episode_id not in allowed_episodes:
-                raise GeminiMatchError(
+                raise GeminiResponseError(
                     "Gemini returned an episode outside the catalogue"
                 )
             if item.episode_id in assigned:
-                raise GeminiMatchError("Gemini assigned one episode more than once")
+                raise GeminiResponseError(
+                    "Gemini assigned one episode more than once"
+                )
             assigned.add(item.episode_id)
         results.append(
             GeminiMatchResult(

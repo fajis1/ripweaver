@@ -451,17 +451,23 @@ class OrchestrationStore:
     def record_progress(self, job_id: str, kind: str, message: str) -> None:
         """Persist one path-free MakeMKV progress sample for dashboard polling."""
 
-        if kind not in {"progress", "throughput"}:
+        if kind not in {"progress", "throughput", "completed", "output-closed"}:
             return
-        pattern = (
-            r"(?P<scope>batch|[A-Za-z0-9._-]+): (?P<value>\d{1,3})%"
-            if kind == "progress"
-            else r"(?P<scope>batch|[A-Za-z0-9._-]+): (?P<value>\d+(?:\.\d{1,2})?) MiB/s"
-        )
+        patterns = {
+            "progress": r"(?P<scope>batch|[A-Za-z0-9._-]+): (?P<value>\d{1,3})%",
+            "throughput": r"(?P<scope>batch|[A-Za-z0-9._-]+): (?P<value>\d+(?:\.\d{1,2})?) MiB/s",
+            "completed": r"(?P<scope>[A-Za-z0-9._-]+): completed",
+            "output-closed": r"(?P<scope>[A-Za-z0-9._-]+): completed",
+        }
+        pattern = patterns[kind]
         match = re.fullmatch(pattern, message)
         if match is None:
             raise RipError("Rip progress event is invalid")
-        value = float(match.group("value"))
+        value = (
+            float(match.group("value"))
+            if kind not in {"completed", "output-closed"}
+            else None
+        )
         if kind == "progress" and not 0 <= value <= 100:
             raise RipError("Rip progress percentage is invalid")
         with self._connect() as connection:
@@ -476,18 +482,24 @@ class OrchestrationStore:
             connection.execute(
                 "UPDATE jobs SET updated_at = ? WHERE job_id = ?", (timestamp, job_id)
             )
+            details: dict[str, object] = {"scope": match.group("scope")}
+            if kind == "progress":
+                details["percent"] = int(value)
+            elif kind == "throughput":
+                details["mib_per_second"] = value
             self._append_event(
                 connection,
                 job_id=job_id,
-                event_type=f"rip_{kind}",
+                event_type=(
+                    "rip_title_completed"
+                    if kind == "completed"
+                    else "rip_title_output_closed"
+                    if kind == "output-closed"
+                    else f"rip_{kind}"
+                ),
                 from_state=row["state"],
                 to_state=row["state"],
-                details={
-                    "scope": match.group("scope"),
-                    ("percent" if kind == "progress" else "mib_per_second"): (
-                        int(value) if kind == "progress" else value
-                    ),
-                },
+                details=details,
             )
             connection.commit()
 

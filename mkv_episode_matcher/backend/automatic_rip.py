@@ -17,6 +17,10 @@ from mkv_episode_matcher.disc.drive_watcher import DriveStatusSnapshot
 from mkv_episode_matcher.disc.ripper import RipError
 
 _downstream_lock = threading.Lock()
+_AUTOMATIC_UNMATCHED_CODES = frozenset({
+    "missing_season_context",
+    "unmatched_disc_analysis_required",
+})
 
 
 def _preview_fingerprints(preview: dict[str, object]) -> frozenset[str]:
@@ -307,14 +311,7 @@ def _resolve_automatic_unmatched_disc(  # noqa: C901
         for media_id in media_ids
         if store.get(media_id).stage == "identify"
         and store.get(media_id).state == "review_required"
-        and store.get(media_id).review_code
-        in {
-            "missing_season_context",
-            "unmatched_disc_analysis_required",
-            "all_season_analysis_running",
-            "all_season_analysis_failed",
-            "all_season_sequence_review_required",
-        }
+        and store.get(media_id).review_code in _AUTOMATIC_UNMATCHED_CODES
     ]
     if not held:
         return
@@ -358,9 +355,13 @@ def _resolve_automatic_unmatched_disc(  # noqa: C901
                 type(exc).__name__,
             )
             code = (
-                "all_season_sequence_review_required"
-                if str(exc) == "All-season sequence result requires review"
-                else "all_season_analysis_failed"
+                "all_season_catalog_unavailable"
+                if str(exc) == "Episode catalogue is unavailable for the reviewed scope"
+                else (
+                    "all_season_sequence_review_required"
+                    if str(exc) == "All-season sequence result requires review"
+                    else "all_season_analysis_failed"
+                )
             )
         for item in held:
             try:

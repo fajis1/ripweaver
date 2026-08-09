@@ -11,6 +11,29 @@ from mkv_episode_matcher.disc.private_bindings import PrivateBindingStore
 from mkv_episode_matcher.pipeline_queue import PipelineQueueStore
 
 
+def test_pipeline_display_name_uses_pending_episode_assignment(tmp_path):
+    contract = tmp_path / "identify.json"
+    contract.write_text(
+        """{
+  "title_index": 18,
+  "media_context": {
+    "series_name": "The Flintstones",
+    "episode_assignments": [
+      {"title_index": 18, "season": 2, "episode": 1, "title": "The Hit Song Writers"}
+    ]
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    item = SimpleNamespace(artifact=SimpleNamespace(contract_path=contract))
+
+    assert (
+        rip._pipeline_item_display_name(item)
+        == "The Flintstones - S02E01 - The Hit Song Writers"
+    )
+
+
 def test_drive_preparation_guard_refuses_duplicate_scan_and_releases():
     claimed = rip._claim_drive_preparation(17)
     try:
