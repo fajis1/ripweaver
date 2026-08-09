@@ -1260,6 +1260,7 @@ class PipelineItemResponse(BaseModel):
     artifact_sha256: str
     disc_fingerprint: str | None = None
     display_name: str | None = None
+    match_summary: str | None = None
     location_label: str
     location_relative: str | None = None
     location_root_key: str | None = None
@@ -1450,6 +1451,30 @@ def _pipeline_item_display_name(item) -> str | None:
     return None
 
 
+def _pipeline_item_match_summary(item) -> str | None:
+    """Read a bounded provider summary from one matched feature assignment."""
+
+    try:
+        payload = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    context = payload.get("media_context")
+    title_index = payload.get("title_index")
+    if not isinstance(context, dict) or not isinstance(title_index, int):
+        return None
+    assignments = context.get("special_feature_assignments")
+    if not isinstance(assignments, list):
+        return None
+    for assignment in assignments:
+        if not isinstance(assignment, dict) or assignment.get("title_index") != title_index:
+            continue
+        summary = assignment.get("match_summary")
+        if isinstance(summary, str):
+            cleaned = " ".join(summary.split())[:320]
+            return cleaned or None
+    return None
+
+
 def _pipeline_item_location(item) -> tuple[str, str | None, str | None]:
     try:
         payload = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
@@ -1559,6 +1584,7 @@ def _pipeline_item_response(
         "artifact_sha256": item.artifact.contract_sha256,
         "disc_fingerprint": disc_fingerprint,
         "display_name": _pipeline_item_display_name(item),
+        "match_summary": _pipeline_item_match_summary(item),
         "location_label": location_label,
         "location_relative": location_relative,
         "location_root_key": location_root_key,

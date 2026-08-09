@@ -289,6 +289,7 @@ def test_descriptive_tv_extra_stays_with_canonical_series(tmp_path, monkeypatch)
     assert context["special_feature_library_title"] == "The Flintstones"
     assert assignment["library_kind"] == "tv"
     assert assignment["jellyfin_folder"] == "Extras"
+    assert assignment["match_summary"] == "Bonus feature evidence."
     assert any(details["branch"] == "tv-bonus" for _, details in dossier.attempts)
 
 

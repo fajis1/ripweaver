@@ -146,6 +146,7 @@ def test_descriptive_ranker_validates_safe_provisional_results():
                     "year": 1961,
                     "confidence": 0.91,
                     "evidence": ["Feature runtime and dialogue agree."],
+                    "summary": "A feature-length story about sisters meeting at camp.",
                 },
                 {
                     "file_id": "title-003",
@@ -154,6 +155,7 @@ def test_descriptive_ranker_validates_safe_provisional_results():
                     "year": None,
                     "confidence": 0.66,
                     "evidence": ["Short production-focused material."],
+                    "summary": "A short look at the production of The Parent Trap.",
                 },
             ]),
         )
@@ -187,12 +189,43 @@ def test_descriptive_ranker_rejects_unsafe_title():
                     "year": None,
                     "confidence": 0.8,
                     "evidence": ["Unsafe title test."],
+                    "summary": "A short supplemental video.",
                 }
             ]),
         )
     )
 
     with pytest.raises(GeminiMatchError, match="invalid descriptive output"):
+        GeminiDescriptiveRanker(
+            model="gemini-test", transport=transport, max_retries=0
+        ).describe_with_key(
+            files,
+            release_hint="Example release",
+            api_key="fake-key",
+            credential="gemini-primary",
+        )
+
+
+def test_descriptive_ranker_rejects_generic_extra_title():
+    files = (UnmatchedFileEvidence("title-000", 300, ("Evidence.",)),)
+    transport = FakeTransport(
+        TransportResponse(
+            200,
+            _payload([
+                {
+                    "file_id": "title-000",
+                    "content_kind": "extra",
+                    "suggested_title": "Bonus Feature",
+                    "year": None,
+                    "confidence": 0.8,
+                    "evidence": ["A production interview is visible."],
+                    "summary": "Cast members discuss production of the series.",
+                }
+            ]),
+        )
+    )
+
+    with pytest.raises(GeminiMatchError, match="generic extra title"):
         GeminiDescriptiveRanker(
             model="gemini-test", transport=transport, max_retries=0
         ).describe_with_key(

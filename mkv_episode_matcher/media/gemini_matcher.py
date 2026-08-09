@@ -76,6 +76,7 @@ class GeminiDescriptiveResult:
     year: int | None
     confidence: float
     evidence: tuple[str, ...]
+    summary: str = ""
 
 
 @dataclass(frozen=True)
@@ -141,6 +142,7 @@ class _DescriptiveMatchModel(BaseModel):
     year: int | None = Field(default=None, ge=1888, le=2200)
     confidence: float = Field(ge=0.0, le=1.0)
     evidence: list[str] = Field(min_length=1, max_length=4)
+    summary: str = Field(min_length=1, max_length=320)
 
     @field_validator("file_id")
     @classmethod
@@ -163,6 +165,14 @@ class _DescriptiveMatchModel(BaseModel):
     @classmethod
     def validate_evidence(cls, values: list[str]) -> list[str]:
         return _MatchModel.validate_evidence(values)
+
+    @field_validator("summary")
+    @classmethod
+    def validate_summary(cls, value: str) -> str:
+        cleaned = " ".join(value.split())
+        if not cleaned or _WINDOWS_PATH.search(cleaned):
+            raise ValueError("descriptive summary is invalid")
+        return cleaned
 
 
 class _DescriptiveResponseModel(BaseModel):
@@ -441,7 +451,11 @@ def build_descriptive_gemini_request(
             "Feature-length titles must not be labeled as extras merely because "
             "the disc also contains bonus material. Results are provisional; do "
             "not invent an exact episode number or claim certainty unsupported by "
-            "the evidence."
+            "the evidence. For extras, suggested_title must describe the actual "
+            "subject and must never be a generic label such as Bonus Feature, "
+            "Featurette, Extra, Special Feature, or Making Of Documentary. Provide "
+            "a concise one- or two-sentence summary of what the evidence indicates "
+            "the title contains. Titles for different files must be distinct."
         ),
         "release_hint": hint,
         "files": [
@@ -485,6 +499,11 @@ def build_descriptive_gemini_request(
                             "maxItems": 4,
                             "items": {"type": "string", "maxLength": 200},
                         },
+                        "summary": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 320,
+                        },
                     },
                     "required": [
                         "file_id",
@@ -493,6 +512,7 @@ def build_descriptive_gemini_request(
                         "year",
                         "confidence",
                         "evidence",
+                        "summary",
                     ],
                     "additionalProperties": False,
                 },
@@ -697,6 +717,23 @@ def _parse_descriptive_response(
         raise GeminiResponseError(
             "Gemini descriptive response did not cover each supplied file once"
         )
+    generic_extra_titles = {
+        "bonus content",
+        "bonus feature",
+        "extra",
+        "featurette",
+        "making of documentary",
+        "special feature",
+    }
+    descriptive_titles = [
+        item.suggested_title.casefold()
+        for item in parsed.matches
+        if item.content_kind == "extra"
+    ]
+    if any(title in generic_extra_titles for title in descriptive_titles):
+        raise GeminiResponseError("Gemini returned a generic extra title")
+    if len(descriptive_titles) != len(set(descriptive_titles)):
+        raise GeminiResponseError("Gemini returned duplicate extra titles")
     return tuple(
         sorted(
             (
@@ -707,6 +744,7 @@ def _parse_descriptive_response(
                     year=item.year,
                     confidence=item.confidence,
                     evidence=tuple(item.evidence),
+                    summary=item.summary,
                 )
                 for item in parsed.matches
             ),

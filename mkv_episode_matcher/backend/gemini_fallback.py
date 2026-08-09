@@ -201,6 +201,7 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
                 continue
             feature_id = f"provisional-title-{title_index:03d}"
             feature_title = result.suggested_title
+            feature_summary = (result.summary or " ".join(result.evidence)).strip()[:320]
             feature_folder = "Extras" if tv_series_context else "other"
             media_kind = result.content_kind
             existing = next(
@@ -218,6 +219,7 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
             existing.update(
                 classification="matched-feature",
                 matched_title=feature_title,
+                match_summary=feature_summary,
                 candidate_feature_ids=[feature_id],
                 jellyfin_folder=feature_folder,
                 fallback_name_policy="none",

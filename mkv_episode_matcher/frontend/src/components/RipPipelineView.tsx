@@ -143,6 +143,7 @@ interface PipelineQueueItem {
   artifact_sha256: string;
   disc_fingerprint: string | null;
   display_name: string | null;
+  match_summary: string | null;
   state: string;
   stage: string;
   updated_at: string;
@@ -2265,6 +2266,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                   <div>
                     <div className="font-mono text-sm text-white"><span className="mr-2">{stageIcon[item.state === 'completed' ? 'complete' : item.stage] || '⏸️'}</span>{item.media_id}</div>
                     <div className="text-sm font-semibold text-white">Matched title: {item.display_name || 'Not matched yet'}</div>
+                    {item.match_summary && <div className="mt-1 max-w-2xl text-xs text-[var(--text-muted)]">{item.match_summary}</div>}
                     <div className="text-[11px] text-[var(--text-muted)]">The identifier above is the internal recovery ID.</div>
                     <div className={`text-xs font-semibold ${item.state === 'running' ? 'text-blue-200' : item.state === 'queued' ? 'text-amber-200' : item.state === 'failed' ? 'text-red-200' : 'text-[var(--text-muted)]'}`}>
                       {pipelineStatusLabel(item)}
