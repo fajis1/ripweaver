@@ -674,7 +674,11 @@ def _probe_media(
                 "-v",
                 "error",
                 "-show_entries",
-                "format=duration,size:stream=codec_type,codec_name,width,height,field_order",
+                (
+                    "format=duration,size:"
+                    "stream=codec_type,codec_name,width,height,field_order:"
+                    "stream_disposition=attached_pic"
+                ),
                 "-of",
                 "json",
                 str(media.resolve()),
@@ -705,7 +709,12 @@ def _probe_media(
     videos = [
         stream
         for stream in streams
-        if isinstance(stream, dict) and stream.get("codec_type") == "video"
+        if isinstance(stream, dict)
+        and stream.get("codec_type") == "video"
+        and not (
+            isinstance(stream.get("disposition"), dict)
+            and stream["disposition"].get("attached_pic") == 1
+        )
     ]
     audio = [
         stream

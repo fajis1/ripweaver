@@ -38,6 +38,25 @@ class MatchEngine(Protocol):
     def process_path(self, path: Path, **kwargs): ...
 
 
+def _uses_tv_library(payload: dict[str, Any]) -> bool:
+    return bool(payload.get("episode_id")) or payload.get("library_kind") == "tv"
+
+
+def _special_feature_uses_tv_library(
+    context: dict[str, Any], assignment: dict[str, Any]
+) -> bool:
+    if assignment.get("library_kind") == "tv":
+        return True
+    series_name = context.get("series_name")
+    return (
+        assignment.get("media_kind", "extra") != "movie"
+        and context.get("content_hint") not in {"movie", "extras"}
+        and isinstance(series_name, str)
+        and bool(series_name.strip())
+        and not _placeholder_series(series_name)
+    )
+
+
 def _safe_feature_component(value: object) -> str:
     if not isinstance(value, str):
         raise PipelineReviewRequiredError("special_feature_name_review")
@@ -188,11 +207,7 @@ class IdentifyStageAdapter:
         )
         if payload.get("existing_output_policy") == "replace-after-verification":
             return artifact
-        root = (
-            self.tv_library_root
-            if payload.get("episode_id")
-            else self.movie_library_root
-        )
+        root = self.tv_library_root if _uses_tv_library(payload) else self.movie_library_root
         if root is None or not root.is_dir():
             return artifact
         relative = PurePosixPath(str(payload.get("library_relative", "")))
@@ -261,6 +276,7 @@ class IdentifyStageAdapter:
                     "source_size_bytes": source.stat().st_size,
                     "confidence": 1.0,
                     "episode_id": episode_id,
+                    "library_kind": "tv",
                     "library_relative": relative.as_posix(),
                     "identification_order": ["reviewed-release-catalogue"],
                     "handbrake_profile_id": context.get("handbrake_profile_id"),
@@ -296,6 +312,7 @@ class IdentifyStageAdapter:
             ):
                 raise PipelineReviewRequiredError("special_feature_evidence_required")
             media_kind = assignment.get("media_kind", "extra")
+            tv_library = _special_feature_uses_tv_library(context, assignment)
             library_title = _safe_feature_component(
                 context.get("special_feature_library_title")
             )
@@ -310,7 +327,11 @@ class IdentifyStageAdapter:
                 relative = Path(movie_name) / f"{movie_name}.mkv"
                 identification = ["gemini-descriptive-movie"]
             else:
-                folder = _safe_feature_component(assignment.get("jellyfin_folder"))
+                folder = (
+                    "Extras"
+                    if tv_library
+                    else _safe_feature_component(assignment.get("jellyfin_folder"))
+                )
                 release_name = (
                     f"{library_title} ({year})"
                     if isinstance(year, int) and not isinstance(year, bool)
@@ -328,6 +349,7 @@ class IdentifyStageAdapter:
                     "source_size_bytes": source.stat().st_size,
                     "confidence": assignment.get("gemini_confidence", 1.0),
                     "episode_id": None,
+                    "library_kind": "tv" if tv_library else "movie",
                     "library_relative": relative.as_posix(),
                     "identification_order": identification,
                     "handbrake_profile_id": context.get("handbrake_profile_id"),
@@ -382,6 +404,7 @@ class IdentifyStageAdapter:
                 "source_size_bytes": source.stat().st_size,
                 "confidence": float(match.confidence),
                 "episode_id": episode_id,
+                "library_kind": "tv",
                 "library_relative": relative.as_posix(),
                 "identification_order": list(strategy_order),
                 "handbrake_profile_id": context.get("handbrake_profile_id"),
@@ -434,9 +457,7 @@ class TranscodeStageAdapter:
         if payload.get("existing_output_policy") == "replace-after-verification":
             return
         library_root = (
-            self.tv_library_root
-            if payload.get("episode_id")
-            else self.movie_library_root
+            self.tv_library_root if _uses_tv_library(payload) else self.movie_library_root
         )
         if library_root is None:
             return
@@ -546,6 +567,7 @@ class TranscodeStageAdapter:
                 "original_source_size_bytes": source.stat().st_size,
                 "library_relative": relative.as_posix(),
                 "episode_id": payload.get("episode_id"),
+                "library_kind": payload.get("library_kind"),
                 "existing_output_policy": payload.get(
                     "existing_output_policy", "preserve"
                 ),

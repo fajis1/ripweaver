@@ -272,6 +272,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
   const [queuedEjectDrives, setQueuedEjectDrives] = useState<number[]>([]);
   const ejectQueueRef = useRef<Promise<void>>(Promise.resolve());
   const [renameDrafts, setRenameDrafts] = useState<Record<string, string>>({});
+  const [bonusReviewModes, setBonusReviewModes] = useState<Record<string, boolean>>({});
   const [confirmPhysicalRip, setConfirmPhysicalRip] = useState(false);
   const [preserveFailedPartials, setPreserveFailedPartials] = useState(false);
   const [failedCleanupPlan, setFailedCleanupPlan] = useState<FailedRipCleanupPlan | null>(null);
@@ -852,22 +853,29 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
 
   const saveManualEpisodeIdentification = async (item: PipelineQueueItem) => {
     const newName = (renameDrafts[item.media_id] || '').trim();
+    const isBonus = Boolean(bonusReviewModes[item.media_id]);
     if (!newName) return;
-    if (!window.confirm(`Use "${newName}.mkv" as the reviewed identity for this staged rip? RipWeaver will preserve the original staged file, remember this title for the disc fingerprint, and continue the pipeline.`)) return;
+    const destinationSummary = isBonus
+      ? `the canonical series Extras folder as "${newName}.mkv"`
+      : `the reviewed episode identity "${newName}.mkv"`;
+    if (!window.confirm(`Use ${destinationSummary}? RipWeaver will preserve the original staged file, remember this title for the disc fingerprint, and continue the pipeline.`)) return;
     setControlling(true);
     setError('');
     try {
       const response = await fetch(`/rip/pipeline/items/${encodeURIComponent(item.media_id)}/manual-episode-identification`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ new_name: newName, confirm_identification: true }),
+        body: JSON.stringify({ new_name: newName, content_type: isBonus ? 'bonus' : 'episode', confirm_identification: true }),
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : 'Manual episode identification could not be saved.');
       setRenameDrafts((current) => ({ ...current, [item.media_id]: '' }));
+      setBonusReviewModes((current) => ({ ...current, [item.media_id]: false }));
       const refreshed = await fetch('/rip/pipeline/items');
       if (refreshed.ok) setPipelineQueue(await refreshed.json());
-      setReviewNotice('Saved the reviewed episode identity and returned the staged rip to the automatic pipeline. The .mkv extension is preserved.');
+      setReviewNotice(isBonus
+        ? 'Saved the reviewed TV bonus identity. It will use the canonical series Extras folder in Jellyfin.'
+        : 'Saved the reviewed episode identity and returned the staged rip to the automatic pipeline. The .mkv extension is preserved.');
     } catch (requestError) {
       const message = requestError instanceof Error ? requestError.message : 'Manual episode identification could not be saved.';
       setError(message);
@@ -2332,9 +2340,17 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                                 className="input-field min-w-72 text-xs"
                                 value={renameDrafts[item.media_id] || ''}
                                 onChange={(event) => setRenameDrafts((current) => ({ ...current, [item.media_id]: event.target.value }))}
-                                placeholder="Series - S03E02 - Episode Title"
+                                placeholder={bonusReviewModes[item.media_id] ? 'Bonus title' : 'Series - S03E02 - Episode Title'}
                                 aria-label="Reviewed filename without .mkv"
                               />
+                              <label className="flex items-center gap-2 text-xs">
+                                <input
+                                  type="checkbox"
+                                  checked={Boolean(bonusReviewModes[item.media_id])}
+                                  onChange={(event) => setBonusReviewModes((current) => ({ ...current, [item.media_id]: event.target.checked }))}
+                                />
+                                Bonus content
+                              </label>
                               <button type="button" className="btn btn-primary text-xs" disabled={controlling || !renameDrafts[item.media_id]?.trim()} onClick={() => saveManualEpisodeIdentification(item)}>
                                 Save reviewed name and continue
                               </button>

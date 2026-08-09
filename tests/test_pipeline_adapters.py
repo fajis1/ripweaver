@@ -165,8 +165,52 @@ def test_identify_adapter_uses_reviewed_special_feature_assignment(tmp_path):
     payload = json.loads(artifact.contract_path.read_text(encoding="utf-8"))
 
     assert payload["episode_id"] is None
+    assert payload["library_kind"] == "movie"
     assert payload["library_relative"] == (
         "Example Movie (2001)/behind the scenes/Making Of.mkv"
+    )
+
+
+def test_identify_adapter_normalizes_automatic_tv_extra_assignment(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    item = _queued_item(
+        tmp_path,
+        {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "title_index": 2,
+            "media_context": {
+                "series_name": "The Flintstones",
+                "content_hint": None,
+                "special_feature_library_title": "The Flintstones",
+                "special_feature_assignments": [
+                    {
+                        "title_index": 2,
+                        "classification": "matched-feature",
+                        "matched_title": "The Flintstones - Making of Featurette",
+                        "jellyfin_folder": "other",
+                        "fallback_name_policy": "none",
+                        "media_kind": "extra",
+                        "library_kind": "movie",
+                    }
+                ],
+            },
+        },
+    )
+
+    payload = json.loads(
+        IdentifyStageAdapter(object(), contracts)(item).contract_path.read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert payload["library_kind"] == "tv"
+    assert payload["library_relative"] == (
+        "The Flintstones/Extras/The Flintstones - Making of Featurette.mkv"
     )
 
 

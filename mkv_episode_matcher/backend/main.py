@@ -162,7 +162,7 @@ async def startup_event():
                 )
                 root = (
                     config.jellyfin_tv_root
-                    if payload.get("episode_id")
+                    if payload.get("episode_id") or payload.get("library_kind") == "tv"
                     else config.jellyfin_movie_root
                 )
                 if root is None:

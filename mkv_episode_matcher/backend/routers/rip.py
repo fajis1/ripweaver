@@ -1304,13 +1304,13 @@ class DeleteQueuedPipelineMediaRequest(BaseModel):
 
 class AmbiguityChoiceRequest(BaseModel):
     choice: str = Field(pattern=r"^(gemini|manual|hold)$")
+    confirm_external_fallback: bool = False
 
 
 class ApplyEpisodeReleaseRequest(BaseModel):
     disc_fingerprint: str = Field(pattern=r"^[0-9a-f]{16}$")
     catalog_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,79}$")
     confirm_apply: bool = False
-    confirm_external_fallback: bool = False
 
 
 class UnmatchedDiscAnalysisRequest(BaseModel):
@@ -1397,6 +1397,7 @@ class RenameProvisionalItemRequest(BaseModel):
 
 class ManualEpisodeIdentificationRequest(BaseModel):
     new_name: str = Field(min_length=1, max_length=160)
+    content_type: str = Field(default="episode", pattern=r"^(episode|bonus)$")
     confirm_identification: bool = False
 
 
@@ -1469,7 +1470,7 @@ def _pipeline_item_location(item) -> tuple[str, str | None, str | None]:
             transcode = json.loads(transcode_contract.read_text(encoding="utf-8"))
             root_key = (
                 "jellyfin_tv_root"
-                if transcode.get("episode_id")
+                if transcode.get("episode_id") or transcode.get("library_kind") == "tv"
                 else "jellyfin_movie_root"
             )
         except (OSError, json.JSONDecodeError):
@@ -2908,7 +2909,7 @@ def play_pipeline_item_for_review(
     "/pipeline/items/{media_id}/manual-episode-identification",
     response_model=PipelineItemResponse,
 )
-def apply_manual_episode_identification(
+def apply_manual_episode_identification(  # noqa: C901 - guarded review boundary
     media_id: str,
     request: ManualEpisodeIdentificationRequest,
     store: Annotated[PipelineQueueStore, Depends(get_pipeline_queue_store)],
@@ -2927,26 +2928,21 @@ def apply_manual_episode_identification(
             status_code=400,
             detail="Enter a filename without an extension; .mkv is added automatically",
         )
-    match = re.fullmatch(
-        r"(.+?)\s+-\s+S(\d{1,2})E(\d{1,3})\s+-\s+(.+)",
-        cleaned,
-        flags=re.IGNORECASE,
-    )
-    if match is None:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Use: Series Name - S03E02 - Episode Title (without the .mkv extension)"
-            ),
+    match = None
+    if request.content_type == "episode":
+        match = re.fullmatch(
+            r"(.+?)\s+-\s+S(\d{1,2})E(\d{1,3})\s+-\s+(.+)",
+            cleaned,
+            flags=re.IGNORECASE,
         )
-    series_name = re.sub(r"\s+", " ", match.group(1)).strip(" .")
-    season = int(match.group(2))
-    episode = int(match.group(3))
-    title = re.sub(r"\s+", " ", match.group(4)).strip(" .")
-    if not series_name or not title or not 0 <= season <= 99 or not 1 <= episode <= 999:
-        raise HTTPException(
-            status_code=400, detail="Manual episode identity is invalid"
-        )
+        if match is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Use: Series Name - S03E02 - Episode Title "
+                    "(without the .mkv extension)"
+                ),
+            )
     try:
         item = store.get(media_id)
         if (
@@ -2972,21 +2968,59 @@ def apply_manual_episode_identification(
             raise PipelineQueueError("Verified rip title identity is unavailable")
         revised = dict(payload)
         context = dict(revised.get("media_context", {}))
-        context.update(
-            series_name=series_name,
-            season=season,
-            episode_assignments=[
-                {
-                    "title_index": title_index,
-                    "season": season,
-                    "episode": episode,
-                    "title": title,
-                    "user_reviewed_name": True,
-                }
-            ],
-            episode_assignment_source="manual-playback-review",
-            identification_policy_version=2,
-        )
+        if request.content_type == "bonus":
+            series_name = str(context.get("series_name") or "").strip()
+            if not series_name or series_name.casefold() in {"unmatched", "unknown"}:
+                raise PipelineQueueError(
+                    "Canonical TV series context is required for a bonus title"
+                )
+            context.update(
+                episode_assignments=[],
+                special_feature_library_title=series_name,
+                special_feature_assignments=[
+                    {
+                        "title_index": title_index,
+                        "classification": "matched-feature",
+                        "fallback_name_policy": "none",
+                        "media_kind": "extra",
+                        "library_kind": "tv",
+                        "jellyfin_folder": "Extras",
+                        "matched_title": cleaned,
+                        "user_reviewed_name": True,
+                    }
+                ],
+                episode_assignment_source="manual-bonus-review",
+                identification_policy_version=2,
+            )
+        else:
+            assert match is not None
+            series_name = re.sub(r"\s+", " ", match.group(1)).strip(" .")
+            season = int(match.group(2))
+            episode = int(match.group(3))
+            title = re.sub(r"\s+", " ", match.group(4)).strip(" .")
+            if (
+                not series_name
+                or not title
+                or not 0 <= season <= 99
+                or not 1 <= episode <= 999
+            ):
+                raise PipelineQueueError("Manual episode identity is invalid")
+            context.update(
+                series_name=series_name,
+                season=season,
+                episode_assignments=[
+                    {
+                        "title_index": title_index,
+                        "season": season,
+                        "episode": episode,
+                        "title": title,
+                        "user_reviewed_name": True,
+                    }
+                ],
+                special_feature_assignments=[],
+                episode_assignment_source="manual-playback-review",
+                identification_policy_version=2,
+            )
         revised["media_context"] = context
         if not contract_root.is_dir():
             raise PipelineQueueError("Pipeline contract root is unavailable")

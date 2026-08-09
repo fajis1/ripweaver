@@ -28,6 +28,7 @@ _BRANCHES = {
     "tv-opensubtitles",
     "tv-gemini",
     "movie-bonus",
+    "tv-bonus",
     "gemini-synthesis",
 }
 _DISPOSITIONS = {"started", "matched", "review", "failed", "skipped"}

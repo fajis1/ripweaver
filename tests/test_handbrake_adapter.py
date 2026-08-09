@@ -520,6 +520,13 @@ def test_success_promotes_only_verified_partial_and_redacts_logs(
                         "height": 1080,
                         "field_order": "progressive",
                     },
+                    {
+                        "codec_type": "video",
+                        "codec_name": "mjpeg",
+                        "width": 640,
+                        "height": 360,
+                        "disposition": {"attached_pic": 1},
+                    },
                     {"codec_type": "audio", "codec_name": "ac3"},
                     {"codec_type": "audio", "codec_name": "aac"},
                     {"codec_type": "subtitle", "codec_name": "dvd_subtitle"},

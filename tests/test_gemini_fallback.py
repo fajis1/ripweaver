@@ -240,6 +240,58 @@ def test_descriptive_tv_result_reuses_evidence_in_all_season_matcher(
     assert captured["options"]["allow_content_fallback"] is False
 
 
+def test_descriptive_tv_extra_stays_with_canonical_series(tmp_path, monkeypatch):
+    item = _item(tmp_path, "disc-title-003", 300)
+    payload = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
+    payload["media_context"].update(series_name="The Flintstones", content_hint=None)
+    item.artifact.contract_path.write_text(json.dumps(payload), encoding="utf-8")
+    store = FakeStore([item])
+    dossier = FakeDossier()
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.gemini_fallback.collect_dossier_evidence",
+        lambda selected, *_args: (
+            (UnmatchedFileEvidence(item.media_id, 300, ("bounded evidence",)),),
+            dossier,
+        ),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.gemini_fallback.GeminiDescriptiveRanker.describe_with_configured_keys",
+        lambda self, evidence, release_hint, prior_attempts=None: GeminiDescriptivePlan(
+            mode="gemini-descriptive-review-plan",
+            model="test",
+            matches=(
+                GeminiDescriptiveResult(
+                    item.media_id,
+                    "extra",
+                    "Carved in Stone",
+                    None,
+                    0.8,
+                    ("Bonus feature evidence.",),
+                ),
+            ),
+        ),
+    )
+
+    applied = execute_gemini_fallback(
+        store,
+        (item.media_id,),
+        Config(gemini_model="test"),
+        SimpleNamespace(),
+        tmp_path / "contracts",
+    )
+
+    assert applied == (item.media_id,)
+    revised = json.loads(
+        store.applied[item.media_id].contract_path.read_text(encoding="utf-8")
+    )
+    context = revised["media_context"]
+    assignment = context["special_feature_assignments"][0]
+    assert context["special_feature_library_title"] == "The Flintstones"
+    assert assignment["library_kind"] == "tv"
+    assert assignment["jellyfin_folder"] == "Extras"
+    assert any(details["branch"] == "tv-bonus" for _, details in dossier.attempts)
+
+
 def test_unresolved_descriptive_result_stops_showing_running(tmp_path, monkeypatch):
     item = _item(tmp_path, "disc-title-000", 1200)
     store = FakeStore([item])

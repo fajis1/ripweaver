@@ -123,9 +123,16 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
         tuple(zip(held, payloads, strict=True)), config, asr, contract_root
     )
     media_ids = tuple(item.media_id for item in held)
+    first_context = payloads[0]["media_context"]
+    series_name = str(first_context.get("series_name") or "").strip()
+    tv_series_context = (
+        first_context.get("content_hint") not in {"movie", "extras"}
+        and bool(series_name)
+        and series_name.casefold() not in {"unmatched", "unknown"}
+    )
     dossier.record_attempt(
         media_ids,
-        branch="movie-bonus",
+        branch="tv-bonus" if tv_series_context else "movie-bonus",
         disposition="started",
         summary={"catalogue_available": catalogue is not None},
     )
@@ -190,9 +197,11 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
         if descriptive:
             if result.content_kind in {"menu", "unknown", "tv_episode"}:
                 continue
+            if tv_series_context and result.content_kind != "extra":
+                continue
             feature_id = f"provisional-title-{title_index:03d}"
             feature_title = result.suggested_title
-            feature_folder = "other"
+            feature_folder = "Extras" if tv_series_context else "other"
             media_kind = result.content_kind
             existing = next(
                 (
@@ -215,10 +224,13 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
                 media_kind=media_kind,
                 provisional_match=True,
                 gemini_confidence=result.confidence,
+                library_kind="tv" if tv_series_context else "movie",
             )
             if media_kind == "movie":
                 context["special_feature_library_title"] = feature_title
                 context["special_feature_library_year"] = result.year
+            elif tv_series_context:
+                context["special_feature_library_title"] = series_name
             elif not context.get("special_feature_library_title"):
                 context["special_feature_library_title"] = release_hint
         else:
@@ -259,7 +271,7 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
         applied.append(item.media_id)
     dossier.record_attempt(
         media_ids,
-        branch="movie-bonus",
+        branch="tv-bonus" if tv_series_context else "movie-bonus",
         disposition="matched" if len(applied) == len(media_ids) else "review",
         summary={
             "matched_count": len(applied),

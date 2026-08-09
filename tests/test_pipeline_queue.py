@@ -4,6 +4,7 @@ import threading
 import pytest
 
 from mkv_episode_matcher.backend.routers.rip import (
+    AmbiguityChoiceRequest,
     ManualEpisodeIdentificationRequest,
     PipelineControlRequest,
     _delete_exact_queued_rip,
@@ -314,6 +315,14 @@ def test_ambiguity_choice_is_durable_and_does_not_requeue_item(tmp_path):
     events = store.list_events("media-1")
     assert events[-1].event_type == "ambiguity_resolution_selected"
     assert events[-1].details == {"review_code": "gemini_evidence_required"}
+
+
+def test_gemini_ambiguity_choice_retains_external_confirmation():
+    request = AmbiguityChoiceRequest(
+        choice="gemini", confirm_external_fallback=True
+    )
+
+    assert request.confirm_external_fallback is True
 
 
 def test_gemini_descriptive_uncertainty_remains_a_durable_review(tmp_path):
@@ -687,6 +696,52 @@ def test_manual_playback_review_teaches_disc_title_history(tmp_path):
         ),
         "episode_id": "S03E02",
     }
+
+
+def test_manual_bonus_review_routes_to_tv_series_extras(tmp_path):
+    store = _store(tmp_path)
+    source = tmp_path / "staged-bonus.mkv"
+    source.write_bytes(b"verified-rip")
+    rip = tmp_path / "verified-rip.json"
+    rip.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "disc_fingerprint": "0123456789abcdef",
+            "title_index": 2,
+            "media_context": {"series_name": "The Flintstones"},
+        }),
+        encoding="utf-8",
+    )
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    store.enqueue_verified_rip("media-1", build_artifact("rip", rip))
+    store.claim_next()
+    store.require_review("media-1", "all_season_sequence_review_required")
+
+    response = apply_manual_episode_identification(
+        "media-1",
+        ManualEpisodeIdentificationRequest(
+            new_name="Carved in Stone - The Flintstones Phenomenon",
+            content_type="bonus",
+            confirm_identification=True,
+        ),
+        store,
+        contracts,
+    )
+
+    assert response["stage"] == "identify"
+    assert response["state"] == "queued"
+    running = store.claim_next()
+    identified = IdentifyStageAdapter(object(), contracts)(running)
+    payload = json.loads(identified.contract_path.read_text(encoding="utf-8"))
+    assert payload["episode_id"] is None
+    assert payload["library_kind"] == "tv"
+    assert payload["library_relative"] == (
+        "The Flintstones/Extras/"
+        "Carved in Stone - The Flintstones Phenomenon.mkv"
+    )
 
 
 def test_verified_rip_result_is_admitted_without_discovering_media(tmp_path):
