@@ -844,6 +844,52 @@ def _verify_expected_output(
     return verified
 
 
+def recover_handbrake_partial(
+    ffprobe: Path,
+    job: HandBrakeJob,
+    run_dir: Path,
+    *,
+    confirm_transcode: bool,
+) -> HandBrakeResult:
+    """Verify and promote one exact preserved partial without re-encoding."""
+
+    if not confirm_transcode:
+        raise HandBrakeError("Partial recovery requires explicit confirmation")
+    validate_handbrake_job(job)
+    if not run_dir.is_dir():
+        raise HandBrakeError("Transcode run-log directory does not exist")
+    partial = partial_output_path(job)
+    verified = _verify_expected_output(ffprobe, job, partial)
+    event_log, process_log = _new_log_paths(run_dir, job)
+    process_log.write_text(
+        "Existing partial passed read-only verification and was promoted.\n",
+        encoding="utf-8",
+    )
+    _write_event(
+        event_log,
+        {
+            "at": datetime.now(UTC).isoformat(),
+            "event": "partial-recovered",
+            **job.safe_plan(),
+        },
+    )
+    partial.rename(job.destination)
+    return HandBrakeResult(
+        media_id=job.media_id,
+        encoder=job.profile.encoder,
+        output_bytes=verified.size_bytes,
+        duration_seconds=verified.duration_seconds,
+        video_codec=verified.video_codec,
+        audio_streams=verified.audio_streams,
+        subtitle_streams=verified.subtitle_streams,
+        process_log=process_log,
+        event_log=event_log,
+        width=verified.width,
+        height=verified.height,
+        field_order=verified.field_order,
+    )
+
+
 def select_audio_track(preference: str, channel_counts: tuple[int, ...]) -> int:
     """Resolve a reusable layout preference to a one-based HandBrake audio track."""
 

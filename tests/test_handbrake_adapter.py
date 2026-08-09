@@ -12,6 +12,7 @@ from mkv_episode_matcher.media.handbrake import (
     HandBrakeError,
     HandBrakeJob,
     HandBrakeProfile,
+    VerifiedMedia,
     _is_process_interruption,
     _redact,
     _source_audio_channels,
@@ -19,6 +20,7 @@ from mkv_episode_matcher.media.handbrake import (
     execute_handbrake_job,
     inspect_handbrake_capabilities,
     partial_output_path,
+    recover_handbrake_partial,
     select_audio_track,
     validate_handbrake_job,
 )
@@ -560,6 +562,37 @@ def test_success_promotes_only_verified_partial_and_redacts_logs(
     assert str(job.source) not in process_log
     assert job.source.name not in process_log
     assert str(job.destination) not in event_log
+
+
+def test_recovery_promotes_verified_existing_partial_without_handbrake(
+    tmp_path, monkeypatch
+):
+    _handbrake, ffprobe = _tools(tmp_path)
+    job = _job(tmp_path)
+    partial = partial_output_path(job)
+    partial.write_bytes(b"complete-encoded-output")
+    monkeypatch.setattr(
+        "mkv_episode_matcher.media.handbrake._probe_media",
+        lambda _ffprobe, _partial: VerifiedMedia(
+            duration_seconds=1200,
+            size_bytes=partial.stat().st_size,
+            video_codec="hevc",
+            audio_streams=2,
+            subtitle_streams=1,
+            width=1440,
+            height=1080,
+            field_order="progressive",
+        ),
+    )
+
+    result = recover_handbrake_partial(
+        ffprobe, job, tmp_path, confirm_transcode=True
+    )
+
+    assert not partial.exists()
+    assert job.destination.read_bytes() == b"complete-encoded-output"
+    assert result.output_bytes == len(b"complete-encoded-output")
+    assert "partial-recovered" in result.event_log.read_text(encoding="utf-8")
 
 
 def test_failed_encode_preserves_partial_and_never_creates_final(

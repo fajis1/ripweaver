@@ -11,10 +11,12 @@ from typing import Any, Protocol
 
 from mkv_episode_matcher.disc.content_policy import identification_order
 from mkv_episode_matcher.media.handbrake import (
+    HandBrakeError,
     HandBrakeJob,
     HandBrakeProfile,
     execute_handbrake_job,
     partial_output_path,
+    recover_handbrake_partial,
     source_video_height,
 )
 from mkv_episode_matcher.media.organizer import (
@@ -499,6 +501,50 @@ class TranscodeStageAdapter:
             profile_id = self.resolution_profile_ids.get(resolution)
         return profile_id, self.profiles.get(str(profile_id), self.profile)
 
+    def _recover_or_encode(
+        self,
+        item: QueuedPipelineItem,
+        source: Path,
+        destination: Path,
+        profile: HandBrakeProfile,
+    ):
+        attempt = 1
+        recovery_candidates: list[tuple[HandBrakeJob, Path]] = []
+        while True:
+            job = HandBrakeJob(
+                item.media_id,
+                source,
+                destination,
+                profile,
+                attempt_number=attempt,
+            )
+            run_dir = self.run_root / f"{item.media_id}-attempt-{attempt:03d}"
+            partial = partial_output_path(job)
+            if partial.is_file() and run_dir.is_dir():
+                recovery_candidates.append((job, run_dir))
+            if not partial.exists() and not run_dir.exists():
+                break
+            attempt += 1
+        for recovery_job, recovery_run_dir in reversed(recovery_candidates):
+            try:
+                return recover_handbrake_partial(
+                    self.ffprobe,
+                    recovery_job,
+                    recovery_run_dir,
+                    confirm_transcode=True,
+                )
+            except HandBrakeError:
+                continue
+        run_dir.mkdir()
+        return execute_handbrake_job(
+            self.handbrake,
+            self.ffprobe,
+            job,
+            run_dir,
+            confirm_transcode=True,
+            timeout_seconds=self.timeout_seconds,
+        )
+
     def __call__(self, item: QueuedPipelineItem) -> PipelineArtifact:
         payload = _load_contract(item, "identified-episode-contract")
         source = _source_from_contract(payload, "source_path", "source_size_bytes")
@@ -526,27 +572,8 @@ class TranscodeStageAdapter:
         destination.parent.mkdir(parents=True, exist_ok=True)
 
         profile_id, selected_profile = self._select_profile(payload, source)
-        attempt = 1
-        while True:
-            job = HandBrakeJob(
-                item.media_id,
-                source,
-                destination,
-                selected_profile,
-                attempt_number=attempt,
-            )
-            run_dir = self.run_root / f"{item.media_id}-attempt-{attempt:03d}"
-            if not partial_output_path(job).exists() and not run_dir.exists():
-                break
-            attempt += 1
-        run_dir.mkdir()
-        result = execute_handbrake_job(
-            self.handbrake,
-            self.ffprobe,
-            job,
-            run_dir,
-            confirm_transcode=True,
-            timeout_seconds=self.timeout_seconds,
+        result = self._recover_or_encode(
+            item, source, destination, selected_profile
         )
         if (
             not destination.is_file()
