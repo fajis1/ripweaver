@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from mkv_episode_matcher.backend import unmatched_disc_analysis as analysis
+from mkv_episode_matcher.backend.routers import rip as rip_router
 from mkv_episode_matcher.core.credentials import ApiCredentialError, ApiServiceError
 from mkv_episode_matcher.core.models import EpisodeInfo, SubtitleFile
 from mkv_episode_matcher.media.episode_catalog import EpisodeCatalogEntry
@@ -14,6 +15,77 @@ from mkv_episode_matcher.media.gemini_matcher import (
 from mkv_episode_matcher.media.gemini_series_resolver import GeminiSeriesResolution
 from mkv_episode_matcher.pipeline_queue import PipelineQueueStore, build_artifact
 from mkv_episode_matcher.tmdb_client import TvShowCandidate
+
+
+def test_disc_route_allows_unresolved_titles_to_use_content_fallback(
+    tmp_path, monkeypatch
+):
+    fingerprint = "0123456789abcdef"
+    media_id = f"Example--disc-01-{fingerprint}-title-000"
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contract_root = tmp_path / "contracts"
+    contract_root.mkdir()
+    contract = contract_root / "rip.json"
+    contract.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "media_id": media_id,
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "disc_fingerprint": fingerprint,
+            "title_index": 0,
+            "media_context": {"series_name": "The Flintstones", "season": None},
+        }),
+        encoding="utf-8",
+    )
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+    store.claim_next()
+    store.require_review(media_id, "all_season_sequence_review_required")
+    captured = {}
+
+    def fake_analysis(*_args, **kwargs):
+        captured.update(kwargs)
+        return ()
+
+    class ImmediateThread:
+        def __init__(self, *, target, **_kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(rip_router, "execute_unmatched_disc_analysis", fake_analysis)
+    monkeypatch.setattr(rip_router.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(
+        rip_router,
+        "_pipeline_item_response",
+        lambda _item: {"disc_fingerprint": fingerprint},
+    )
+    monkeypatch.setattr(
+        rip_router,
+        "get_config_manager",
+        lambda: SimpleNamespace(load=lambda: SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        rip_router, "get_engine", lambda: SimpleNamespace(asr=SimpleNamespace())
+    )
+
+    result = rip_router.analyze_unmatched_disc(
+        rip_router.UnmatchedDiscAnalysisRequest(
+            disc_fingerprint=fingerprint,
+            series_name="The Flintstones",
+            confirm_media_read=True,
+            confirm_provider_lookup=True,
+            confirm_external_fallback=True,
+        ),
+        store,
+        contract_root,
+    )
+
+    assert result["started"] is True
+    assert captured["allow_content_fallback"] is True
 
 
 def _show(tmdb_id: int, name: str) -> TvShowCandidate:

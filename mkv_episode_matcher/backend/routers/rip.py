@@ -2738,7 +2738,9 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
                 contract_root,
                 season=request.season,
                 allow_gemini=request.confirm_external_fallback,
-                allow_content_fallback=False,
+                # Once episode matching resolves the disc majority, let the
+                # remaining TV titles continue into the bonus-content route.
+                allow_content_fallback=True,
             )
         except Exception as exc:
             if isinstance(exc, GeminiAnalysisError):
