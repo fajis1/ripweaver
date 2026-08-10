@@ -2665,10 +2665,74 @@ for review rather than forcing a TV identity.
 - With no prior episode history, representative cached transcripts survey the
   available seasons and establish the first season from independent strong
   matches. The focused pass reuses those downloaded references. Once subtitle
-  evidence establishes a season block, Gemini cannot force unresolved leftovers
-  into unrelated seasons; those files continue to play-all, bonus, or review
-  handling.
+  evidence establishes a season block, unresolved titles may use TV-specific
+  Gemini ranking only within that block and only against episodes not already
+  assigned by OpenSubtitles. Titles still unresolved after that bounded pass
+  continue to play-all, TV-bonus, or review handling.
 - If season discovery succeeds but subtitle dialogue remains below the automatic
   acceptance threshold, Gemini episode ranking is restricted to the discovered
   season and its one evidence-supported neighbor. It must never silently expand
   that retry back to the complete series catalogue.
+
+## Bounded season-discovery telemetry (2026-08-09)
+
+- Seasonless discs now collect evidence from at most three spread-out anchor
+  titles before broad evidence collection. Two- and three-title reviews retain
+  their complete evidence set.
+- Anchor evidence first surveys history-prioritized OpenSubtitles seasons. A
+  confident result bounds the remaining OpenSubtitles matching to that season and its
+  evidence-supported neighbor; an inconclusive provider attempt falls back to
+  the existing complete-disc analysis.
+- Exact-source Whisper dossiers and downloaded subtitle references are reused
+  by the complete pass and across restarts.
+- Path-free log records report anchor count, total title count, selected season
+  scope, proposed match count, anchor elapsed milliseconds, and total local
+  matching elapsed milliseconds for comparison across future discs.
+
+## Durable matcher observability and cache coverage (2026-08-09)
+
+- Every completed disc-level sequence-analysis attempt now stores one private,
+  path-free performance record in the pipeline database. The record contains
+  the canonical series, fingerprint, title and anchor counts, tested season
+  scope, proposed/applied/unresolved counts, and anchor/total elapsed time. A
+  read-only loopback API and the Disc Dashboard expose the latest records so
+  matching behavior can be compared across future box-set volumes.
+- OpenSubtitles season caches now receive an atomic, TMDb-bound completeness
+  manifest after a provider search. A later run bypasses the provider only when
+  that manifest is complete and every advertised episode remains in the local
+  cache. Missing episodes, a changed TMDb ID, malformed metadata, failed
+  downloads, and empty searches all retain retry behavior.
+- Durable disc-title outcomes remain the single source of truth for learned
+  identity. A new read-only coverage projection groups those outcomes by exact
+  inventory fingerprint and reports title indexes, episode IDs, covered
+  seasons, and non-episode outcome counts without returning library paths. The
+  all-season review panel shows this coverage for the reviewed canonical series;
+  it is evidence for season prioritization and review, not authority to copy a
+  layout onto a different fingerprint.
+
+## Failure evidence and passive stall reporting (2026-08-09)
+
+- Matching-performance storage now records both completed and failed analysis
+  attempts. Failed records contain only a bounded stage, diagnostic code,
+  provider branches, counts, season scope, and elapsed time. Existing databases
+  migrate in place; historical rows retain the default `completed` outcome.
+- Telemetry writes are best-effort and cannot fail or change the matching run.
+  They never contain transcript dialogue, media paths, provider credentials, or
+  exception messages.
+- The queue API already exposed safe per-title branch summaries. The Disc
+  Dashboard now expands those summaries into candidate episode, score,
+  runner-up, decision margin, runtime consistency, provider confidence, and
+  play-all coverage evidence where available. Private transcript excerpts stay
+  in the ignored dossier and are not returned to the browser.
+- MakeMKV and downstream queue responses now classify durable activity age.
+  The dashboard reports `possibly stalled` after five minutes without MakeMKV
+  progress, 45 minutes of unchanged identification, six hours of unchanged
+  transcoding, 15 minutes of unchanged organization, or one hour of unchanged
+  asynchronous analysis. These warnings are advisory only: they never kill,
+  pause, restart, retry, or otherwise mutate a process or queue item.
+- Play-all identification attempts now pass the dossier allowlist and may retain
+  up to 12 validated episode IDs in their public-safe summary. This repairs
+  observability only and does not change play-all matching thresholds.
+- OpenSubtitles review evidence now retains the best candidate, runner-up,
+  decision margin, qualifying transcript-window count, and an exact path-free
+  rejection reason. The dashboard exposes those fields without transcript text.

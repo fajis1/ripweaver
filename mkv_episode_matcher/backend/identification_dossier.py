@@ -27,6 +27,7 @@ _BRANCHES = {
     "tv-local",
     "tv-opensubtitles",
     "tv-gemini",
+    "tv-play-all",
     "movie-bonus",
     "tv-bonus",
     "gemini-synthesis",
@@ -203,14 +204,24 @@ class IdentificationDossierStore:
         *,
         branch: str,
         disposition: str,
-        summary: dict[str, str | int | float | bool | None],
+        summary: dict[str, str | int | float | bool | None | list[str]],
     ) -> None:
         if branch not in _BRANCHES or disposition not in _DISPOSITIONS:
             raise PipelineQueueError("Identification attempt summary is invalid")
         if any(
             not isinstance(key, str)
             or len(key) > 64
-            or isinstance(value, dict | list | tuple)
+            or isinstance(value, dict | tuple)
+            or (
+                isinstance(value, list)
+                and (
+                    len(value) > 12
+                    or any(
+                        not isinstance(item, str) or _SAFE_ID.fullmatch(item) is None
+                        for item in value
+                    )
+                )
+            )
             or (isinstance(value, str) and len(value) > 240)
             for key, value in summary.items()
         ):

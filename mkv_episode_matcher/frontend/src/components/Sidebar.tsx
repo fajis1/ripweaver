@@ -34,9 +34,21 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, systemStatus
     const statusColor = getStatusColor();
 
     const handleShutdown = async () => {
-        if (confirm('Are you sure you want to shut down the server?')) {
+        try {
+            const statusResponse = await fetch('/system/shutdown/status');
+            if (!statusResponse.ok) throw new Error('Unable to check active work');
+            const activity = await statusResponse.json();
+            const warning = activity.safe_to_shutdown
+                ? 'No active media work was detected. Shut down RipWeaver?'
+                : `${activity.active_count} operation(s) are still active. Shutting down now will interrupt them. Downstream work will be requeued after restart; an interrupted physical rip will return paused for review.\n\nInterrupt active work and shut down?`;
+            if (!confirm(warning)) return;
             try {
-                await fetch('/system/shutdown', { method: 'POST' });
+                const response = await fetch('/system/shutdown', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ confirm_interrupt: !activity.safe_to_shutdown }),
+                });
+                if (!response.ok) throw new Error('Shutdown was refused');
                 // Force reload/close window or show disconnected state
                 document.body.innerHTML = `
                     <div style="height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #0f172a; color: white; font-family: system-ui, sans-serif;">
@@ -49,6 +61,9 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, systemStatus
                 console.error('Shutdown failed:', err);
                 alert('Failed to shut down server');
             }
+        } catch (err) {
+            console.error('Shutdown status check failed:', err);
+            alert('RipWeaver could not verify whether media work is active. Shutdown was cancelled.');
         }
     };
 

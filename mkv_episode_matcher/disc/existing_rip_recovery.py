@@ -7,6 +7,7 @@ import json
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path
+from statistics import median
 
 from mkv_episode_matcher.disc.ripper import RipError, RipJob
 
@@ -17,7 +18,11 @@ _STAGING_BASENAME = re.compile(
 _SPECIAL_BASENAME = re.compile(
     r"special-(?P<token>[0-9a-f]{16})-title-(?P<title>\d{3})\.mkv"
 )
+_BATCH_BASENAME = re.compile(r"(?P<prefix>.+)_t(?P<ordinal>\d{2,3})\.mkv")
 _SPECIAL_SIZE_TOLERANCE = 0.05
+_BATCH_ESTIMATE_RATIO_MIN = 0.75
+_BATCH_ESTIMATE_RATIO_MAX = 1.20
+_BATCH_COHORT_RATIO_TOLERANCE = 0.12
 
 
 def _matches_inventory_size(actual: int, estimated: int) -> bool:
@@ -110,6 +115,69 @@ def _complete_special_cohorts(
     return tuple(complete)
 
 
+def _failed_batch_cohorts(  # noqa: C901 - linear identity and prefix guards
+    root: Path, jobs: tuple[RipJob, ...]
+) -> tuple[dict[int, Path], ...]:
+    """Recover the verified-size prefix of failed single-open batch attempts."""
+
+    ordered = tuple(sorted(jobs, key=lambda item: item.title_index))
+    identities = [
+        _STAGING_BASENAME.fullmatch(job.output_basename or "") for job in ordered
+    ]
+    fingerprints = {
+        match.group("fingerprint") for match in identities if match is not None
+    }
+    if (
+        not ordered
+        or any(match is None for match in identities)
+        or len(fingerprints) != 1
+        or any(
+            job.estimated_bytes is None or job.estimated_bytes <= 0
+            for job in ordered
+        )
+    ):
+        return ()
+    fingerprint = next(iter(fingerprints))
+    grouped: dict[tuple[Path, str], dict[int, Path]] = {}
+    for path in root.glob(
+        f".staging/disc-??/attempt-*/{fingerprint}/title-*/*.mkv"
+    ):
+        if not path.is_file():
+            continue
+        match = _BATCH_BASENAME.fullmatch(path.name)
+        if match is None:
+            continue
+        ordinal = int(match.group("ordinal"))
+        if ordinal >= len(ordered):
+            continue
+        key = (path.parent.resolve(), match.group("prefix"))
+        if ordinal in grouped.setdefault(key, {}):
+            grouped[key].pop(ordinal, None)
+            continue
+        grouped[key][ordinal] = path.resolve()
+
+    cohorts = []
+    for ordinal_paths in grouped.values():
+        recovered: dict[int, Path] = {}
+        accepted_ratios: list[float] = []
+        for ordinal, job in enumerate(ordered):
+            path = ordinal_paths.get(ordinal)
+            if path is None:
+                break
+            ratio = path.stat().st_size / job.estimated_bytes
+            if not _BATCH_ESTIMATE_RATIO_MIN <= ratio <= _BATCH_ESTIMATE_RATIO_MAX:
+                break
+            if accepted_ratios:
+                baseline = median(accepted_ratios)
+                if abs(ratio - baseline) / baseline > _BATCH_COHORT_RATIO_TOLERANCE:
+                    break
+            recovered[job.title_index] = path
+            accepted_ratios.append(ratio)
+        if recovered:
+            cohorts.append(recovered)
+    return tuple(cohorts)
+
+
 def _normal_matches(root: Path, basename: str) -> list[Path]:
     identity = _STAGING_BASENAME.fullmatch(basename)
     if identity is None:
@@ -156,7 +224,7 @@ def _candidate_records(
     return records
 
 
-def discover_existing_rips(
+def discover_existing_rips(  # noqa: C901 - ordered recovery precedence guards
     output_root: Path, jobs: tuple[RipJob, ...]
 ) -> ExistingRipRecoveryPlan:
     """Find exact collision-safe basenames without opening media content."""
@@ -168,6 +236,7 @@ def discover_existing_rips(
     missing: list[int] = []
     ambiguous: list[int] = []
     special_cohorts = _complete_special_cohorts(root, jobs)
+    batch_cohorts = _failed_batch_cohorts(root, jobs)
     for job in jobs:
         if not job.output_basename:
             missing.append(job.title_index)
@@ -184,6 +253,12 @@ def discover_existing_rips(
             matches = [special_cohorts[0][job.title_index]]
         elif not matches and len(special_cohorts) > 1:
             matches = [cohort[job.title_index] for cohort in special_cohorts]
+        if not matches:
+            matches = [
+                cohort[job.title_index]
+                for cohort in batch_cohorts
+                if job.title_index in cohort
+            ]
         if not matches:
             missing.append(job.title_index)
             continue

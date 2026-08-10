@@ -11,6 +11,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 from mkv_episode_matcher.disc.rip_manifest import MediaContext
 from mkv_episode_matcher.disc.ripper import (
@@ -33,6 +34,27 @@ _RIP_BASENAME = re.compile(
     r"(?:[A-Za-z0-9][A-Za-z0-9._-]{0,81}--)?"
     r"disc-[0-9]+-([0-9a-f]{16})-title-([0-9]{3})\.mkv"
 )
+_MATCHING_OUTCOMES = {"completed", "failed"}
+_MATCHING_FAILURE_STAGES = {
+    "selection",
+    "catalogue",
+    "evidence",
+    "local-sequence",
+    "opensubtitles",
+    "gemini",
+    "content-fallback",
+    "analysis",
+}
+_MATCHING_PROVIDER_BRANCHES = {
+    "tv-local",
+    "tv-opensubtitles",
+    "tv-gemini",
+    "tv-play-all",
+    "movie-bonus",
+    "tv-bonus",
+    "gemini-synthesis",
+}
+_SAFE_DIAGNOSTIC_CODE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,95}")
 
 
 @dataclass(frozen=True)
@@ -309,8 +331,165 @@ class PipelineQueueStore:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (disc_fingerprint, title_index)
                 );
+                CREATE TABLE IF NOT EXISTS matching_performance (
+                    run_id TEXT PRIMARY KEY,
+                    disc_fingerprint TEXT NOT NULL,
+                    series_name TEXT NOT NULL,
+                    title_count INTEGER NOT NULL,
+                    anchor_count INTEGER NOT NULL,
+                    season_scope TEXT NOT NULL,
+                    proposed_count INTEGER NOT NULL,
+                    applied_count INTEGER NOT NULL,
+                    unresolved_count INTEGER NOT NULL,
+                    anchor_elapsed_ms INTEGER NOT NULL,
+                    total_elapsed_ms INTEGER NOT NULL,
+                    outcome TEXT NOT NULL DEFAULT 'completed',
+                    failure_stage TEXT,
+                    failure_code TEXT,
+                    provider_branches TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
                 """
             )
+            matching_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(matching_performance)"
+                ).fetchall()
+            }
+            migrations = {
+                "outcome": "TEXT NOT NULL DEFAULT 'completed'",
+                "failure_stage": "TEXT",
+                "failure_code": "TEXT",
+                "provider_branches": "TEXT NOT NULL DEFAULT ''",
+            }
+            for column, declaration in migrations.items():
+                if column not in matching_columns:
+                    connection.execute(
+                        f"ALTER TABLE matching_performance ADD COLUMN {column} {declaration}"
+                    )
+
+    def record_matching_performance(
+        self,
+        *,
+        disc_fingerprint: str,
+        series_name: str,
+        title_count: int,
+        anchor_count: int,
+        season_scope: tuple[int, ...],
+        proposed_count: int,
+        applied_count: int,
+        unresolved_count: int,
+        anchor_elapsed_ms: int,
+        total_elapsed_ms: int,
+        outcome: str = "completed",
+        failure_stage: str | None = None,
+        failure_code: str | None = None,
+        provider_branches: tuple[str, ...] = (),
+    ) -> None:
+        """Persist one path- and dialogue-free all-season performance record."""
+
+        canonical = series_name.strip()
+        counts = (
+            title_count,
+            anchor_count,
+            proposed_count,
+            applied_count,
+            unresolved_count,
+            anchor_elapsed_ms,
+            total_elapsed_ms,
+        )
+        if (
+            re.fullmatch(r"[0-9a-f]{16}", disc_fingerprint) is None
+            or not canonical
+            or len(canonical) > 160
+            or any(not isinstance(value, int) or value < 0 for value in counts)
+            or outcome not in _MATCHING_OUTCOMES
+            or (outcome == "completed" and title_count < 2)
+            or (outcome == "completed" and not 1 <= anchor_count <= title_count)
+            or (outcome == "failed" and not 0 <= anchor_count <= title_count)
+            or proposed_count > title_count
+            or applied_count > title_count
+            or unresolved_count > title_count
+            or any(not isinstance(value, int) or value < 0 for value in season_scope)
+            or (
+                failure_stage is not None
+                and failure_stage not in _MATCHING_FAILURE_STAGES
+            )
+            or (
+                failure_code is not None
+                and _SAFE_DIAGNOSTIC_CODE.fullmatch(failure_code) is None
+            )
+            or any(
+                branch not in _MATCHING_PROVIDER_BRANCHES
+                for branch in provider_branches
+            )
+            or (outcome == "completed" and (failure_stage or failure_code))
+        ):
+            raise PipelineQueueError("Matching performance record is invalid")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO matching_performance (
+                    run_id, disc_fingerprint, series_name, title_count,
+                    anchor_count, season_scope, proposed_count, applied_count,
+                    unresolved_count, anchor_elapsed_ms, total_elapsed_ms,
+                    outcome, failure_stage, failure_code, provider_branches, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    uuid4().hex,
+                    disc_fingerprint,
+                    canonical,
+                    title_count,
+                    anchor_count,
+                    ",".join(str(value) for value in season_scope),
+                    proposed_count,
+                    applied_count,
+                    unresolved_count,
+                    anchor_elapsed_ms,
+                    total_elapsed_ms,
+                    outcome,
+                    failure_stage,
+                    failure_code,
+                    ",".join(dict.fromkeys(provider_branches)),
+                    self._now(),
+                ),
+            )
+
+    def matching_performance(self, *, limit: int = 50) -> tuple[dict[str, object], ...]:
+        if not isinstance(limit, int) or not 1 <= limit <= 200:
+            raise PipelineQueueError("Matching performance limit is invalid")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM matching_performance ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return tuple(
+            {
+                "run_id": row["run_id"],
+                "disc_fingerprint": row["disc_fingerprint"],
+                "series_name": row["series_name"],
+                "title_count": row["title_count"],
+                "anchor_count": row["anchor_count"],
+                "season_scope": [
+                    int(value) for value in row["season_scope"].split(",") if value
+                ],
+                "proposed_count": row["proposed_count"],
+                "applied_count": row["applied_count"],
+                "unresolved_count": row["unresolved_count"],
+                "anchor_elapsed_ms": row["anchor_elapsed_ms"],
+                "total_elapsed_ms": row["total_elapsed_ms"],
+                "outcome": row["outcome"],
+                "failure_stage": row["failure_stage"],
+                "failure_code": row["failure_code"],
+                "provider_branches": [
+                    value for value in row["provider_branches"].split(",") if value
+                ],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        )
 
     def title_history(self, disc_fingerprint: str) -> dict[int, dict[str, str | None]]:
         if re.fullmatch(r"[0-9a-f]{16}", disc_fingerprint) is None:
@@ -327,6 +506,98 @@ class PipelineQueueStore:
                 "episode_id": row["episode_id"],
             }
             for row in rows
+        }
+
+    def assigned_series_episodes(self, series_name: str) -> frozenset[tuple[int, int]]:
+        """Return durable episode assignments for one canonical series."""
+
+        normalized = re.sub(r"[^a-z0-9]+", "", series_name.casefold())
+        found: set[tuple[int, int]] = set()
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT library_relative, episode_id FROM disc_title_history "
+                "WHERE episode_id IS NOT NULL"
+            ).fetchall()
+        for row in rows:
+            relative = row["library_relative"]
+            episode_id = row["episode_id"]
+            if not isinstance(relative, str) or not isinstance(episode_id, str):
+                continue
+            parts = Path(relative).parts
+            if (
+                not parts
+                or re.sub(r"[^a-z0-9]+", "", parts[0].casefold()) != normalized
+            ):
+                continue
+            match = re.fullmatch(r"(?i)S(\d{1,3})E(\d{1,3})", episode_id)
+            if match is not None:
+                found.add((int(match.group(1)), int(match.group(2))))
+        return frozenset(found)
+
+    def learned_series_coverage(self, series_name: str) -> dict[str, object]:
+        """Project durable title history into reviewable, path-free disc coverage."""
+
+        canonical = series_name.strip()
+        if not canonical or len(canonical) > 160:
+            raise PipelineQueueError("Canonical series name is invalid")
+        normalized = re.sub(r"[^a-z0-9]+", "", canonical.casefold())
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT disc_fingerprint, title_index, library_relative, episode_id "
+                "FROM disc_title_history ORDER BY disc_fingerprint, title_index"
+            ).fetchall()
+
+        grouped: dict[str, list[dict[str, object]]] = {}
+        for row in rows:
+            relative = row["library_relative"]
+            if not isinstance(relative, str):
+                continue
+            parts = Path(relative).parts
+            if (
+                not parts
+                or re.sub(r"[^a-z0-9]+", "", parts[0].casefold()) != normalized
+            ):
+                continue
+            episode_id = row["episode_id"]
+            grouped.setdefault(row["disc_fingerprint"], []).append({
+                "title_index": int(row["title_index"]),
+                "episode_id": episode_id
+                if isinstance(episode_id, str)
+                and re.fullmatch(r"(?i)S\d{1,3}E\d{1,3}", episode_id)
+                else None,
+            })
+
+        discs: list[dict[str, object]] = []
+        all_episode_ids: set[str] = set()
+        for fingerprint, assignments in grouped.items():
+            episode_ids = sorted(
+                {
+                    assignment["episode_id"]
+                    for assignment in assignments
+                    if isinstance(assignment["episode_id"], str)
+                },
+                key=lambda value: tuple(
+                    int(part) for part in re.findall(r"\d+", value)
+                ),
+            )
+            all_episode_ids.update(episode_ids)
+            seasons = sorted({
+                int(re.match(r"(?i)S(\d+)", value).group(1)) for value in episode_ids
+            })
+            discs.append({
+                "disc_fingerprint": fingerprint,
+                "assigned_title_count": len(assignments),
+                "episode_count": len(episode_ids),
+                "other_title_count": len(assignments) - len(episode_ids),
+                "seasons": seasons,
+                "episode_ids": episode_ids,
+                "assignments": assignments,
+            })
+        return {
+            "series_name": canonical,
+            "disc_count": len(discs),
+            "episode_count": len(all_episode_ids),
+            "discs": discs,
         }
 
     def forget_disc_records(self, disc_fingerprint: str) -> tuple[int, int]:
@@ -1536,12 +1807,16 @@ class PipelineQueueStore:
                 ).fetchone()[0]
             )
 
-    def reconcile_incomplete(self) -> tuple[str, ...]:
-        """Return interrupted downstream work to its stage queue after restart."""
+    def reconcile_incomplete(self, *, clear_pause: bool = False) -> tuple[str, ...]:
+        """Return interrupted work to its stage queue and optionally resume startup."""
 
         recovered: list[str] = []
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if clear_pause:
+                connection.execute(
+                    "UPDATE pipeline_control SET paused = 0 WHERE singleton = 1"
+                )
             rows = connection.execute(
                 "SELECT media_id, stage FROM pipeline_items WHERE state = 'running'"
             ).fetchall()
@@ -1591,6 +1866,36 @@ class PipelineQueueStore:
 StageAdapter = Callable[[QueuedPipelineItem], PipelineArtifact | StageOutcome]
 
 
+def _safe_adapter_failure_code(exc: Exception) -> str:
+    """Reduce adapter exceptions to actionable, path-free durable codes."""
+
+    if type(exc).__name__ == "HandBrakeProcessError":
+        return "HandBrakeProcessFailed"
+    if type(exc).__name__ != "HandBrakeError":
+        return type(exc).__name__
+    message = str(exc).casefold()
+    categories = (
+        ("partial transcode exists", "HandBrakePartialExists"),
+        ("amd vcn is not available", "HandBrakeEncoderUnavailable"),
+        ("encoder is not available", "HandBrakeEncoderUnavailable"),
+        ("requested audio language was not found", "HandBrakeAudioLanguageMissing"),
+        ("no usable tracks", "HandBrakeNoUsableAudio"),
+        ("no usable height", "HandBrakeNoUsableVideo"),
+        ("source audio inspection failed", "HandBrakeAudioInspectionFailed"),
+        ("source video inspection failed", "HandBrakeVideoInspectionFailed"),
+        ("timed out", "HandBrakeTimedOut"),
+        ("destination exists", "HandBrakeDestinationExists"),
+        ("destination appeared", "HandBrakeDestinationExists"),
+        ("produced no output", "HandBrakeNoOutput"),
+        ("stream verification", "HandBrakeOutputVerificationFailed"),
+        ("unexpected video codec", "HandBrakeOutputVerificationFailed"),
+    )
+    return next(
+        (code for fragment, code in categories if fragment in message),
+        "HandBrakePreflightFailed",
+    )
+
+
 class DownstreamDispatcher:
     """Run at most one non-rip operation at a time across every stage."""
 
@@ -1632,7 +1937,7 @@ class DownstreamDispatcher:
             # unrelated queued discs can continue. Store failures still raise
             # from this call and stop the dispatcher because queue integrity is
             # then unknown.
-            return self.store.fail(item.media_id, type(exc).__name__)
+            return self.store.fail(item.media_id, _safe_adapter_failure_code(exc))
 
     def drain(self, *, max_items: int | None = None) -> tuple[QueuedPipelineItem, ...]:
         if max_items is not None and max_items <= 0:

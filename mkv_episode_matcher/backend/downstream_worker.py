@@ -64,6 +64,12 @@ class DownstreamWorker:
                 item.media_id, "gemini_evidence_required"
             )
 
+    def _apply_post_item_automation(self, item) -> bool:
+        """Run item and completed-disc fallbacks without waiting for queue idle."""
+
+        self._apply_automatic_fallback(item)
+        return self._apply_automatic_disc_analysis()
+
     def _apply_automatic_disc_analysis(self) -> bool:  # noqa: C901
         """Recover automatic TV batches that settled into a sequence hold."""
 
@@ -252,10 +258,10 @@ class DownstreamWorker:
                     self._stop.wait(self.poll_seconds)
             else:
                 try:
-                    self._apply_automatic_fallback(item)
+                    self._apply_post_item_automation(item)
                 except Exception as exc:
                     logger.error(
-                        "Automatic ambiguity fallback could not be recorded: {}",
+                        "Automatic post-identification fallback could not run: {}",
                         type(exc).__name__,
                     )
         logger.info("Downstream identification worker stopped")

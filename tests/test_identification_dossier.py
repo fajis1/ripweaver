@@ -126,9 +126,7 @@ def test_collect_reuses_exact_source_cache_after_media_id_changes(
     assert restored.load_evidence("recovery-id", identity) == evidence[0]
 
 
-def test_collect_keeps_audio_less_title_as_runtime_only_evidence(
-    tmp_path, monkeypatch
-):
+def test_collect_keeps_audio_less_title_as_runtime_only_evidence(tmp_path, monkeypatch):
     source = tmp_path / "menu-like.mkv"
     source.write_bytes(b"synthetic")
     payload = _payload(source)
@@ -182,3 +180,25 @@ def test_attempt_history_is_bounded_and_rejects_nested_private_data(tmp_path):
             disposition="failed",
             summary={"private": {"dialogue": "must not be public"}},
         )
+
+
+def test_play_all_attempt_retains_bounded_component_episode_ids(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    identity = source_identity(_payload(source), source, "small")
+    store = IdentificationDossierStore(tmp_path / "private")
+    store.save_evidence(identity, UnmatchedFileEvidence("media-1", 1, ("x",)))
+
+    store.record_attempt(
+        ("media-1",),
+        branch="tv-play-all",
+        disposition="matched",
+        summary={
+            "component_episode_ids": ["S01E01", "S01E02"],
+            "duration_ratio": 1.01,
+        },
+    )
+
+    attempt = store.safe_attempts("media-1")[-1]
+    assert attempt["branch"] == "tv-play-all"
+    assert attempt["summary"]["component_episode_ids"] == ["S01E01", "S01E02"]

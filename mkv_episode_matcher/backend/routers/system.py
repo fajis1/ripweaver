@@ -12,6 +12,37 @@ from mkv_episode_matcher import __version__
 router = APIRouter(prefix="/system", tags=["System"])
 
 
+def _shutdown_activity() -> dict[str, object]:
+    """Return path-free activity that would be interrupted by shutdown."""
+
+    from mkv_episode_matcher.backend.dependencies import (
+        get_pipeline_queue_store,
+        get_rip_execution_registry,
+    )
+
+    items = get_pipeline_queue_store().list_items()
+    running_items = [item for item in items if item.state == "running"]
+    running_analyses = [
+        item
+        for item in items
+        if item.state == "review_required"
+        and (item.review_code or "").endswith("_running")
+    ]
+    physical_rip_active = get_rip_execution_registry().has_active_executor()
+    active_count = len(running_items) + len(running_analyses) + int(physical_rip_active)
+    return {
+        "safe_to_shutdown": active_count == 0,
+        "active_count": active_count,
+        "physical_rip_active": physical_rip_active,
+        "downstream_items_active": len(running_items),
+        "evidence_analyses_active": len(running_analyses),
+        "restart_recovery": (
+            "Interrupted downstream work is requeued at startup; interrupted physical "
+            "rips return paused for review."
+        ),
+    }
+
+
 def _find_executable(
     names: tuple[str, ...], candidates: tuple[Path, ...] = ()
 ) -> str | None:
@@ -478,13 +509,32 @@ def delete_jellyfin_cleanup(payload: dict):
     return {"deleted_file_count": deleted, "jellyfin_files_affected": 0}
 
 
+@router.get("/shutdown/status")
+def shutdown_status():
+    """Report whether shutdown would interrupt active work."""
+
+    return _shutdown_activity()
+
+
 @router.post("/shutdown")
-def shutdown_server():
+def shutdown_server(payload: dict | None = None):
     """Shutdown the application server."""
     import os
     import signal
     import threading
     import time
+
+    activity = _shutdown_activity()
+    if not activity["safe_to_shutdown"] and not (payload or {}).get(
+        "confirm_interrupt"
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                **activity,
+                "message": "Active work would be interrupted; explicit confirmation is required",
+            },
+        )
 
     def kill_server():
         time.sleep(1)
@@ -492,4 +542,4 @@ def shutdown_server():
 
     # Schedule shutdown in a separate thread to allow response to return
     threading.Thread(target=kill_server).start()
-    return {"status": "shutting_down"}
+    return {"status": "shutting_down", "interrupted_work": activity["active_count"]}

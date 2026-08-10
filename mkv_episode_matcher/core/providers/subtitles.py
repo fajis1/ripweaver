@@ -1,4 +1,6 @@
 import abc
+import json
+import os
 import re
 import shutil
 import time
@@ -21,6 +23,69 @@ from mkv_episode_matcher.core.credentials import (
 )
 from mkv_episode_matcher.core.models import EpisodeInfo, SubtitleFile
 from mkv_episode_matcher.core.utils import safe_cache_component
+
+_CACHE_MANIFEST_SCHEMA = 1
+
+
+def _season_manifest_path(cache_dir: Path, season: int) -> Path:
+    return cache_dir / f".season-{season:02d}.cache.json"
+
+
+def _complete_cached_season(
+    cache_dir: Path,
+    season: int,
+    cached_subtitles: list[SubtitleFile],
+    tmdb_id: int | None,
+) -> bool:
+    path = _season_manifest_path(cache_dir, season)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    expected = payload.get("episode_numbers")
+    if (
+        payload.get("schema_version") != _CACHE_MANIFEST_SCHEMA
+        or payload.get("season") != season
+        or payload.get("tmdb_id") != tmdb_id
+        or payload.get("complete") is not True
+        or not isinstance(expected, list)
+        or any(not isinstance(value, int) or value <= 0 for value in expected)
+    ):
+        return False
+    cached = {
+        item.episode_info.episode
+        for item in cached_subtitles
+        if item.episode_info is not None
+    }
+    return bool(expected) and set(expected) <= cached
+
+
+def _write_season_manifest(
+    cache_dir: Path,
+    *,
+    season: int,
+    tmdb_id: int | None,
+    episode_numbers: set[int],
+    complete: bool,
+) -> None:
+    target = _season_manifest_path(cache_dir, season)
+    temporary = cache_dir / f".{target.name}.{os.getpid()}.tmp"
+    temporary.write_text(
+        json.dumps(
+            {
+                "schema_version": _CACHE_MANIFEST_SCHEMA,
+                "season": season,
+                "tmdb_id": tmdb_id,
+                "episode_numbers": sorted(episode_numbers),
+                "complete": complete,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, target)
 
 
 def retry_with_backoff(
@@ -96,7 +161,11 @@ def parse_season_episode(filename: str) -> EpisodeInfo | None:
 class SubtitleProvider(abc.ABC):
     @abc.abstractmethod
     def get_subtitles(
-        self, show_name: str, season: int, video_files: list[Path] = None, tmdb_id: int | None = None
+        self,
+        show_name: str,
+        season: int,
+        video_files: list[Path] = None,
+        tmdb_id: int | None = None,
     ) -> list[SubtitleFile]:
         pass
 
@@ -108,7 +177,11 @@ class LocalSubtitleProvider(SubtitleProvider):
         self.cache_dir = cache_dir / "data"
 
     def get_subtitles(
-        self, show_name: str, season: int, video_files: list[Path] = None, tmdb_id: int | None = None
+        self,
+        show_name: str,
+        season: int,
+        video_files: list[Path] = None,
+        tmdb_id: int | None = None,
     ) -> list[SubtitleFile]:
         """Get all subtitle files for a specific show and season."""
         show_dir = self.cache_dir / safe_cache_component(show_name)
@@ -155,9 +228,7 @@ class OpenSubtitlesProvider(SubtitleProvider):
         for attempt in range(2):
             self.config = get_config_manager().load()
             if not self.config.open_subtitles_api_key:
-                error = ApiCredentialError(
-                    "opensubtitles-api", "not configured"
-                )
+                error = ApiCredentialError("opensubtitles-api", "not configured")
                 if attempt == 0 and request_credential_recovery(error):
                     continue
                 self._credential_error = error
@@ -202,8 +273,7 @@ class OpenSubtitlesProvider(SubtitleProvider):
                     self._auth_error = str(error)
                 else:
                     self._auth_error = (
-                        "Failed to initialize OpenSubtitles: "
-                        f"{type(e).__name__}"
+                        f"Failed to initialize OpenSubtitles: {type(e).__name__}"
                     )
                 logger.error(self._auth_error)
                 self.client = None
@@ -274,11 +344,35 @@ class OpenSubtitlesProvider(SubtitleProvider):
             if hasattr(signal, "SIGALRM"):
                 signal.alarm(0)  # Cancel the alarm
 
-    def get_subtitles(
-        self, show_name: str, season: int, video_files: list[Path] = None, tmdb_id: int | None = None
+    def get_subtitles(  # noqa: C901 - provider metadata and retry guards
+        self,
+        show_name: str,
+        season: int,
+        video_files: list[Path] = None,
+        tmdb_id: int | None = None,
     ) -> list[SubtitleFile]:
         """Get subtitles for a show/season by downloading them."""
+        cache_dir = self.config.cache_dir / "data" / safe_cache_component(show_name)
+        cached_subtitles = LocalSubtitleProvider(self.config.cache_dir).get_subtitles(
+            show_name, season, video_files, tmdb_id
+        )
+        if _complete_cached_season(cache_dir, season, cached_subtitles, tmdb_id):
+            logger.info(
+                "Using complete cached subtitle season for {} S{:02d} ({} episodes)",
+                show_name,
+                season,
+                len(cached_subtitles),
+            )
+            return cached_subtitles
         if not self.client:
+            if cached_subtitles:
+                logger.info(
+                    "Using {} cached subtitle references for {} S{:02d}",
+                    len(cached_subtitles),
+                    show_name,
+                    season,
+                )
+                return cached_subtitles
             if self._credential_error is not None:
                 raise self._credential_error
             reason = self._auth_error or "unknown error during initialization"
@@ -288,37 +382,39 @@ class OpenSubtitlesProvider(SubtitleProvider):
         # Check for manual TMDB ID first and get correct show name
         search_show_name = show_name
         if tmdb_id:
-            logger.info(f"Using manual TMDB ID: {tmdb_id} for {show_name} S{season:02d}")
+            logger.info(
+                f"Using manual TMDB ID: {tmdb_id} for {show_name} S{season:02d}"
+            )
             try:
                 from mkv_episode_matcher.tmdb_client import fetch_show_details
 
                 show_data = fetch_show_details(tmdb_id)
                 if show_data:
                     search_show_name = show_data.get("name", show_name)
-                    logger.info(f"TMDB lookup: Using '{search_show_name}' instead of '{show_name}'")
+                    logger.info(
+                        f"TMDB lookup: Using '{search_show_name}' instead of '{show_name}'"
+                    )
                 else:
                     logger.warning(f"Failed to lookup TMDB ID {tmdb_id}")
             except ApiCredentialError:
                 raise
             except Exception as e:
-                logger.error(
-                    f"Error looking up TMDB ID {tmdb_id}: {type(e).__name__}"
-                )
+                logger.error(f"Error looking up TMDB ID {tmdb_id}: {type(e).__name__}")
 
         logger.info(f"Searching OpenSubtitles for {search_show_name} S{season:02d}")
 
         # Prepare cache directory
-        cache_dir = (
-            self.config.cache_dir / "data" / safe_cache_component(show_name)
-        )
         cache_dir.mkdir(parents=True, exist_ok=True)
 
-        downloaded_subtitles = []
+        downloaded_subtitles = list(cached_subtitles)
+        available_episodes: set[int] = set()
 
         try:
             # Search by TMDB ID if available, otherwise fall back to query search
             if tmdb_id:
-                logger.debug(f"Searching OpenSubtitles by parent_tmdb_id={tmdb_id}, season={season}")
+                logger.debug(
+                    f"Searching OpenSubtitles by parent_tmdb_id={tmdb_id}, season={season}"
+                )
                 response = self._search_with_retry(
                     query=None,
                     parent_tmdb_id=tmdb_id,
@@ -332,16 +428,31 @@ class OpenSubtitlesProvider(SubtitleProvider):
                 response = self._search_with_retry(query=query, type="episode")
 
             if not response.data:
-                search_desc = f"TMDB ID {tmdb_id} S{season:02d}" if tmdb_id else f"query '{search_show_name} S{season:02d}'"
+                search_desc = (
+                    f"TMDB ID {tmdb_id} S{season:02d}"
+                    if tmdb_id
+                    else f"query '{search_show_name} S{season:02d}'"
+                )
                 logger.warning(f"No subtitles found for {search_desc}")
-                return []
+                _write_season_manifest(
+                    cache_dir,
+                    season=season,
+                    tmdb_id=tmdb_id,
+                    episode_numbers=set(),
+                    complete=False,
+                )
+                return downloaded_subtitles
 
             logger.info(f"Found {len(response.data)} potential subtitles")
 
             # Limit downloads to a reasonable number or try to match specifically?
             # For now, let's download unique episodes for this season.
 
-            seen_episodes = set()
+            seen_episodes = {
+                item.episode_info.episode
+                for item in cached_subtitles
+                if item.episode_info is not None
+            }
             logger.debug(f"Starting subtitle download loop for season {season}")
 
             subtitles_checked = 0
@@ -365,26 +476,37 @@ class OpenSubtitlesProvider(SubtitleProvider):
                         # Fallback if it somehow changes to object
                         sub_filename = getattr(subtitle.files[0], "file_name", "")
 
-                logger.debug(f"Subtitle {subtitles_checked}: api_season={api_season}, api_episode={api_episode}, filename={sub_filename}")
+                logger.debug(
+                    f"Subtitle {subtitles_checked}: api_season={api_season}, api_episode={api_episode}, filename={sub_filename}"
+                )
 
                 # Check match
                 if api_season and api_episode:
                     if api_season != season:
-                        logger.debug(f"  Skipping: API season {api_season} != requested season {season}")
+                        logger.debug(
+                            f"  Skipping: API season {api_season} != requested season {season}"
+                        )
                         subtitles_skipped_season += 1
                         continue
                     ep_num = api_episode
-                    logger.debug(f"  Using API metadata: S{api_season:02d}E{ep_num:02d}")
+                    logger.debug(
+                        f"  Using API metadata: S{api_season:02d}E{ep_num:02d}"
+                    )
                 else:
                     # Fallback to parsing filename
                     info = parse_season_episode(sub_filename or "")
                     if not info or info.season != season:
-                        logger.debug(f"  Skipping: Failed to parse or season mismatch in filename: {sub_filename}")
+                        logger.debug(
+                            f"  Skipping: Failed to parse or season mismatch in filename: {sub_filename}"
+                        )
                         subtitles_skipped_parse += 1
                         continue
                     ep_num = info.episode
-                    logger.debug(f"  Parsed from filename: S{info.season:02d}E{ep_num:02d}")
+                    logger.debug(
+                        f"  Parsed from filename: S{info.season:02d}E{ep_num:02d}"
+                    )
 
+                available_episodes.add(ep_num)
                 if ep_num in seen_episodes:
                     continue
 
@@ -395,9 +517,7 @@ class OpenSubtitlesProvider(SubtitleProvider):
 
                     # Move to cache
                     cache_name = safe_cache_component(show_name)
-                    target_name = (
-                        f"{cache_name} - S{season:02d}E{ep_num:02d}.srt"
-                    )
+                    target_name = f"{cache_name} - S{season:02d}E{ep_num:02d}.srt"
                     target_path = cache_dir / target_name
 
                     shutil.move(srt_file, target_path)
@@ -421,25 +541,30 @@ class OpenSubtitlesProvider(SubtitleProvider):
                 f"skipped_season={subtitles_skipped_season}, skipped_parse={subtitles_skipped_parse}, "
                 f"downloaded={len(downloaded_subtitles)}"
             )
+            _write_season_manifest(
+                cache_dir,
+                season=season,
+                tmdb_id=tmdb_id,
+                episode_numbers=available_episodes,
+                complete=bool(available_episodes)
+                and available_episodes <= seen_episodes,
+            )
             return downloaded_subtitles
 
         except ApiCredentialError as error:
-            if (
-                not self._credential_retry_attempted
-                and request_credential_recovery(error)
+            if not self._credential_retry_attempted and request_credential_recovery(
+                error
             ):
                 self._credential_retry_attempted = True
                 self.client = None
                 self._authenticate()
                 if self.client:
-                    return self.get_subtitles(
-                        show_name, season, video_files, tmdb_id
-                    )
+                    return self.get_subtitles(show_name, season, video_files, tmdb_id)
             logger.error(str(error))
-            return []
+            return downloaded_subtitles
         except Exception as e:
             logger.error(f"OpenSubtitles search failed: {type(e).__name__}")
-            return []
+            return downloaded_subtitles
 
 
 class CompositeSubtitleProvider(SubtitleProvider):
@@ -447,13 +572,19 @@ class CompositeSubtitleProvider(SubtitleProvider):
         self.providers = providers
 
     def get_subtitles(
-        self, show_name: str, season: int, video_files: list[Path] = None, tmdb_id: int | None = None
+        self,
+        show_name: str,
+        season: int,
+        video_files: list[Path] = None,
+        tmdb_id: int | None = None,
     ) -> list[SubtitleFile]:
         results = []
 
         # Try each provider in order, but prioritize cached results
         for i, provider in enumerate(self.providers):
-            provider_results = provider.get_subtitles(show_name, season, video_files, tmdb_id)
+            provider_results = provider.get_subtitles(
+                show_name, season, video_files, tmdb_id
+            )
 
             # If this is the local provider and we have results, prefer them
             if isinstance(provider, LocalSubtitleProvider) and provider_results:

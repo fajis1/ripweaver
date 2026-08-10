@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import threading
 
 import pytest
@@ -13,6 +14,7 @@ from mkv_episode_matcher.backend.routers.rip import (
     restart_placeholder_identification,
 )
 from mkv_episode_matcher.disc.ripper import RipJob, RipResult, resolve_final_output
+from mkv_episode_matcher.media.handbrake import HandBrakeError
 from mkv_episode_matcher.pipeline_adapters import IdentifyStageAdapter
 from mkv_episode_matcher.pipeline_queue import (
     DOWNSTREAM_STAGES,
@@ -20,9 +22,22 @@ from mkv_episode_matcher.pipeline_queue import (
     PipelineQueueError,
     PipelineQueueStore,
     PipelineReviewRequiredError,
+    _safe_adapter_failure_code,
     build_artifact,
     enqueue_verified_rip_results,
 )
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("Requested audio language was not found", "HandBrakeAudioLanguageMissing"),
+        ("Source audio inspection returned no usable tracks", "HandBrakeNoUsableAudio"),
+        ("unclassified safe preflight", "HandBrakePreflightFailed"),
+    ],
+)
+def test_handbrake_failures_are_reduced_to_safe_actionable_codes(message, expected):
+    assert _safe_adapter_failure_code(HandBrakeError(message)) == expected
 
 
 def _artifact(tmp_path, media_id, stage):
@@ -65,6 +80,27 @@ def test_identification_outcome_is_remembered_by_disc_title(tmp_path):
         "outcome_name": "Dragons - S01E03 - Animal House.mkv",
         "library_relative": "Dragons/Season 01/Dragons - S01E03 - Animal House.mkv",
         "episode_id": "S01E03",
+    }
+    assert store.assigned_series_episodes("Dragons") == frozenset({(1, 3)})
+    assert store.assigned_series_episodes("Another Series") == frozenset()
+    coverage = PipelineQueueStore(store.database_path).learned_series_coverage(
+        "Dragons"
+    )
+    assert coverage == {
+        "series_name": "Dragons",
+        "disc_count": 1,
+        "episode_count": 1,
+        "discs": [
+            {
+                "disc_fingerprint": "0123456789abcdef",
+                "assigned_title_count": 1,
+                "episode_count": 1,
+                "other_title_count": 0,
+                "seasons": [1],
+                "episode_ids": ["S01E03"],
+                "assignments": [{"title_index": 2, "episode_id": "S01E03"}],
+            }
+        ],
     }
 
     restarted = store.restart_identification(
@@ -297,6 +333,19 @@ def test_pause_prevents_new_claim_without_changing_queued_items(tmp_path):
     assert store.claim_next().state == "running"
 
 
+def test_restart_reconciliation_clears_persisted_global_pause(tmp_path):
+    store = _store(tmp_path)
+    store.enqueue_verified_rip("media-1", _artifact(tmp_path, "media-1", "rip"))
+    store.set_paused(True)
+
+    store.reconcile_incomplete()
+    assert store.is_paused() is True
+
+    store.reconcile_incomplete(clear_pause=True)
+    assert store.is_paused() is False
+    assert store.claim_next().media_id == "media-1"
+
+
 def test_ambiguity_choice_is_durable_and_does_not_requeue_item(tmp_path):
     store = _store(tmp_path)
     store.enqueue_verified_rip("media-1", _artifact(tmp_path, "media-1", "rip"))
@@ -318,9 +367,7 @@ def test_ambiguity_choice_is_durable_and_does_not_requeue_item(tmp_path):
 
 
 def test_gemini_ambiguity_choice_retains_external_confirmation():
-    request = AmbiguityChoiceRequest(
-        choice="gemini", confirm_external_fallback=True
-    )
+    request = AmbiguityChoiceRequest(choice="gemini", confirm_external_fallback=True)
 
     assert request.confirm_external_fallback is True
 
@@ -420,13 +467,11 @@ def test_delete_queued_item_media_accepts_source_already_removed_by_cleanup(tmp_
     source.write_bytes(b"verified")
     contract = tmp_path / "queued-already-cleaned-rip.json"
     contract.write_text(
-        json.dumps(
-            {
-                "mode": "verified-rip-contract",
-                "source_path": str(source),
-                "source_size_bytes": source.stat().st_size,
-            }
-        ),
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+        }),
         encoding="utf-8",
     )
     artifact = build_artifact("rip", contract)
@@ -495,15 +540,13 @@ def test_forget_disc_records_removes_only_metadata_and_preserves_media(tmp_path)
         source.write_bytes(media_id.encode())
         contract = tmp_path / f"{media_id}.json"
         contract.write_text(
-            json.dumps(
-                {
-                    "mode": "verified-rip-contract",
-                    "source_path": str(source),
-                    "source_size_bytes": source.stat().st_size,
-                    "disc_fingerprint": fingerprint,
-                    "title_index": 0,
-                }
-            ),
+            json.dumps({
+                "mode": "verified-rip-contract",
+                "source_path": str(source),
+                "source_size_bytes": source.stat().st_size,
+                "disc_fingerprint": fingerprint,
+                "title_index": 0,
+            }),
             encoding="utf-8",
         )
         store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
@@ -739,8 +782,7 @@ def test_manual_bonus_review_routes_to_tv_series_extras(tmp_path):
     assert payload["episode_id"] is None
     assert payload["library_kind"] == "tv"
     assert payload["library_relative"] == (
-        "The Flintstones/Extras/"
-        "Carved in Stone - The Flintstones Phenomenon.mkv"
+        "The Flintstones/Extras/Carved in Stone - The Flintstones Phenomenon.mkv"
     )
 
 
@@ -873,3 +915,81 @@ def test_sequence_diagnostic_accepts_real_ambiguous_planner_disposition(tmp_path
     event = store.list_events("media-1")[-1]
     assert event.event_type == "sequence_match_scored"
     assert event.details["disposition"] == "review-ambiguous"
+
+
+def test_matching_performance_is_durable_and_path_free(tmp_path):
+    database = tmp_path / "queue.sqlite3"
+    store = PipelineQueueStore(database)
+    store.record_matching_performance(
+        disc_fingerprint="0123456789abcdef",
+        series_name="Example Series",
+        title_count=18,
+        anchor_count=3,
+        season_scope=(6,),
+        proposed_count=16,
+        applied_count=16,
+        unresolved_count=2,
+        anchor_elapsed_ms=1200,
+        total_elapsed_ms=6400,
+    )
+
+    records = PipelineQueueStore(database).matching_performance()
+
+    assert len(records) == 1
+    assert records[0]["series_name"] == "Example Series"
+    assert records[0]["season_scope"] == [6]
+    assert records[0]["anchor_count"] == 3
+    assert records[0]["total_elapsed_ms"] == 6400
+    assert records[0]["outcome"] == "completed"
+    assert records[0]["failure_stage"] is None
+    assert records[0]["provider_branches"] == []
+    assert "path" not in records[0]
+
+
+def test_matching_performance_migrates_existing_database_and_records_failure(
+    tmp_path,
+):
+    database = tmp_path / "queue.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            CREATE TABLE matching_performance (
+                run_id TEXT PRIMARY KEY,
+                disc_fingerprint TEXT NOT NULL,
+                series_name TEXT NOT NULL,
+                title_count INTEGER NOT NULL,
+                anchor_count INTEGER NOT NULL,
+                season_scope TEXT NOT NULL,
+                proposed_count INTEGER NOT NULL,
+                applied_count INTEGER NOT NULL,
+                unresolved_count INTEGER NOT NULL,
+                anchor_elapsed_ms INTEGER NOT NULL,
+                total_elapsed_ms INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+    store = PipelineQueueStore(database)
+    store.record_matching_performance(
+        disc_fingerprint="0123456789abcdef",
+        series_name="Example Series",
+        title_count=0,
+        anchor_count=0,
+        season_scope=(),
+        proposed_count=0,
+        applied_count=0,
+        unresolved_count=0,
+        anchor_elapsed_ms=0,
+        total_elapsed_ms=20,
+        outcome="failed",
+        failure_stage="selection",
+        failure_code="insufficient_held_titles",
+        provider_branches=("tv-local", "tv-opensubtitles"),
+    )
+
+    record = store.matching_performance()[0]
+
+    assert record["outcome"] == "failed"
+    assert record["failure_stage"] == "selection"
+    assert record["failure_code"] == "insufficient_held_titles"
+    assert record["provider_branches"] == ["tv-local", "tv-opensubtitles"]

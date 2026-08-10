@@ -17,6 +17,26 @@ from mkv_episode_matcher.pipeline_queue import PipelineQueueStore, build_artifac
 from mkv_episode_matcher.tmdb_client import TvShowCandidate
 
 
+def test_failed_analysis_records_safe_failure_telemetry(tmp_path):
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+
+    with pytest.raises(analysis.PipelineQueueError, match="At least two"):
+        analysis.execute_unmatched_disc_analysis(
+            store,
+            "0123456789abcdef",
+            "Example Series",
+            SimpleNamespace(),
+            SimpleNamespace(),
+            tmp_path / "contracts",
+        )
+
+    record = store.matching_performance()[0]
+    assert record["outcome"] == "failed"
+    assert record["failure_stage"] == "selection"
+    assert record["failure_code"] == "insufficient_held_titles"
+    assert record["title_count"] == 0
+
+
 def test_disc_route_allows_unresolved_titles_to_use_content_fallback(
     tmp_path, monkeypatch
 ):
@@ -240,6 +260,20 @@ def test_library_episode_status_never_removes_aired_candidates():
     assert fallback_scope == "all-library-aware"
 
 
+def test_preferred_season_order_starts_after_known_series_frontier():
+    catalog = tuple(
+        EpisodeCatalogEntry(f"S{season:02d}E01", season, 1, "Episode", "", 1200)
+        for season in range(1, 7)
+    )
+
+    order = analysis.preferred_season_order(
+        catalog,
+        frozenset((season, 1) for season in range(1, 6)),
+    )
+
+    assert order == (6, 5, 4, 3, 2, 1)
+
+
 def test_assigned_disc_episodes_reads_identification_history(tmp_path):
     store = PipelineQueueStore(tmp_path / "queue.sqlite3")
     fingerprint = "0123456789abcdef"
@@ -313,6 +347,7 @@ def test_opensubtitles_matches_independently_and_only_falls_forward(tmp_path):
         def calculate_match_score(transcript, reference):
             return 0.95 if transcript in reference else 0.1
 
+    diagnostic_details = {}
     matched, _diagnostics = analysis.match_opensubtitles_seasons(
         files,
         catalog,
@@ -322,11 +357,44 @@ def test_opensubtitles_matches_independently_and_only_falls_forward(tmp_path):
         ASR(),
         min_confidence=0.7,
         provider_factory=Provider,
+        diagnostic_details=diagnostic_details,
     )
 
     assert calls == [1, 2]
     assert matched["late-title"].episode_id == "S01E01"
     assert matched["early-title"].episode_id == "S02E01"
+    assert diagnostic_details["late-title"] == {
+        "best_score": 0.95,
+        "runner_up_score": 0.0,
+        "margin": 0.95,
+        "qualifying_window_count": 1,
+        "candidate_episode_id": "S01E01",
+        "reason": "accepted",
+    }
+
+
+def test_opensubtitles_records_exact_review_reason():
+    best = EpisodeCatalogEntry("S01E01", 1, 1, "First", "", 1200)
+    runner_up = EpisodeCatalogEntry("S01E02", 1, 2, "Second", "", 1200)
+    details = {}
+
+    accepted, diagnostics = analysis._accept_subtitle_candidates(
+        {"title": [(0.87, 1, best), (0.84, 1, runner_up)]},
+        0.7,
+        set(),
+        diagnostic_details=details,
+    )
+
+    assert accepted == {}
+    assert diagnostics == {"title": (0.87, pytest.approx(0.03))}
+    assert details["title"] == {
+        "best_score": 0.87,
+        "runner_up_score": 0.84,
+        "margin": pytest.approx(0.03),
+        "qualifying_window_count": 1,
+        "candidate_episode_id": "S01E01",
+        "reason": "insufficient_qualifying_windows",
+    }
 
 
 def test_opensubtitles_bootstraps_season_without_existing_matches(tmp_path):
@@ -490,6 +558,18 @@ def test_local_sequence_keeps_full_aired_order_when_library_has_gaps(
     assert diagnostic.details["catalog_episode_count"] == 4
 
 
+def test_anchor_titles_bounds_and_spreads_initial_season_evidence():
+    selected = [(SimpleNamespace(media_id=f"title-{index}"), {}) for index in range(9)]
+
+    anchors = analysis._anchor_titles(selected)
+
+    assert [item.media_id for item, _payload in anchors] == [
+        "title-0",
+        "title-4",
+        "title-8",
+    ]
+
+
 @pytest.mark.parametrize(
     "mode",
     [
@@ -497,11 +577,13 @@ def test_local_sequence_keeps_full_aired_order_when_library_has_gaps(
         "local-runtime-mismatch",
         "gemini",
         "partial-gemini",
+        "subtitle-partial-gemini",
+        "subtitle-partial-gemini-failed",
         "runtime-mismatch",
         "unstable-gemini",
     ],
 )
-def test_all_season_analysis_applies_sequence_without_saved_release_map(
+def test_all_season_analysis_applies_sequence_without_saved_release_map(  # noqa: C901
     tmp_path, monkeypatch, mode
 ):
     use_gemini = mode not in {"local", "local-runtime-mismatch"}
@@ -591,6 +673,40 @@ def test_all_season_analysis_applies_sequence_without_saved_release_map(
             ),
         ),
     )
+    if mode.startswith("subtitle-partial-gemini"):
+        monkeypatch.setattr(
+            analysis,
+            "discover_opensubtitles_season",
+            lambda *_args, **_kwargs: (1, 2),
+        )
+
+        def match_one_subtitle(files, *_args, diagnostic_details=None, **_kwargs):
+            assert tuple(item.file_id for item in files) == tuple(media_ids)
+            if diagnostic_details is not None:
+                diagnostic_details.update({
+                    media_ids[0]: {
+                        "best_score": 0.94,
+                        "runner_up_score": 0.2,
+                        "margin": 0.74,
+                        "qualifying_window_count": 2,
+                        "candidate_episode_id": catalog[0].episode_id,
+                        "reason": "accepted",
+                    },
+                    media_ids[1]: {
+                        "best_score": 0.65,
+                        "runner_up_score": 0.61,
+                        "margin": 0.04,
+                        "qualifying_window_count": 0,
+                        "candidate_episode_id": catalog[1].episode_id,
+                        "reason": "below_confidence_threshold",
+                    },
+                })
+            return {media_ids[0]: catalog[0]}, {
+                media_ids[0]: (0.94, 0.74),
+                media_ids[1]: (0.65, 0.04),
+            }
+
+        monkeypatch.setattr(analysis, "match_opensubtitles_seasons", match_one_subtitle)
     if use_gemini:
 
         class FakeRanker:
@@ -608,6 +724,13 @@ def test_all_season_analysis_applies_sequence_without_saved_release_map(
             ):
                 assert prior_attempts is not None
                 assert existing_episode_ids == frozenset()
+                if mode.startswith("subtitle-partial-gemini"):
+                    assert tuple(item.file_id for item in files) == (media_ids[1],)
+                    assert tuple(entry.episode_id for entry in _catalog) == (
+                        catalog[1].episode_id,
+                    )
+                if mode == "subtitle-partial-gemini-failed":
+                    raise RuntimeError("synthetic provider failure")
                 self.calls += 1
                 return SimpleNamespace(
                     matches=tuple(
@@ -629,7 +752,7 @@ def test_all_season_analysis_applies_sequence_without_saved_release_map(
                             ),
                         )
                         for index, (item, entry) in enumerate(
-                            zip(files, catalog, strict=True)
+                            zip(files, _catalog, strict=True)
                         )
                     )
                 )
@@ -658,7 +781,13 @@ def test_all_season_analysis_applies_sequence_without_saved_release_map(
 
     expected_applied = (
         tuple(media_ids[:1])
-        if mode in {"local-runtime-mismatch", "partial-gemini", "runtime-mismatch"}
+        if mode
+        in {
+            "local-runtime-mismatch",
+            "partial-gemini",
+            "runtime-mismatch",
+            "subtitle-partial-gemini-failed",
+        }
         else (tuple(media_ids[1:]) if mode == "unstable-gemini" else tuple(media_ids))
     )
     assert applied == expected_applied
@@ -693,7 +822,13 @@ def test_all_season_analysis_applies_sequence_without_saved_release_map(
         assert len(payload["media_context"]["episode_assignments"]) == len(
             expected_applied
         )
-        assert all(
-            assignment["provisional_match"] is use_gemini
-            for assignment in payload["media_context"]["episode_assignments"]
-        )
+        if mode.startswith("subtitle-partial-gemini"):
+            assert [
+                assignment["provisional_match"]
+                for assignment in payload["media_context"]["episode_assignments"]
+            ] == ([False, True] if mode == "subtitle-partial-gemini" else [False])
+        else:
+            assert all(
+                assignment["provisional_match"] is use_gemini
+                for assignment in payload["media_context"]["episode_assignments"]
+            )

@@ -1,8 +1,13 @@
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from mkv_episode_matcher.backend.routers.rip import _job_response
+from mkv_episode_matcher.backend.routers.rip import (
+    _job_response,
+    _pipeline_activity_snapshot,
+    _rip_activity_snapshot,
+)
 from mkv_episode_matcher.disc.orchestration_store import OrchestrationStore
 from mkv_episode_matcher.disc.rip_manifest import MediaContext
 from mkv_episode_matcher.disc.rip_preview import build_rip_preview
@@ -12,6 +17,37 @@ from tests.test_rip_manifest import (
     _make_batch_names,
     _write_report,
 )
+
+
+def test_activity_snapshots_warn_without_changing_state():
+    now = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
+
+    rip = _rip_activity_snapshot(
+        state="running",
+        updated_at=(now - timedelta(minutes=6)).isoformat(),
+        now=now,
+    )
+    pipeline = _pipeline_activity_snapshot(
+        state="running",
+        stage="identify",
+        updated_at=(now - timedelta(minutes=46)).isoformat(),
+        review_code=None,
+        now=now,
+    )
+    waiting = _pipeline_activity_snapshot(
+        state="queued",
+        stage="transcode",
+        updated_at=(now - timedelta(days=1)).isoformat(),
+        review_code=None,
+        now=now,
+    )
+
+    assert rip["rip_activity_status"] == "possibly_stalled"
+    assert rip["rip_possibly_stalled"] is True
+    assert pipeline["activity_status"] == "possibly_stalled"
+    assert pipeline["possibly_stalled"] is True
+    assert waiting["activity_status"] == "waiting"
+    assert waiting["possibly_stalled"] is False
 
 
 def _preview(tmp_path):
@@ -198,9 +234,7 @@ def test_job_response_reports_size_weighted_whole_disc_progress(tmp_path):
         idempotency_key="authorize-overall-progress-0001",
     )
     store.queue(job.job_id, idempotency_key="queue-overall-progress-0001")
-    store.claim_for_dispatch(
-        job.job_id, idempotency_key="claim-overall-progress-0001"
-    )
+    store.claim_for_dispatch(job.job_id, idempotency_key="claim-overall-progress-0001")
     first, second, _third = preview.jobs
 
     store.record_progress(job.job_id, "progress", f"{first.job_id}: 100%")

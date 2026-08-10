@@ -132,7 +132,9 @@ async def startup_event():
             "Reconciled {} interrupted rip job(s) to paused review state",
             len(reconciled),
         )
-    reconciled_pipeline = get_pipeline_queue_store().reconcile_incomplete()
+    reconciled_pipeline = get_pipeline_queue_store().reconcile_incomplete(
+        clear_pause=True
+    )
     if reconciled_pipeline:
         logger.warning(
             "Requeued {} interrupted downstream item(s) at their current stage",

@@ -159,6 +159,27 @@ def test_automatic_analysis_waits_for_expected_titles_not_yet_admitted(
     assert captured == [(items[0].media_id, items[1].media_id, items[2].media_id)]
 
 
+def test_post_item_automation_checks_disc_before_queue_becomes_idle(monkeypatch):
+    item = SimpleNamespace(media_id="media-1", review_code=None)
+    worker = DownstreamWorker(
+        SimpleNamespace(store=object()), allowed_stages=("identify",)
+    )
+    calls = []
+    monkeypatch.setattr(
+        worker,
+        "_apply_automatic_fallback",
+        lambda selected: calls.append(("item", selected.media_id)),
+    )
+    monkeypatch.setattr(
+        worker,
+        "_apply_automatic_disc_analysis",
+        lambda: calls.append(("disc", None)) or True,
+    )
+
+    assert worker._apply_post_item_automation(item) is True
+    assert calls == [("item", "media-1"), ("disc", None)]
+
+
 def test_automatic_transcode_uses_resolution_profiles_and_starts_once(monkeypatch):
     store = object()
     worker = DownstreamWorker(

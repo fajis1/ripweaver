@@ -289,6 +289,10 @@ class OrchestrationJobResponse(BaseModel):
     rip_overall_progress_percent: int | None = None
     rip_completed_title_count: int | None = None
     rip_total_title_count: int | None = None
+    rip_activity_status: str
+    rip_activity_age_seconds: int | None = None
+    rip_possibly_stalled: bool = False
+    rip_stall_after_seconds: int | None = None
 
 
 class OrchestrationEventResponse(BaseModel):
@@ -949,7 +953,9 @@ def _disc_staged_mkv_plan(
     return digest, tuple(candidates)
 
 
-def _current_forgettable_disc(watcher: DriveWatcher, drive_index: int, fingerprint: str):
+def _current_forgettable_disc(
+    watcher: DriveWatcher, drive_index: int, fingerprint: str
+):
     selected = next(
         (
             drive
@@ -966,9 +972,7 @@ def _current_forgettable_disc(watcher: DriveWatcher, drive_index: int, fingerpri
     return selected
 
 
-def _delete_disc_staged_mkvs(
-    request: ForgetDiscIdentityRequest, rip_root: Path
-) -> int:
+def _delete_disc_staged_mkvs(request: ForgetDiscIdentityRequest, rip_root: Path) -> int:
     if (
         request.confirm_delete_staged_media is not True
         or request.expected_media_plan_sha256 is None
@@ -1009,9 +1013,7 @@ def preview_forget_drive_disc_media(
 ) -> dict[str, object]:
     """Preview exact staged MKVs that a destructive identity reset would delete."""
 
-    _current_forgettable_disc(
-        watcher, drive_index, request.expected_disc_fingerprint
-    )
+    _current_forgettable_disc(watcher, drive_index, request.expected_disc_fingerprint)
     config = get_config_manager().load()
     if config.rip_output_root is None or not config.rip_output_root.is_dir():
         raise HTTPException(status_code=409, detail="Rip staging root is unavailable")
@@ -1044,7 +1046,8 @@ def forget_drive_disc_identity(
 
     if request.confirm_forget is not True:
         raise HTTPException(
-            status_code=400, detail="Explicit disc-identity reset confirmation is required"
+            status_code=400,
+            detail="Explicit disc-identity reset confirmation is required",
         )
     preparation_lock = _claim_drive_preparation(drive_index)
     try:
@@ -1077,7 +1080,9 @@ def forget_drive_disc_identity(
         if request.delete_staged_media:
             config = get_config_manager().load()
             if config.rip_output_root is None or not config.rip_output_root.is_dir():
-                raise HTTPException(status_code=409, detail="Rip staging root is unavailable")
+                raise HTTPException(
+                    status_code=409, detail="Rip staging root is unavailable"
+                )
             deleted_media_count = _delete_disc_staged_mkvs(
                 request, config.rip_output_root
             )
@@ -1277,6 +1282,10 @@ class PipelineItemResponse(BaseModel):
     error_type: str | None
     review_code: str | None
     identification_attempts: list[dict[str, object]] = Field(default_factory=list)
+    activity_status: str
+    activity_age_seconds: int | None = None
+    possibly_stalled: bool = False
+    stall_after_seconds: int | None = None
 
 
 class PipelineQueueResponse(BaseModel):
@@ -1433,7 +1442,10 @@ def _pipeline_item_display_name(item) -> str | None:
     if not isinstance(series_name, str) or not isinstance(assignments, list):
         return None
     for assignment in assignments:
-        if not isinstance(assignment, dict) or assignment.get("title_index") != title_index:
+        if (
+            not isinstance(assignment, dict)
+            or assignment.get("title_index") != title_index
+        ):
             continue
         season = assignment.get("season")
         episode = assignment.get("episode")
@@ -1466,7 +1478,10 @@ def _pipeline_item_match_summary(item) -> str | None:
     if not isinstance(assignments, list):
         return None
     for assignment in assignments:
-        if not isinstance(assignment, dict) or assignment.get("title_index") != title_index:
+        if (
+            not isinstance(assignment, dict)
+            or assignment.get("title_index") != title_index
+        ):
             continue
         summary = assignment.get("match_summary")
         if isinstance(summary, str):
@@ -1506,6 +1521,77 @@ def _pipeline_item_location(item) -> tuple[str, str | None, str | None]:
     if item.stage == "transcode":
         return "Rip staging (awaiting transcode)", safe_relative, None
     return "Rip staging", safe_relative, None
+
+
+def _timestamp_age_seconds(
+    timestamp: str, *, now: datetime | None = None
+) -> int | None:
+    try:
+        parsed = datetime.fromisoformat(timestamp)
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    current = now or datetime.now(UTC)
+    return max(0, round((current - parsed.astimezone(UTC)).total_seconds()))
+
+
+def _pipeline_activity_snapshot(
+    *,
+    state: str,
+    stage: str,
+    updated_at: str,
+    review_code: str | None,
+    now: datetime | None = None,
+) -> dict[str, object]:
+    age = _timestamp_age_seconds(updated_at, now=now)
+    threshold = None
+    if state == "running":
+        threshold = {"identify": 2700, "transcode": 21600, "organize": 900}.get(stage)
+        status = "working"
+    elif (
+        state == "review_required" and review_code and review_code.endswith("_running")
+    ):
+        threshold = 3600
+        status = "working"
+    else:
+        status = {
+            "queued": "waiting",
+            "review_required": "review",
+            "failed": "failed",
+            "completed": "completed",
+            "dismissed": "inactive",
+        }.get(state, "inactive")
+    stalled = threshold is not None and age is not None and age > threshold
+    return {
+        "activity_status": "possibly_stalled" if stalled else status,
+        "activity_age_seconds": age,
+        "possibly_stalled": stalled,
+        "stall_after_seconds": threshold,
+    }
+
+
+def _rip_activity_snapshot(
+    *, state: str, updated_at: str, now: datetime | None = None
+) -> dict[str, object]:
+    age = _timestamp_age_seconds(updated_at, now=now)
+    threshold = 300 if state in {"running", "pause_requested"} else None
+    status = {
+        "queued": "waiting",
+        "running": "working",
+        "pause_requested": "finishing_active_work",
+        "paused": "paused",
+        "failed": "failed",
+        "completed": "completed",
+        "stopped": "stopped",
+    }.get(state, "inactive")
+    stalled = threshold is not None and age is not None and age > threshold
+    return {
+        "rip_activity_status": "possibly_stalled" if stalled else status,
+        "rip_activity_age_seconds": age,
+        "rip_possibly_stalled": stalled,
+        "rip_stall_after_seconds": threshold,
+    }
 
 
 def _pipeline_item_response(
@@ -1579,7 +1665,7 @@ def _pipeline_item_response(
             and source.is_file()
             and source.stat().st_size == source_size
         )
-    return {
+    response = {
         "media_id": item.media_id,
         "artifact_sha256": item.artifact.contract_sha256,
         "disc_fingerprint": disc_fingerprint,
@@ -1613,6 +1699,15 @@ def _pipeline_item_response(
             else []
         ),
     }
+    response.update(
+        _pipeline_activity_snapshot(
+            state=item.state,
+            stage=item.stage,
+            updated_at=item.updated_at,
+            review_code=item.review_code,
+        )
+    )
+    return response
 
 
 def _exact_queued_rip_source(item, rip_root: Path) -> Path | None:  # noqa: C901
@@ -1719,9 +1814,7 @@ def _aggregate_rip_progress(job, events) -> dict[str, int | str | None]:
         return fields
 
     active_samples = [
-        event
-        for event in samples
-        if str(event.details.get("scope", "")) != "overall"
+        event for event in samples if str(event.details.get("scope", "")) != "overall"
     ]
     latest = active_samples[-1] if active_samples else samples[-1]
     scope = str(latest.details.get("scope", "batch"))
@@ -1770,7 +1863,9 @@ def _aggregate_rip_progress(job, events) -> dict[str, int | str | None]:
         )
         item_scope = str(item.get("job_id"))
         item_percent = (
-            100 if item_scope in completed_scopes else latest_by_scope.get(item_scope, 0)
+            100
+            if item_scope in completed_scopes
+            else latest_by_scope.get(item_scope, 0)
         )
         weighted_progress += weight * item_percent
         total_weight += weight
@@ -1798,6 +1893,10 @@ def _job_response(job, store: OrchestrationStore | None = None) -> dict[str, obj
         "rip_overall_progress_percent": None,
         "rip_completed_title_count": None,
         "rip_total_title_count": None,
+        "rip_activity_status": "inactive",
+        "rip_activity_age_seconds": None,
+        "rip_possibly_stalled": False,
+        "rip_stall_after_seconds": None,
     })
     if store is not None:
         events = store.list_events(job.job_id)
@@ -1818,6 +1917,12 @@ def _job_response(job, store: OrchestrationStore | None = None) -> dict[str, obj
         activity = throughput or (samples[-1] if samples else None)
         if activity is not None:
             response["rip_progress_updated_at"] = activity.created_at
+    response.update(
+        _rip_activity_snapshot(
+            state=job.state,
+            updated_at=str(response["rip_progress_updated_at"] or job.updated_at),
+        )
+    )
     if store is not None and job.state == "failed":
         failures = [
             event
@@ -2533,6 +2638,35 @@ def get_pipeline_events(
     }
 
 
+@router.get("/pipeline/matching-performance")
+def get_matching_performance(
+    store: Annotated[PipelineQueueStore, Depends(get_pipeline_queue_store)],
+) -> dict[str, object]:
+    """Return recent path- and dialogue-free all-season timing records."""
+
+    return {
+        "runs": list(store.matching_performance()),
+        "path_redacted": True,
+        "dialogue_redacted": True,
+    }
+
+
+@router.get("/pipeline/learned-coverage")
+def get_learned_series_coverage(
+    series_name: str,
+    store: Annotated[PipelineQueueStore, Depends(get_pipeline_queue_store)],
+) -> dict[str, object]:
+    try:
+        coverage = store.learned_series_coverage(series_name)
+    except PipelineQueueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return {
+        "coverage": coverage,
+        "contains_media_paths": False,
+        "contains_dialogue": False,
+    }
+
+
 @router.post("/pipeline/items/dismiss", response_model=PipelineQueueResponse)
 def dismiss_pipeline_items(
     request: DismissPipelineItemsRequest,
@@ -2780,29 +2914,25 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
                     if isinstance(exc, PipelineQueueError) and str(exc)
                     else type(exc).__name__
                 )
-                logger.error(
-                    "All-season disc analysis failed safely: {}", diagnostic
-                )
-                code = (
-                    {
-                        "No TV series matched the reviewed series name": (
-                            "all_season_series_not_found"
-                        ),
-                        "TMDb returned no aired episodes for the resolved TV series": (
-                            "all_season_catalog_unavailable"
-                        ),
-                        "Episode catalogue is unavailable for the reviewed scope": (
-                            "all_season_catalog_unavailable"
-                        ),
-                        "Audio evidence collection failed before episode matching": (
-                            "all_season_evidence_failed"
-                        ),
-                    }.get(
-                        str(exc),
-                        "all_season_sequence_review_required"
-                        if str(exc) == "All-season sequence result requires review"
-                        else "all_season_analysis_failed",
-                    )
+                logger.error("All-season disc analysis failed safely: {}", diagnostic)
+                code = {
+                    "No TV series matched the reviewed series name": (
+                        "all_season_series_not_found"
+                    ),
+                    "TMDb returned no aired episodes for the resolved TV series": (
+                        "all_season_catalog_unavailable"
+                    ),
+                    "Episode catalogue is unavailable for the reviewed scope": (
+                        "all_season_catalog_unavailable"
+                    ),
+                    "Audio evidence collection failed before episode matching": (
+                        "all_season_evidence_failed"
+                    ),
+                }.get(
+                    str(exc),
+                    "all_season_sequence_review_required"
+                    if str(exc) == "All-season sequence result requires review"
+                    else "all_season_analysis_failed",
                 )
             for media_id in selected:
                 try:
@@ -3485,7 +3615,7 @@ def preview_existing_rip_candidates(
 
 
 @router.post("/jobs/{job_id}/existing-rips/verify")
-def verify_existing_rip_candidates(
+def verify_existing_rip_candidates(  # noqa: C901 - per-file recovery isolation
     job_id: str,
     request: VerifyExistingRipsRequest,
     private_store: Annotated[PrivateBindingStore, Depends(get_private_binding_store)],
@@ -3528,21 +3658,31 @@ def verify_existing_rip_candidates(
         )
         executable = resolve_ffprobe_path(get_config_manager().load().ffprobe_path)
         results = []
+        verified_jobs = []
+        verified_candidates = []
+        rejected_title_indexes = []
         now = datetime.now(UTC).isoformat()
-        for job, candidate in zip(jobs, candidates, strict=True):
+        candidates_by_job = {candidate.job_id: candidate for candidate in candidates}
+        for job in jobs:
+            candidate = candidates_by_job[job.job_id]
             source = (
                 binding.output_root / candidate.relative_parent / candidate.basename
             )
-            inspection = inspector(
-                executable, source, timeout_seconds=request.timeout_seconds
-            )
-            if (
-                inspection.media.duration_seconds <= 0
-                or source.stat().st_size != candidate.size_bytes
-            ):
-                raise RipError(
-                    "Existing rip verification returned inconsistent metadata"
+            try:
+                inspection = inspector(
+                    executable, source, timeout_seconds=request.timeout_seconds
                 )
+                valid = (
+                    inspection.media.duration_seconds > 0
+                    and source.stat().st_size == candidate.size_bytes
+                )
+            except (FFprobeError, OSError):
+                valid = False
+            if not valid:
+                rejected_title_indexes.append(job.title_index)
+                continue
+            verified_jobs.append(job)
+            verified_candidates.append(candidate)
             results.append(
                 RipResult(
                     job_id=job.job_id,
@@ -3554,10 +3694,12 @@ def verify_existing_rip_candidates(
                     finished_at=datetime.now(UTC).isoformat(),
                 )
             )
+        if not verified_jobs:
+            raise RipError("No selected existing rip passed read-only verification")
         contract_root.mkdir(parents=True, exist_ok=True)
         queued = enqueue_verified_rip_results(
             pipeline_store,
-            jobs=jobs,
+            jobs=tuple(verified_jobs),
             results=results,
             output_root=binding.output_root,
             contract_root=contract_root,
@@ -3567,10 +3709,17 @@ def verify_existing_rip_candidates(
                     f"{Path(candidate.basename).stem}-recovery-"
                     f"{candidate.candidate_id[:8]}-{uuid4().hex[:8]}"
                 )
-                for job, candidate in zip(jobs, candidates, strict=True)
+                for job, candidate in zip(
+                    verified_jobs, verified_candidates, strict=True
+                )
             },
         )
-        return {"verified_count": len(queued), "queued_for_identification": True}
+        return {
+            "verified_count": len(queued),
+            "verified_title_indexes": [job.title_index for job in verified_jobs],
+            "rejected_title_indexes": sorted(rejected_title_indexes),
+            "queued_for_identification": True,
+        }
     except (RipError, PipelineQueueError, FFprobeError, OSError) as exc:
         logger.warning(
             "Existing-rip verification stopped safely: {}", type(exc).__name__

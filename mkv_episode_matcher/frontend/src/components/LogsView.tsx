@@ -9,7 +9,7 @@ const reasonText: Record<string, string> = {
   gemini_analysis_failed: 'This older run recorded only a general pipeline failure. The exact reason was not retained.',
   gemini_audio_evidence_insufficient: 'Local transcription did not produce enough usable dialogue to make a safe Gemini request.',
   gemini_catalog_unavailable: 'The reviewed bonus-feature catalogue was missing or no longer matched this disc.',
-  gemini_descriptive_review_required: 'Gemini reviewed the bounded evidence but could not safely classify the title as a movie or bonus feature.',
+  gemini_descriptive_review_required: 'Gemini reviewed the bounded evidence but could not assign one safe descriptive movie or bonus-feature name.',
   gemini_provider_failed: 'The external Gemini request failed safely. Check the configured key, network access, provider status, and retry later.',
   gemini_credential_rejected: 'Both configured Gemini credential attempts were unavailable or rejected. Check the key identifiers in Settings and rotate the rejected key.',
   gemini_rate_limited: 'Gemini returned HTTP 429 after bounded retries. Wait for quota recovery or check billing and rate limits.',
