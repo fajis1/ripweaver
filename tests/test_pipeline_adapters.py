@@ -10,6 +10,7 @@ from mkv_episode_matcher.pipeline_adapters import (
     TranscodeStageAdapter,
 )
 from mkv_episode_matcher.pipeline_queue import (
+    PipelineQueueError,
     PipelineQueueStore,
     PipelineReviewRequiredError,
     QueuedPipelineItem,
@@ -297,6 +298,52 @@ def test_identify_adapter_uses_provisional_descriptive_movie_assignment(tmp_path
     assert payload["identification_order"] == ["gemini-descriptive-movie"]
     assert payload["provisional_match"] is True
     assert payload["confidence"] == 0.81
+
+
+def test_identify_adapter_routes_validated_tv_disc_movie_to_movie_library(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    item = _queued_item(
+        tmp_path,
+        {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "title_index": 20,
+            "media_context": {
+                "series_name": "The Flintstones",
+                "content_hint": None,
+                "special_feature_library_title": "The Man Called Flintstone",
+                "special_feature_library_year": 1966,
+                "special_feature_assignments": [
+                    {
+                        "title_index": 20,
+                        "classification": "matched-feature",
+                        "matched_title": "The Man Called Flintstone",
+                        "jellyfin_folder": "other",
+                        "fallback_name_policy": "none",
+                        "media_kind": "movie",
+                        "library_kind": "movie",
+                        "provisional_match": False,
+                        "gemini_confidence": 0.94,
+                        "identification_method": ("tv-related-movie-opensubtitles"),
+                    }
+                ],
+            },
+        },
+    )
+
+    artifact = IdentifyStageAdapter(SimpleNamespace(), contracts)(item)
+    payload = json.loads(artifact.contract_path.read_text(encoding="utf-8"))
+
+    assert payload["library_kind"] == "movie"
+    assert payload["library_relative"] == (
+        "The Man Called Flintstone (1966)/The Man Called Flintstone (1966).mkv"
+    )
+    assert payload["identification_order"] == ["tv-related-movie-opensubtitles"]
+    assert payload["provisional_match"] is False
 
 
 def test_identify_adapter_allows_provisional_extra_without_release_year(tmp_path):
@@ -589,6 +636,41 @@ def test_identification_holds_existing_episode_before_transcode(tmp_path):
     assert identified["episode_id"] == "S01E01"
 
 
+def test_identification_allows_existing_other_resolution_when_enabled(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    library = tmp_path / "library"
+    season = library / "Test Show" / "Season 01"
+    contracts.mkdir()
+    season.mkdir(parents=True)
+    (season / "Test Show - S01E01 - Existing - 720p.mkv").write_bytes(b"old")
+    item = _queued_item(
+        tmp_path,
+        {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "title_index": 0,
+            "media_context": {
+                "series_name": "Test Show",
+                "episode_assignments": [
+                    {"title_index": 0, "season": 1, "episode": 1, "title": "First"}
+                ],
+            },
+        },
+    )
+
+    outcome = IdentifyStageAdapter(
+        SimpleNamespace(),
+        contracts,
+        tv_library_root=library,
+        allow_version_coexistence=True,
+    )(item)
+
+    assert not isinstance(outcome, StageOutcome)
+
+
 def test_transcode_refuses_old_placeholder_episode_contract(tmp_path):
     source = tmp_path / "source.mkv"
     source.write_bytes(b"raw")
@@ -802,7 +884,114 @@ def test_transcode_and_organization_adapters_link_verified_output(
     organized_payload = json.loads(organized_artifact.contract_path.read_text())
     assert organized_payload["output_size_bytes"] == 7
     assert organized_payload["archived_source_size_bytes"] == 3
+    assert organized_payload["archived_source_retained_at"]
     assert final.state == "completed"
+
+
+def test_organization_places_verified_encode_when_original_is_already_missing(
+    tmp_path,
+):
+    encoded = tmp_path / "encoded.mkv"
+    encoded.write_bytes(b"verified-encode")
+    original = tmp_path / "original.mkv"
+    original.write_bytes(b"old-rip")
+    original_size = original.stat().st_size
+    original.unlink()
+    library = tmp_path / "library"
+    contracts = tmp_path / "contracts"
+    deletion_root = tmp_path / "ready-to-delete"
+    for directory in (library, contracts, deletion_root):
+        directory.mkdir()
+    transcode_contract = tmp_path / "transcode-missing-original.json"
+    transcode_contract.write_text(
+        json.dumps({
+            "mode": "verified-transcode-contract",
+            "encoded_path": str(encoded),
+            "encoded_size_bytes": encoded.stat().st_size,
+            "original_source_path": str(original),
+            "original_source_size_bytes": original_size,
+            "episode_id": "S01E01",
+            "encoded_height": 1080,
+            "encoded_field_order": "progressive",
+            "library_relative": "Test Show/Season 01/Test Show - S01E01 - First.mkv",
+        }),
+        encoding="utf-8",
+    )
+    item = QueuedPipelineItem(
+        media_id="media-1",
+        state="running",
+        stage="organize",
+        artifact=build_artifact("transcode", transcode_contract),
+        created_at="2026-08-11T00:00:00+00:00",
+        updated_at="2026-08-11T00:00:00+00:00",
+        error_type=None,
+        review_code=None,
+    )
+
+    artifact = OrganizeStageAdapter(
+        library_root=library,
+        contract_root=contracts,
+        confirm_organize=True,
+        deletion_staging_root=deletion_root,
+    )(item)
+
+    destination = library / "Test Show/Season 01/Test Show - S01E01 - First - 1080p.mkv"
+    assert destination.read_bytes() == b"verified-encode"
+    assert not encoded.exists()
+    assert not any(deletion_root.rglob("*.mkv"))
+    payload = json.loads(artifact.contract_path.read_text(encoding="utf-8"))
+    assert payload["original_source_unavailable"] is True
+    assert payload["archived_source_path"] is None
+    assert payload["archived_source_size_bytes"] is None
+
+
+def test_organization_still_stops_when_existing_original_changed(tmp_path):
+    encoded = tmp_path / "encoded.mkv"
+    encoded.write_bytes(b"verified-encode")
+    original = tmp_path / "original.mkv"
+    original.write_bytes(b"changed-old-rip")
+    library = tmp_path / "library"
+    contracts = tmp_path / "contracts"
+    deletion_root = tmp_path / "ready-to-delete"
+    for directory in (library, contracts, deletion_root):
+        directory.mkdir()
+    transcode_contract = tmp_path / "transcode-changed-original.json"
+    transcode_contract.write_text(
+        json.dumps({
+            "mode": "verified-transcode-contract",
+            "encoded_path": str(encoded),
+            "encoded_size_bytes": encoded.stat().st_size,
+            "original_source_path": str(original),
+            "original_source_size_bytes": 3,
+            "episode_id": "S01E01",
+            "encoded_height": 1080,
+            "encoded_field_order": "progressive",
+            "library_relative": "Test Show/Season 01/Test Show - S01E01 - First.mkv",
+        }),
+        encoding="utf-8",
+    )
+    item = QueuedPipelineItem(
+        media_id="media-1",
+        state="running",
+        stage="organize",
+        artifact=build_artifact("transcode", transcode_contract),
+        created_at="2026-08-11T00:00:00+00:00",
+        updated_at="2026-08-11T00:00:00+00:00",
+        error_type=None,
+        review_code=None,
+    )
+
+    with pytest.raises(PipelineQueueError, match="changed before archival"):
+        OrganizeStageAdapter(
+            library_root=library,
+            contract_root=contracts,
+            confirm_organize=True,
+            deletion_staging_root=deletion_root,
+        )(item)
+
+    assert encoded.read_bytes() == b"verified-encode"
+    assert original.read_bytes() == b"changed-old-rip"
+    assert not any(library.rglob("*.mkv"))
 
 
 def test_transcode_retry_uses_new_attempt_when_prior_run_directory_exists(
@@ -1006,6 +1195,50 @@ def test_organization_holds_existing_episode_until_keep_both_is_explicit(tmp_pat
     ).read_bytes() == b"new-version"
 
 
+def test_organization_still_holds_same_resolution_with_different_title(tmp_path):
+    encoded = tmp_path / "encoded.mkv"
+    encoded.write_bytes(b"new-version")
+    contracts = tmp_path / "contracts"
+    library = tmp_path / "library"
+    season = library / "Test Show" / "Season 01"
+    contracts.mkdir()
+    season.mkdir(parents=True)
+    (season / "Test Show - S01E01 - Renamed - 1080p.mkv").write_bytes(b"existing")
+    contract = tmp_path / "transcode.json"
+    contract.write_text(
+        json.dumps({
+            "mode": "verified-transcode-contract",
+            "media_id": "media-1",
+            "encoded_path": str(encoded),
+            "encoded_size_bytes": encoded.stat().st_size,
+            "episode_id": "S01E01",
+            "encoded_height": 1080,
+            "encoded_field_order": "progressive",
+            "library_relative": "Test Show/Season 01/Test Show - S01E01 - First.mkv",
+        }),
+        encoding="utf-8",
+    )
+    item = QueuedPipelineItem(
+        media_id="media-1",
+        state="running",
+        stage="organize",
+        artifact=build_artifact("transcode", contract),
+        created_at="2026-07-31T00:00:00+00:00",
+        updated_at="2026-07-31T00:00:00+00:00",
+        error_type=None,
+        review_code=None,
+    )
+
+    with pytest.raises(PipelineReviewRequiredError, match="library_collision"):
+        OrganizeStageAdapter(
+            library_root=library,
+            contract_root=contracts,
+            confirm_organize=True,
+            allow_version_coexistence=True,
+        )(item)
+    assert encoded.read_bytes() == b"new-version"
+
+
 def test_transcode_holds_existing_library_episode_before_handbrake(
     tmp_path, monkeypatch
 ):
@@ -1062,3 +1295,71 @@ def test_transcode_holds_existing_library_episode_before_handbrake(
     assert source.read_bytes() == b"raw"
     assert not any(encoded_root.rglob("*.mkv"))
     assert not any(run_root.iterdir())
+
+
+def test_transcode_allows_existing_other_resolution_when_enabled(tmp_path, monkeypatch):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"raw")
+    contracts = tmp_path / "contracts"
+    encoded_root = tmp_path / "encoded"
+    run_root = tmp_path / "runs"
+    library_root = tmp_path / "library"
+    season = library_root / "Test Show" / "Season 01"
+    for path in (contracts, encoded_root, run_root, season):
+        path.mkdir(parents=True)
+    (season / "Test Show - S01E01 - Existing - 720p.mkv").write_bytes(b"existing")
+    identify_contract = tmp_path / "identify.json"
+    identify_contract.write_text(
+        json.dumps({
+            "mode": "identified-episode-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "episode_id": "S01E01",
+            "library_relative": "Test Show/Season 01/Test Show - S01E01 - First.mkv",
+        }),
+        encoding="utf-8",
+    )
+    item = QueuedPipelineItem(
+        media_id="media-1",
+        state="running",
+        stage="transcode",
+        artifact=build_artifact("identify", identify_contract),
+        created_at="2026-08-01T00:00:00+00:00",
+        updated_at="2026-08-01T00:00:00+00:00",
+        error_type=None,
+        review_code=None,
+    )
+
+    def fake_handbrake(_executable, _ffprobe, job, run_dir, **_kwargs):
+        job.destination.write_bytes(b"encoded")
+        return HandBrakeResult(
+            job.media_id,
+            job.profile.encoder,
+            7,
+            1200,
+            "hevc",
+            1,
+            0,
+            run_dir / "process.log",
+            run_dir / "events.jsonl",
+            1920,
+            1080,
+            "progressive",
+        )
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.pipeline_adapters.execute_handbrake_job", fake_handbrake
+    )
+
+    artifact = TranscodeStageAdapter(
+        handbrake=tmp_path / "HandBrakeCLI.exe",
+        ffprobe=tmp_path / "ffprobe.exe",
+        output_root=encoded_root,
+        run_root=run_root,
+        contract_root=contracts,
+        profile=HandBrakeProfile(),
+        tv_library_root=library_root,
+        allow_version_coexistence=True,
+    )(item)
+
+    assert artifact.contract_path.is_file()

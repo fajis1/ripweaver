@@ -15,6 +15,7 @@ interface Config {
     rip_output_root?: string;
     transcode_output_root?: string;
     deletion_staging_root?: string;
+    retained_source_ttl_days: number;
     jellyfin_tv_root?: string;
     jellyfin_movie_root?: string;
     makemkv_path?: string;
@@ -41,6 +42,36 @@ interface Config {
         last4?: string | null;
         management_url: string;
     }>;
+}
+
+interface CatalogueStatus {
+    enabled: boolean;
+    connected: boolean;
+    compatible: boolean | null;
+    registered: boolean;
+    contributions_enabled: boolean;
+    contribution_outbox: {
+        snapshots: number;
+        pending: number;
+        sent: number;
+        superseded: number;
+    } | null;
+    capabilities: {
+        schema_version: number;
+        service_version: string;
+        automatic_piecewise_consensus: boolean;
+        provisional_help: boolean;
+        independent_quorum: number;
+        support_checkout: boolean;
+    } | null;
+    usage: {
+        monthly_limit: number;
+        monthly_used: number;
+        monthly_remaining: number;
+        contribution_credits: number;
+        purchased_credits: number;
+        total_automatic_remaining: number;
+    } | null;
 }
 
 const CREDENTIAL_LABELS: Record<string, string> = {
@@ -124,6 +155,9 @@ const SettingsView: React.FC = () => {
     const [audioModeWarning, setAudioModeWarning] = useState<string | null>(null);
     const [subtitleLanguageHint, setSubtitleLanguageHint] = useState(false);
     const [profileSaveResult, setProfileSaveResult] = useState<{ text: string, type: 'success' | 'error' } | null>(null);
+    const [catalogueStatus, setCatalogueStatus] = useState<CatalogueStatus | null>(null);
+    const [catalogueStatusError, setCatalogueStatusError] = useState<string | null>(null);
+    const [connectingCatalogue, setConnectingCatalogue] = useState(false);
     const [profileDraft, setProfileDraft] = useState({
         profile_id: '', display_name: '', encoder: 'vce_h265', encoder_preset: 'quality', quality: 24, quality_480p: 26, quality_720p: 25, quality_1080p: 24, quality_2160p: 22,
         selective_decomb: true, content_kind: 'unknown', nlmeans_preset: '', nlmeans_tune: 'none',
@@ -132,6 +166,7 @@ const SettingsView: React.FC = () => {
 
     useEffect(() => {
         fetchConfig();
+        void fetchCatalogueStatus();
         fetch('/rip/handbrake/profiles').then((response) => response.ok ? response.json() : null).then((payload) => {
             if (payload?.profiles) setProfiles(payload.profiles);
         }).catch(() => undefined);
@@ -258,6 +293,39 @@ const SettingsView: React.FC = () => {
         }
     };
 
+    const fetchCatalogueStatus = async () => {
+        setCatalogueStatusError(null);
+        try {
+            const response = await fetch('/catalogue/status');
+            const payload = await response.json();
+            if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : 'Connection status is unavailable.');
+            setCatalogueStatus(payload as CatalogueStatus);
+        } catch (error) {
+            setCatalogueStatus(null);
+            setCatalogueStatusError(error instanceof Error ? error.message : 'Connection status is unavailable.');
+        }
+    };
+
+    const connectCatalogue = async () => {
+        setConnectingCatalogue(true);
+        setCatalogueStatusError(null);
+        try {
+            const response = await fetch('/catalogue/register', { method: 'POST' });
+            const payload = await response.json();
+            if (!response.ok || payload.registered !== true) {
+                throw new Error(typeof payload.detail === 'string' ? payload.detail : 'This installation could not be registered.');
+            }
+            await Promise.all([fetchCatalogueStatus(), fetchConfig()]);
+            setMessage({ text: 'This RipWeaver installation is connected to the community catalogue.', type: 'success' });
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : 'This installation could not be registered.';
+            setCatalogueStatusError(detail);
+            setMessage({ text: detail, type: 'error' });
+        } finally {
+            setConnectingCatalogue(false);
+        }
+    };
+
     const discoverTools = async () => {
         try {
             const res = await fetch('/system/tools/discover');
@@ -302,6 +370,7 @@ const SettingsView: React.FC = () => {
             if (data.status === 'success') {
                 setConfig(data.config);
                 setMessage({ text: 'Settings saved successfully', type: 'success' });
+                void fetchCatalogueStatus();
             } else {
                 if (data.field_errors && typeof data.field_errors === 'object') setToolErrors(data.field_errors);
                 throw new Error(data.message);
@@ -458,6 +527,19 @@ const SettingsView: React.FC = () => {
                             </div>
                         ))}
                     </div>
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium text-muted">Retained original TTL (days)</label>
+                        <input
+                            type="number"
+                            min="1"
+                            max="3650"
+                            step="1"
+                            value={config.retained_source_ttl_days}
+                            onChange={(event) => handleChange('retained_source_ttl_days', Number(event.target.value))}
+                            className="w-full bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-lg px-4 py-2 text-white"
+                        />
+                        <p className="text-xs text-[var(--text-muted)]">Retained originals stay available in cleanup staging for this many days before RipWeaver treats them as expired.</p>
+                    </div>
                 </div>
 
                 <div className="space-y-4">
@@ -510,17 +592,64 @@ const SettingsView: React.FC = () => {
                         </label>
                         <label className="block rounded-lg border border-violet-300/20 bg-black/10 p-3">
                             <input type="checkbox" className="mr-3" checked={config.ripweaver_catalogue_contributions_enabled} onChange={(event) => handleChange('ripweaver_catalogue_contributions_enabled', event.target.checked)} />
-                            Automatically contribute completed matched-disc layouts. This is one-time consent for future eligible discs; uploads contain only the disc identifier, playlist/segment structure, runtimes, sizes, match provenance, and canonical media names. No media, local paths, drive identity, Jellyfin location, transcript, or credential is uploaded.
+                            Automatically contribute cumulative, durably matched title layouts from eligible discs. This is one-time consent for future eligible discs; unresolved titles are omitted until matched. Uploads contain only the disc identifier, playlist/segment structure, runtimes, sizes, match provenance, and canonical media names. No media, local paths, drive identity, Jellyfin location, transcript, or credential is uploaded.
                         </label>
                         <label className="block space-y-1">
                             <span className="text-xs font-semibold">Catalogue server</span>
                             <input type="url" value={config.ripweaver_catalogue_url} onChange={(event) => handleChange('ripweaver_catalogue_url', event.target.value)} className="w-full rounded-lg border border-violet-300/25 bg-[var(--bg-primary)] px-3 py-2 text-white" />
                             <span className="block text-xs text-violet-100/70">The public service uses ten free automatic successful lookups per month, then earned or supported credits. A manual lookup remains available after the visible support prompt.</span>
                         </label>
+                        <div className="rounded-lg border border-violet-300/20 bg-black/15 p-3 space-y-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div>
+                                    <div className="font-semibold text-white">Catalogue connection</div>
+                                    <div className="text-xs text-violet-100/70">
+                                        {!catalogueStatus
+                                            ? catalogueStatusError || 'Checking the saved catalogue settings...'
+                                            : !catalogueStatus.enabled
+                                              ? 'Disabled in the saved configuration. Enable it above and save before connecting.'
+                                              : !catalogueStatus.connected
+                                                ? 'The saved server could not be reached.'
+                                                : catalogueStatus.compatible === false
+                                                  ? 'The server is reachable, but its protocol is not compatible with this desktop version.'
+                                                  : catalogueStatus.registered
+                                                    ? `Connected and registered${catalogueStatus.capabilities ? ` · schema ${catalogueStatus.capabilities.schema_version}` : ''}`
+                                                    : 'Server is reachable and compatible; this installation is not registered yet.'}
+                                    </div>
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                    <button type="button" className="btn btn-secondary text-xs" onClick={() => void fetchCatalogueStatus()}>Check connection</button>
+                                    {catalogueStatus?.enabled && catalogueStatus.connected && catalogueStatus.compatible !== false && !catalogueStatus.registered && (
+                                        <button type="button" className="btn btn-primary text-xs" disabled={connectingCatalogue} onClick={() => void connectCatalogue()}>
+                                            {connectingCatalogue ? 'Connecting...' : 'Connect this installation'}
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                            {catalogueStatus?.registered && catalogueStatus.usage && (
+                                <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
+                                    <div className="rounded border border-violet-300/15 p-2">
+                                        Automatic lookups remaining: <span className="font-semibold text-white">{catalogueStatus.usage.total_automatic_remaining}</span>
+                                        <span className="block text-violet-100/60">{catalogueStatus.usage.monthly_remaining} monthly · {catalogueStatus.usage.contribution_credits} contributed · {catalogueStatus.usage.purchased_credits} supported</span>
+                                    </div>
+                                    {catalogueStatus.contribution_outbox && (
+                                        <div className="rounded border border-violet-300/15 p-2">
+                                            Contributions: <span className="font-semibold text-white">{catalogueStatus.contribution_outbox.sent} sent</span>
+                                            <span className="block text-violet-100/60">{catalogueStatus.contribution_outbox.pending} waiting · {catalogueStatus.contribution_outbox.snapshots} disc snapshots</span>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                            {catalogueStatus?.capabilities?.automatic_piecewise_consensus && (
+                                <div className="text-xs text-violet-100/60">
+                                    Confirmed titles require {catalogueStatus.capabilities.independent_quorum} independent matching uploads. Unresolved titles remain local while confirmed titles can be reused automatically.
+                                </div>
+                            )}
+                        </div>
                     </div>
                     <label className="block rounded-xl border border-blue-500/30 bg-blue-500/10 p-4 text-sm text-blue-100">
                         <input type="checkbox" className="mr-3" checked={config.automatic_organization_enabled} onChange={(event) => handleChange('automatic_organization_enabled', event.target.checked)} />
-                        Automatically move collision-free, verified encodes from staging into the configured Jellyfin library. Existing destinations and same-episode conflicts always stop for review; overwrite and deletion are never automatic.
+                        Automatically move collision-free, verified encodes from staging into the configured Jellyfin library. Different resolution versions of one episode may coexist; an exact destination or another file at the same resolution stops for review. Overwrite and deletion are never automatic.
                     </label>
                 </div>
 

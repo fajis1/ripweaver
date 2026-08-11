@@ -9,6 +9,7 @@ import RecentActivityView from './components/RecentActivityView';
 import LogsView from './components/LogsView';
 import SystemCleanupView from './components/SystemCleanupView';
 import JellyfinCleanupPanel from './components/JellyfinCleanupPanel';
+import ExpiredSourceCleanupModal from './components/ExpiredSourceCleanupModal';
 
 interface ScannedFile {
   path: string;
@@ -650,6 +651,7 @@ function App() {
           onSkip={() => setShowOnboarding(false)}
         />
       )}
+      {!showOnboarding && <ExpiredSourceCleanupModal />}
       <Layout currentView={currentView} onNavigate={setCurrentView} systemStatus={systemStatus}>
         {renderContent()}
       </Layout>

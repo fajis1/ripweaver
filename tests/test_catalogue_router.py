@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from mkv_episode_matcher.backend.routers import catalogue
 from mkv_episode_matcher.core.models import Config
 from mkv_episode_matcher.disc.ripweaver_catalogue import (
+    CatalogueCapabilities,
     CatalogueUsage,
     InstallationRegistration,
     SupportCheckout,
@@ -47,6 +48,28 @@ def _usage() -> CatalogueUsage:
     )
 
 
+def _capabilities(**overrides) -> CatalogueCapabilities:
+    values = {
+        "schema_version": 3,
+        "service_version": "0.1.0",
+        "public_lookup": False,
+        "installation_registration": True,
+        "metered_lookup": True,
+        "manual_lookup_after_prompt": True,
+        "contribution_credits": True,
+        "support_checkout": False,
+        "authenticated_submissions": True,
+        "automatic_piecewise_consensus": True,
+        "provisional_help": True,
+        "independent_quorum": 2,
+        "human_moderation_required": False,
+        "attachments_accepted": False,
+        "media_accepted": False,
+    }
+    values.update(overrides)
+    return CatalogueCapabilities(**values)
+
+
 def test_catalogue_status_is_inert_when_disabled(monkeypatch) -> None:
     monkeypatch.setattr(
         catalogue,
@@ -62,9 +85,11 @@ def test_catalogue_status_is_inert_when_disabled(monkeypatch) -> None:
     assert catalogue.catalogue_status() == {
         "enabled": False,
         "connected": False,
+        "compatible": None,
         "registered": False,
         "contributions_enabled": False,
         "contribution_outbox": None,
+        "capabilities": None,
         "policy": None,
         "usage": None,
     }
@@ -108,6 +133,9 @@ def test_registration_stores_server_token_only_through_credential_store(
 
 def test_status_returns_policy_and_usage_without_exposing_token(monkeypatch) -> None:
     class _Client:
+        def capabilities(self) -> CatalogueCapabilities:
+            return _capabilities()
+
         def support_policy(self) -> SupportPolicy:
             return _policy()
 
@@ -129,18 +157,70 @@ def test_status_returns_policy_and_usage_without_exposing_token(monkeypatch) -> 
         catalogue,
         "get_catalogue_contribution_store",
         lambda: SimpleNamespace(
-            status=lambda: {"snapshots": 1, "pending": 1, "sent": 0}
+            status=lambda: {
+                "snapshots": 1,
+                "pending": 1,
+                "sent": 0,
+                "superseded": 0,
+            }
         ),
     )
 
     result = catalogue.catalogue_status()
 
     assert result["connected"] is True
+    assert result["compatible"] is True
     assert result["registered"] is True
     assert result["contributions_enabled"] is False
     assert result["contribution_outbox"]["pending"] == 1
     assert result["usage"] == _usage().__dict__
     assert "synthetic-private-token" not in repr(result)
+
+
+def test_status_reports_reachable_but_incompatible_schema_without_account_calls(
+    monkeypatch,
+) -> None:
+    class _Client:
+        def capabilities(self) -> CatalogueCapabilities:
+            return _capabilities(schema_version=4)
+
+        def support_policy(self) -> SupportPolicy:
+            pytest.fail("incompatible schema must not continue to account metadata")
+
+    monkeypatch.setattr(
+        catalogue,
+        "get_config_manager",
+        lambda: _ConfigManager(
+            Config(
+                ripweaver_catalogue_enabled=True,
+                ripweaver_catalogue_contributions_enabled=True,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        catalogue,
+        "_client_and_token",
+        lambda **_kwargs: (_Client(), "synthetic-private-token"),
+    )
+    monkeypatch.setattr(
+        catalogue,
+        "get_catalogue_contribution_store",
+        lambda: SimpleNamespace(
+            status=lambda: {
+                "snapshots": 1,
+                "pending": 0,
+                "sent": 0,
+                "superseded": 0,
+            }
+        ),
+    )
+
+    result = catalogue.catalogue_status()
+
+    assert result["connected"] is True
+    assert result["compatible"] is False
+    assert result["contributions_enabled"] is False
+    assert result["usage"] is None
 
 
 def test_checkout_requires_terms_and_forwards_only_validated_values(

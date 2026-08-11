@@ -183,6 +183,7 @@ async def startup_event():
                     library_root=root,
                     contract_root=contract_root,
                     confirm_organize=True,
+                    allow_version_coexistence=config.automatic_organization_enabled,
                     deletion_staging_root=config.deletion_staging_root,
                 )(item)
 
@@ -194,6 +195,9 @@ async def startup_event():
                         contract_root,
                         tv_library_root=config.jellyfin_tv_root,
                         movie_library_root=config.jellyfin_movie_root,
+                        allow_version_coexistence=(
+                            config.automatic_organization_enabled
+                        ),
                     ),
                     "transcode": _authorization_required,
                     "organize": (

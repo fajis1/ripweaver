@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
@@ -24,6 +25,7 @@ from mkv_episode_matcher.media.organizer import (
     add_jellyfin_version_label,
     build_episode_filename,
     inspect_episode_destination,
+    inspect_episode_version_destination,
     jellyfin_resolution_label,
 )
 from mkv_episode_matcher.pipeline_queue import (
@@ -96,10 +98,20 @@ def _placeholder_episode_contract(
     )
 
 
-def _organization_collision_status(destination: Path, episode_id: object) -> str:
+def _organization_collision_status(
+    destination: Path,
+    episode_id: object,
+    *,
+    allow_version_coexistence: bool = False,
+) -> str:
     if episode_id:
         try:
-            status, _conflicts = inspect_episode_destination(
+            inspector = (
+                inspect_episode_version_destination
+                if allow_version_coexistence
+                else inspect_episode_destination
+            )
+            status, _conflicts = inspector(
                 destination.parent, destination.name, str(episode_id)
             )
         except OrganizationPlanError as exc:
@@ -187,6 +199,7 @@ class IdentifyStageAdapter:
         *,
         tv_library_root: Path | None = None,
         movie_library_root: Path | None = None,
+        allow_version_coexistence: bool = False,
     ):
         self.engine = engine
         self.contract_root = contract_root.resolve()
@@ -196,6 +209,7 @@ class IdentifyStageAdapter:
         self.movie_library_root = (
             movie_library_root.resolve() if movie_library_root is not None else None
         )
+        self.allow_version_coexistence = allow_version_coexistence
 
     def _identified_outcome(
         self, item: QueuedPipelineItem, payload: dict[str, Any]
@@ -224,7 +238,12 @@ class IdentifyStageAdapter:
             destination.relative_to(root)
         except ValueError as exc:
             raise PipelineQueueError("Library destination escapes its root") from exc
-        if _organization_collision_status(destination, payload.get("episode_id")) in {
+        collision_status = _organization_collision_status(
+            destination, payload.get("episode_id")
+        )
+        if self.allow_version_coexistence and payload.get("episode_id"):
+            collision_status = "clear"
+        if collision_status in {
             "review-existing-destination",
             "review-existing-episode",
         }:
@@ -285,7 +304,10 @@ class IdentifyStageAdapter:
                     "library_kind": "tv",
                     "library_relative": relative.as_posix(),
                     "identification_order": [
-                        "manual-playback-review"
+                        "ripweaver-catalogue-help-reviewed"
+                        if context.get("episode_assignment_source")
+                        == "ripweaver-catalogue-help-reviewed"
+                        else "manual-playback-review"
                         if str(context.get("episode_assignment_source", "")).startswith(
                             "manual"
                         )
@@ -349,7 +371,10 @@ class IdentifyStageAdapter:
                     else feature_title
                 )
                 relative = Path(movie_name) / f"{movie_name}.mkv"
-                identification = ["gemini-descriptive-movie"]
+                identification = [
+                    assignment.get("identification_method")
+                    or "gemini-descriptive-movie"
+                ]
             else:
                 folder = (
                     "Extras"
@@ -462,6 +487,7 @@ class TranscodeStageAdapter:
         resolution_profile_ids: dict[str, str] | None = None,
         tv_library_root: Path | None = None,
         movie_library_root: Path | None = None,
+        allow_version_coexistence: bool = False,
         timeout_seconds: int = 21600,
     ):
         self.handbrake = handbrake.resolve()
@@ -479,6 +505,7 @@ class TranscodeStageAdapter:
         self.movie_library_root = (
             movie_library_root.resolve() if movie_library_root is not None else None
         )
+        self.allow_version_coexistence = allow_version_coexistence
         self.timeout_seconds = timeout_seconds
 
     def _preflight_library_collision(
@@ -495,6 +522,8 @@ class TranscodeStageAdapter:
             return
         if not library_root.is_dir():
             raise PipelineReviewRequiredError("missing_library_root")
+        if self.allow_version_coexistence and payload.get("episode_id"):
+            return
         library_destination = (library_root / Path(*relative.parts)).resolve()
         try:
             library_destination.relative_to(library_root)
@@ -690,35 +719,59 @@ class OrganizeStageAdapter:
         except ValueError as exc:
             raise PipelineQueueError("Library destination escapes its root") from exc
         episode_id = payload.get("episode_id")
-        status = _organization_collision_status(destination, episode_id)
-        if status == "review-existing-destination" or (
-            status == "review-existing-episode" and not self.allow_version_coexistence
-        ):
+        status = _organization_collision_status(
+            destination,
+            episode_id,
+            allow_version_coexistence=self.allow_version_coexistence,
+        )
+        if status in {
+            "review-existing-destination",
+            "review-existing-episode",
+            "review-existing-episode-version",
+        }:
             raise PipelineReviewRequiredError("library_collision")
         archived_source = None
         original_source = None
         original_size = None
+        original_source_unavailable = False
         if self.deletion_staging_root is not None and {
             "original_source_path",
             "original_source_size_bytes",
         }.issubset(payload):
-            if not self.deletion_staging_root.is_dir():
-                raise PipelineQueueError("Deletion staging root is unavailable")
-            original_source = _source_from_contract(
-                payload, "original_source_path", "original_source_size_bytes"
-            )
-            original_size = int(payload["original_source_size_bytes"])
-            archived_source = (
-                self.deletion_staging_root / item.media_id / original_source.name
-            ).resolve()
             try:
-                archived_source.relative_to(self.deletion_staging_root)
-            except ValueError as exc:
+                original_source = Path(str(payload["original_source_path"])).resolve()
+                original_size = int(payload["original_source_size_bytes"])
+            except (KeyError, TypeError, ValueError) as exc:
                 raise PipelineQueueError(
-                    "Deletion staging destination is unsafe"
+                    "Original source contract fields are invalid"
                 ) from exc
-            if archived_source.exists() or archived_source.parent.exists():
-                raise PipelineReviewRequiredError("deletion_staging_collision")
+            if original_size <= 0:
+                raise PipelineQueueError("Original source contract fields are invalid")
+            if original_source.exists():
+                if (
+                    not original_source.is_file()
+                    or original_source.stat().st_size != original_size
+                ):
+                    raise PipelineQueueError("Original source changed before archival")
+                if not self.deletion_staging_root.is_dir():
+                    raise PipelineQueueError("Deletion staging root is unavailable")
+                archived_source = (
+                    self.deletion_staging_root / item.media_id / original_source.name
+                ).resolve()
+                try:
+                    archived_source.relative_to(self.deletion_staging_root)
+                except ValueError as exc:
+                    raise PipelineQueueError(
+                        "Deletion staging destination is unsafe"
+                    ) from exc
+                if archived_source.exists() or archived_source.parent.exists():
+                    raise PipelineReviewRequiredError("deletion_staging_collision")
+            else:
+                # The verified encode is the organization input. A previously
+                # removed rip leaves nothing to archive and must not block a
+                # collision-free library placement.
+                original_source = None
+                original_source_unavailable = True
         destination.parent.mkdir(parents=True, exist_ok=True)
         try:
             if self.copy_only:
@@ -745,6 +798,9 @@ class OrganizeStageAdapter:
                 or archived_source.stat().st_size != original_size
             ):
                 raise PipelineQueueError("Archived source verification failed")
+        archived_source_retained_at = (
+            datetime.now(UTC).isoformat() if archived_source is not None else None
+        )
         return _write_contract(
             self.contract_root,
             item.media_id,
@@ -759,7 +815,11 @@ class OrganizeStageAdapter:
                 "archived_source_path": (
                     str(archived_source) if archived_source is not None else None
                 ),
-                "archived_source_size_bytes": original_size,
+                "archived_source_size_bytes": (
+                    original_size if archived_source is not None else None
+                ),
+                "archived_source_retained_at": archived_source_retained_at,
+                "original_source_unavailable": original_source_unavailable,
                 "provisional_match": bool(payload.get("provisional_match")),
                 "gemini_confidence": payload.get("gemini_confidence"),
             },

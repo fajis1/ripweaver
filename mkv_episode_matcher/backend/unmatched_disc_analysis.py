@@ -104,14 +104,43 @@ def dominant_season_scope(
 def _subtitle_reference_windows(content: str, excerpt: str) -> tuple[str, ...]:
     words = clean_text(re.sub(r"<[^>]+>", " ", content)).split()
     excerpt_words = max(8, len(clean_text(excerpt).split()))
-    width = max(24, excerpt_words * 2)
+    # Keep enough surrounding reference dialogue to tolerate ASR omissions,
+    # without diluting a short anchor inside a window twice its size.  These
+    # windows deliberately ignore subtitle timestamps: extended/reconstructed
+    # cuts can insert minutes of dialogue before an otherwise unchanged scene.
+    width = max(24, excerpt_words + max(8, excerpt_words // 2))
     step = max(8, width // 3)
     if len(words) <= width:
         return (" ".join(words),) if words else ()
     starts = range(0, len(words) - width + 1, step)
     windows = [" ".join(words[start : start + width]) for start in starts]
     windows.append(" ".join(words[-width:]))
-    return tuple(windows)
+    windows = list(dict.fromkeys(windows))
+    maximum_windows = 96
+    if len(windows) <= maximum_windows:
+        return tuple(windows)
+
+    # Keep fuzzy comparisons bounded for malformed or unusually long subtitle
+    # files.  Lexical overlap is only a cheap shortlist; the ASR model's fuzzy
+    # scorer still makes the actual decision.
+    query = clean_text(excerpt).split()
+    query_tokens = set(query)
+    query_pairs = set(zip(query, query[1:], strict=False))
+
+    def lexical_rank(value: tuple[int, str]) -> tuple[int, int, int]:
+        index, window = value
+        tokens = window.split()
+        pairs = set(zip(tokens, tokens[1:], strict=False))
+        return (
+            len(query_pairs & pairs),
+            len(query_tokens & set(tokens)),
+            -index,
+        )
+
+    shortlisted = sorted(enumerate(windows), key=lexical_rank, reverse=True)[
+        :maximum_windows
+    ]
+    return tuple(window for _index, window in shortlisted)
 
 
 def _score_subtitle(
@@ -120,6 +149,15 @@ def _score_subtitle(
     content: str,
     duration_seconds: float,
 ) -> tuple[float, tuple[float, ...]]:
+    """Score independent dialogue anchors against one regular-edition subtitle.
+
+    Timestamp-near matches remain useful for ordinary cuts, but every excerpt
+    also receives a bounded whole-subtitle search.  That makes regular episode
+    subtitles valid references for extended editions: unchanged scenes vote
+    for the episode wherever they moved, while inserted-scene excerpts simply
+    remain below the qualifying threshold and do not lower consensus.
+    """
+
     scores = []
     starts = tuple(
         max(0.0, duration_seconds * position / (len(excerpts) + 1) - 15.0)
@@ -141,16 +179,17 @@ def _score_subtitle(
             )
             if reference:
                 aligned.append(asr.calculate_match_score(cleaned, reference))
-        if aligned:
-            scores.append(max(aligned))
-            continue
-        # Synthetic/plain-text references and malformed timing still get one
-        # bounded fallback without scanning every possible word window.
+        # Always search the regular subtitle globally as well.  A reconstructed
+        # cut may still have valid subtitle text at the calculated timestamp,
+        # but it can be a completely different scene after earlier insertions.
         windows = _subtitle_reference_windows(content, cleaned)
-        if windows:
-            scores.append(
-                max(asr.calculate_match_score(cleaned, window) for window in windows)
-            )
+        global_score = (
+            max(asr.calculate_match_score(cleaned, window) for window in windows)
+            if windows
+            else 0.0
+        )
+        if aligned or global_score:
+            scores.append(max((*aligned, global_score)))
     if not scores:
         return 0.0, ()
     scores.sort(reverse=True)
@@ -608,6 +647,67 @@ def _exact_series_candidates(
     )
 
 
+def _has_packaging_series_markers(series_name: str) -> bool:
+    """Return whether an otherwise exact name still looks like disc packaging."""
+
+    normalized = re.sub(r"[_-]+", " ", series_name)
+    return (
+        re.search(
+            r"\b(?:disc|disk|dvd|volume|vol|season)\s*\d{1,3}\b"
+            r"|\b(?:csr\s+dim|superfan\s+episodes?)\b",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        is not None
+    )
+
+
+def _resolve_series_with_gemini(
+    series_name: str,
+    candidates: tuple[TvShowCandidate, ...],
+    config: Config,
+) -> TvShowCandidate:
+    """Resolve a packaging label and validate the answer back through TMDb."""
+
+    try:
+        resolution = GeminiSeriesResolver(
+            model=config.gemini_model
+        ).resolve_with_configured_keys(series_name, candidates)
+    except Exception as exc:
+        raise classify_gemini_failure(exc) from exc
+    if resolution.confidence < config.min_confidence:
+        raise GeminiAnalysisError(
+            "gemini_series_resolution_uncertain",
+            "Gemini series resolution did not meet the confidence threshold",
+        )
+    if resolution.tmdb_id is not None:
+        selected = next(
+            (item for item in candidates if item.tmdb_id == resolution.tmdb_id),
+            None,
+        )
+        if selected is not None:
+            return selected
+
+    # A disc label such as "THE OFFICE SUPERFAN EPISODES S1" may return one
+    # plausible but catalogue-less search result.  Validate Gemini's canonical
+    # series name with a fresh TMDb search instead of trusting invented metadata.
+    validated = search_tv_show_candidates(resolution.series_name)
+    if resolution.tmdb_id is not None:
+        by_id = next(
+            (item for item in validated if item.tmdb_id == resolution.tmdb_id),
+            None,
+        )
+        if by_id is not None:
+            return by_id
+    validated_exact = _exact_series_candidates(resolution.series_name, validated)
+    if len(validated_exact) == 1:
+        return validated_exact[0]
+    raise GeminiAnalysisError(
+        "gemini_series_resolution_uncertain",
+        "Gemini's proposed series name could not be validated through TMDb",
+    )
+
+
 def _resolve_series_catalog_details(
     series_name: str,
     config: Config,
@@ -618,36 +718,25 @@ def _resolve_series_catalog_details(
 
     candidates = search_tv_show_candidates(series_name)
     exact = _exact_series_candidates(series_name, candidates)
-    selected = exact[0] if len(exact) == 1 else None
-    if selected is None and len(candidates) == 1:
-        selected = candidates[0]
+    exact_is_canonical = len(exact) == 1 and not _has_packaging_series_markers(
+        series_name
+    )
+    selected = exact[0] if exact_is_canonical else None
     if selected is None and allow_gemini:
-        try:
-            resolution = GeminiSeriesResolver(
-                model=config.gemini_model
-            ).resolve_with_configured_keys(series_name, candidates)
-        except Exception as exc:
-            raise classify_gemini_failure(exc) from exc
-        if resolution.confidence < config.min_confidence:
-            raise GeminiAnalysisError(
-                "gemini_series_resolution_uncertain",
-                "Gemini series resolution did not meet the confidence threshold",
-            )
-        if resolution.tmdb_id is not None:
-            selected = next(
-                (item for item in candidates if item.tmdb_id == resolution.tmdb_id),
-                None,
-            )
-        else:
-            validated = search_tv_show_candidates(resolution.series_name)
-            validated_exact = _exact_series_candidates(
-                resolution.series_name, validated
-            )
-            if len(validated_exact) == 1:
-                selected = validated_exact[0]
+        selected = _resolve_series_with_gemini(series_name, candidates, config)
+    if selected is None and len(candidates) == 1:
+        # When external fallback is disabled, preserve the prior conservative
+        # single-result behavior. Automatic Gemini-enabled runs always review
+        # this inexact label before reaching this branch.
+        selected = candidates[0]
     if selected is None:
         raise PipelineQueueError("No TV series matched the reviewed series name")
     catalog = tuple(fetch_aired_episode_catalog(selected.tmdb_id) or ())
+    if not catalog and allow_gemini:
+        canonical = _resolve_series_with_gemini(series_name, candidates, config)
+        if canonical is not None and canonical.tmdb_id != selected.tmdb_id:
+            selected = canonical
+            catalog = tuple(fetch_aired_episode_catalog(selected.tmdb_id) or ())
     if not catalog:
         raise PipelineQueueError(
             "TMDb returned no aired episodes for the resolved TV series"
@@ -1347,7 +1436,10 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
             )
             for media_id in unresolved:
                 item = store.get(media_id)
-                if item.state == "review_required":
+                if (
+                    item.state == "review_required"
+                    and item.review_code != "visual_content_review_required"
+                ):
                     store.choose_review_path(
                         media_id, "all_season_sequence_review_required"
                     )

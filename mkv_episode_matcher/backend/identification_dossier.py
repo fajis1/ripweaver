@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,9 +33,11 @@ _BRANCHES = {
     "tv-opensubtitles",
     "tv-gemini",
     "tv-play-all",
+    "tv-movie",
     "movie-bonus",
     "tv-bonus",
     "gemini-synthesis",
+    "visual-ocr",
 }
 _DISPOSITIONS = {"started", "matched", "review", "failed", "skipped"}
 SCHEMA_VERSION = 1
@@ -272,6 +275,7 @@ def collect_dossier_evidence(  # noqa: C901 - linear cache/probe/audio guards
     asr,
     contract_root: Path,
     include_visual_text: bool = False,
+    visual_review_recorder: Callable[[str, str], None] | None = None,
 ) -> tuple[tuple[UnmatchedFileEvidence, ...], IdentificationDossierStore]:
     """Reuse exact-source evidence and collect only cache misses.
 
@@ -358,11 +362,18 @@ def collect_dossier_evidence(  # noqa: C901 - linear cache/probe/audio guards
     try:
         ffmpeg = resolve_ffmpeg_path(config.ffmpeg_path)
         tesseract = resolve_tesseract_path(config.tesseract_path)
-    except (OSError, ValueError):
+    except (OSError, RuntimeError, ValueError):
+        dossier.record_attempt(
+            tuple(ordered_ids),
+            branch="visual-ocr",
+            disposition="failed",
+            summary={"reason": "visual_tools_unavailable"},
+        )
         return ordered, dossier
     visual_root = (
         contract_root.parent / "identification-evidence" / f"visual-{uuid4().hex}"
     )
+    visual_root.mkdir(parents=True, exist_ok=False)
     augmented: list[UnmatchedFileEvidence] = []
     sources = {
         item.media_id: Path(str(payload.get("source_path", "")))
@@ -371,19 +382,45 @@ def collect_dossier_evidence(  # noqa: C901 - linear cache/probe/audio guards
     for evidence in ordered:
         excerpts = evidence.transcript_excerpts
         try:
+            item_visual_root = (
+                visual_root
+                / hashlib.sha256(evidence.file_id.encode("utf-8")).hexdigest()[:16]
+            )
+            item_visual_root.mkdir()
             visual = collect_silent_video_review(
                 media_id=evidence.file_id,
                 media_path=sources[evidence.file_id],
                 duration_seconds=evidence.duration_seconds,
-                output_root=visual_root / evidence.file_id,
+                output_root=item_visual_root,
                 ffmpeg_path=ffmpeg,
                 tesseract_path=tesseract,
             )
+            dossier.record_attempt(
+                (evidence.file_id,),
+                branch="visual-ocr",
+                disposition=(
+                    "matched"
+                    if visual.category in {"likely_warning_screen", "likely_disc_menu"}
+                    else "review"
+                ),
+                summary={
+                    "category": visual.category,
+                    "ocr_text_characters": visual.ocr_text_characters,
+                    "sampled_frame_count": visual.sampled_frame_count,
+                },
+            )
+            if visual_review_recorder is not None:
+                visual_review_recorder(evidence.file_id, visual.category)
             if visual.ocr_excerpt:
                 on_screen = f"On-screen text (OCR): {visual.ocr_excerpt}"[:600]
                 excerpts = (on_screen, *excerpts[:5])
-        except (OSError, ValueError, RuntimeError):
-            pass
+        except (OSError, RuntimeError, ValueError) as exc:
+            dossier.record_attempt(
+                (evidence.file_id,),
+                branch="visual-ocr",
+                disposition="failed",
+                summary={"reason": type(exc).__name__},
+            )
         augmented.append(
             UnmatchedFileEvidence(
                 evidence.file_id,

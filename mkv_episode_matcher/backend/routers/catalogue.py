@@ -47,22 +47,39 @@ def catalogue_status() -> dict[str, object]:
         return {
             "enabled": False,
             "connected": False,
+            "compatible": None,
             "registered": False,
             "contributions_enabled": False,
             "contribution_outbox": None,
+            "capabilities": None,
             "policy": None,
             "usage": None,
         }
     try:
         client, token = _client_and_token(register=False)
+        capabilities = client.capabilities()
+        if not capabilities.compatible:
+            return {
+                "enabled": True,
+                "connected": True,
+                "compatible": False,
+                "registered": token is not None,
+                "contributions_enabled": False,
+                "contribution_outbox": get_catalogue_contribution_store().status(),
+                "capabilities": capabilities.__dict__,
+                "policy": None,
+                "usage": None,
+            }
         policy = client.support_policy()
         usage = client.usage(token) if token else None
         return {
             "enabled": True,
             "connected": True,
+            "compatible": True,
             "registered": token is not None,
             "contributions_enabled": (config.ripweaver_catalogue_contributions_enabled),
             "contribution_outbox": get_catalogue_contribution_store().status(),
+            "capabilities": capabilities.__dict__,
             "policy": policy.__dict__,
             "usage": usage.__dict__ if usage else None,
         }

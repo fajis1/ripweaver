@@ -95,7 +95,7 @@ def add_history(
     store.complete_stage(media_id, "identify", build_artifact("identify", identified))
 
 
-def test_outbox_waits_for_complete_history_and_contains_no_private_paths(
+def test_outbox_sends_cumulative_matches_and_supersedes_stale_partial_payloads(
     tmp_path,
 ) -> None:
     pipeline_store = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
@@ -118,7 +118,10 @@ def test_outbox_waits_for_complete_history_and_contains_no_private_paths(
         episode_number=1,
         identification_order=["tv-local"],
     )
-    assert outbox.prepare_ready(pipeline_store) == 0
+    assert outbox.prepare_ready(pipeline_store) == 1
+    first_pending = outbox.pending()[0]
+    assert [title["title_index"] for title in first_pending.payload["titles"]] == [1]
+
     add_history(
         pipeline_store,
         tmp_path,
@@ -142,7 +145,12 @@ def test_outbox_waits_for_complete_history_and_contains_no_private_paths(
     assert "library_relative" not in serialized
 
     outbox.mark_sent(pending.payload_sha256)
-    assert outbox.status() == {"snapshots": 1, "pending": 0, "sent": 1}
+    assert outbox.status() == {
+        "snapshots": 1,
+        "pending": 0,
+        "sent": 1,
+        "superseded": 1,
+    }
     assert outbox.prepare_ready(pipeline_store) == 0
 
 
@@ -189,6 +197,9 @@ def test_worker_is_inert_without_consent_and_sends_one_pending_item(
     class Client:
         def __init__(self, *, base_url: str) -> None:
             assert base_url == "https://api.ripweaver.com"
+
+        def capabilities(self):
+            return SimpleNamespace(compatible=True)
 
         def contribute(self, payload, **kwargs) -> ContributionReceipt:
             assert payload is pending.payload

@@ -388,6 +388,23 @@ def test_gemini_descriptive_uncertainty_remains_a_durable_review(tmp_path):
     )
 
 
+def test_visual_content_classification_becomes_a_durable_review(tmp_path):
+    store = _store(tmp_path)
+    store.enqueue_verified_rip("media-1", _artifact(tmp_path, "media-1", "rip"))
+    store.claim_next()
+    store.require_review("media-1", "gemini_evidence_required")
+    store.choose_review_path("media-1", "gemini_analysis_running")
+    store.record_silent_video_review("media-1", "likely_warning_screen")
+
+    selected = store.choose_review_path("media-1", "visual_content_review_required")
+
+    assert selected.state == "review_required"
+    assert selected.review_code == "visual_content_review_required"
+    assert PipelineQueueStore(store.database_path).silent_video_review_flags() == {
+        "media-1": "likely_warning_screen"
+    }
+
+
 def test_dismiss_held_items_preserves_artifacts_and_history(tmp_path):
     store = _store(tmp_path)
     artifacts = {}
@@ -830,6 +847,61 @@ def test_manual_playback_review_teaches_disc_title_history(tmp_path):
         ),
         "episode_id": "S03E02",
     }
+
+
+def test_reviewed_catalogue_candidate_remains_server_assisted_history(tmp_path):
+    store = _store(tmp_path)
+    source = tmp_path / "staged-rip.mkv"
+    source.write_bytes(b"verified-rip")
+    rip = tmp_path / "verified-rip.json"
+    rip.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "disc_fingerprint": "0123456789abcdef",
+            "title_index": 4,
+            "media_context": {
+                "series_name": "Faerie Tale Theatre",
+                "catalogue_help_assignments": [
+                    {
+                        "title_index": 4,
+                        "season": 3,
+                        "episode": 2,
+                        "title": "The Princess and the Pea",
+                        "identification_source": "ripweaver-catalogue-help",
+                    }
+                ],
+            },
+        }),
+        encoding="utf-8",
+    )
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    store.enqueue_verified_rip("media-1", build_artifact("rip", rip))
+    store.claim_next()
+    store.require_review("media-1", "catalogue_candidate_help_available")
+
+    response = apply_manual_episode_identification(
+        "media-1",
+        ManualEpisodeIdentificationRequest(
+            new_name="Faerie Tale Theatre - S03E02 - The Princess and the Pea",
+            evidence_source="catalogue_candidate",
+            confirm_identification=True,
+        ),
+        store,
+        contracts,
+    )
+
+    assert response["state"] == "queued"
+    identified = IdentifyStageAdapter(object(), contracts)(store.claim_next())
+    payload = json.loads(identified.contract_path.read_text(encoding="utf-8"))
+    assert payload["identification_order"] == ["ripweaver-catalogue-help-reviewed"]
+    store.complete_stage("media-1", "identify", identified)
+    assert (
+        store.catalogue_title_history("0123456789abcdef")[4]["match_source"]
+        == "server_assisted"
+    )
 
 
 def test_manual_bonus_review_routes_to_tv_series_extras(tmp_path):

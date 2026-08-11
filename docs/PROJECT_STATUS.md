@@ -1893,6 +1893,9 @@ added to queue events or durable public history records.
 # 2026-08-01 — Recoverable source retention and finished-size reporting
 
 - Added a non-secret `deletion_staging_root` setting and folder-browser field.
+- Added a non-secret `retained_source_ttl_days` setting with a 30-day default.
+  Retained-original notices in the dashboard and cleanup views now show the
+  live expiry window from Settings.
 - New transcodes retain the verified original-source identity in the private
   transcode contract. After a Jellyfin destination has been collision-checked,
   moved, and size-verified, organization may move that original into a unique
@@ -1927,6 +1930,9 @@ added to queue events or durable public history records.
   failure. System Cleanup groups retained originals by disc, requires a valid
   HandBrake profile for requeue, reuses saved identification, and provides an
   exact-preview deletion action that cannot affect Jellyfin files.
+- Retained originals reaching their configurable TTL now produce a guarded
+  cleanup popup. It shows the exact file count and size and supports durable
+  1-, 7-, or 30-day postponement; expiration never silently deletes Jellyfin.
 - Weak or silent local audio no longer prevents a confirmed Gemini fallback.
   The request may contain runtime plus the constrained remaining catalogue
   names with zero transcript excerpts and asks Gemini for a provisional
@@ -2860,6 +2866,27 @@ for review rather than forcing a TV identity.
   opening a contribution must remain a separate explicit network mutation;
   RipWeaver should not copy or call MKV-Auto's AGPL contribution code.
 
+## Extended-edition subtitle anchors (2026-08-10)
+
+- All-season matching already collects up to six bounded Whisper excerpts per
+  title. Each excerpt now checks both its normal timestamp neighborhood and a
+  bounded whole-subtitle window shortlist, allowing a regular-edition subtitle
+  to identify dialogue that moved after inserted scenes in a reconstructed cut.
+- Only above-threshold windows vote. Added-scene excerpts that have no regular
+  subtitle counterpart therefore remain neutral when at least two independent
+  regular-dialogue anchors support the same episode; confidence and runner-up
+  margin requirements remain unchanged.
+- Whole-subtitle work is capped at 96 lexically shortlisted windows per excerpt
+  before fuzzy scoring, preventing malformed or unusually long subtitle files
+  from creating unbounded comparisons.
+- A one-candidate packaging-label result with no TMDb aired catalogue no longer
+  blocks the evidence pipeline. With already-confirmed Gemini fallback enabled,
+  RipWeaver resolves a canonical series name, validates it through a fresh TMDb
+  search, and only then downloads regular episode subtitle references.
+- Synthetic tests cover multi-minute timeline shifts, unmatched extended-only
+  dialogue, bounded long-reference search, and the Office Superfan-style
+  canonical-label recovery. No disc or media was read.
+
 ## Missing-title rerip correction (2026-08-10)
 
 - Disc preparation now checks durable title outcomes against the configured
@@ -3047,6 +3074,43 @@ for review rather than forcing a TV identity.
   and isolated databases only. No physical disc or media operation was
   performed.
 
+## Desktop catalogue connection completion (2026-08-10)
+
+- The desktop now checks `GET /v1/schema` before registration and requires the
+  deployed privacy and consensus contract: schema 3, authenticated
+  installations/submissions, two-installation piecewise consensus, provisional
+  help, no public lookup, no human moderation, and no attachment or media
+  acceptance. An incompatible or privacy-expanded endpoint stops safely.
+- Settings now shows whether the saved catalogue server is reachable,
+  compatible, and registered, plus the current automatic lookup allowance and
+  path-free outbox counts. Registration remains a separate explicit button;
+  enabling the setting alone does not silently create an installation.
+- Contribution preparation is cumulative. As each title receives a durable
+  identification outcome, the current matched subset becomes eligible without
+  waiting for every bonus or failed title. A later cumulative layout supersedes
+  older unsent retries for that content hash, preventing delayed partial data
+  from replacing a newer local layout.
+- A one-upload community candidate can now be accepted explicitly from the
+  review card. The backend verifies that the submitted name is exactly the
+  displayed candidate and records `ripweaver-catalogue-help-reviewed`; durable
+  provenance therefore remains `server_assisted` and cannot form quorum or
+  earn exchange credit. A different name entered after independent playback
+  review remains manual evidence.
+- Validation passes all 821 Python tests, frontend ESLint and the packaged Vite
+  production build, plus focused Ruff lint and formatting for every changed
+  Python file. The repository-wide Ruff command still reports the documented
+  pre-existing findings in older CLI and router modules; they were not
+  mechanically rewritten as part of the catalogue work.
+- The public tunnel was rechecked read-only at
+  `https://api.ripweaver.com`: readiness is healthy and the service advertises
+  schema 3 with authenticated submissions, piecewise consensus, provisional
+  help, quorum 2, and support checkout disabled. The owner-authorized desktop
+  settings were then enabled through the loopback API and this installation was
+  registered without displaying its token. Status reported 10 automatic
+  lookups remaining and an empty outbox (zero snapshots, pending updates, or
+  sent updates), so activation uploaded no disc layout. No payment, disc access,
+  or media mutation was performed by these implementation checks.
+
 ## Exact missing-title rerip and completed-disc idle eject (2026-08-10)
 
 - A verified title produced before another title on the same drive fails is now
@@ -3072,3 +3136,89 @@ for review rather than forcing a TV identity.
 - Focused synthetic API/adapter/queue tests, frontend ESLint, and TypeScript
   validation pass. No physical disc was read, ripped, or ejected, and no media
   was transcoded, renamed, moved, overwritten, or deleted during this work.
+
+## Automatic downstream continuity and visible OCR fallback (2026-08-10)
+
+- When unattended processing is enabled, queued HandBrake work no longer shows
+  a contradictory profile-approval prompt. The dashboard reports the currently
+  running encode and waiting count while the existing resolution-aware profile
+  selection continues automatically.
+- When automatic organization is enabled, a collision-free verified encode no
+  longer waits for a redundant `Move these verified files into Jellyfin` click.
+  The dashboard reports automatic placement status and the manual review plan is
+  reserved for installations that intentionally disabled automatic placement.
+- Television episode collision checks now distinguish resolution versions. A
+  new `1080p` encode may coexist with an existing unsuffixed or different-
+  resolution episode. An exact destination or another version with the same
+  resolution still stops that item for review, and no existing file is ever
+  overwritten or deleted automatically. Identification, transcode preflight,
+  organization preview, and final placement now follow the same rule.
+- Old broad episode-collision holds are rechecked once after restart under the
+  exact-version rule. Only items that are now collision-free are requeued;
+  exact and same-resolution conflicts remain held.
+- The final content fallback's local frame OCR now creates its required isolated
+  evidence directory before invoking the guarded collector. Each item records a
+  durable `visual-ocr` success/review/failure entry instead of silently reducing
+  a preflight rejection to a later Gemini synthesis failure.
+- A likely warning screen or disc menu is excluded from episode matching and
+  receives a dedicated visual-content review. The staged MKV is preserved and
+  can only be deleted by an explicit user action. Legacy all-season review items
+  without a durable visual result receive one automatic re-evaluation after
+  restart when automatic Gemini ambiguity fallback is enabled.
+- Organization now treats an already-missing original rip as “nothing to
+  archive” after independently verifying the encoded input. Collision-free
+  placement continues and the completed item reports that the old source was
+  unavailable. An original that still exists but no longer matches its recorded
+  size remains a hard safety stop; the encode and changed source are preserved.
+- All 833 Python tests pass, along with focused Ruff checks, frontend ESLint,
+  TypeScript, and the packaged production build. OCR and placement tests use
+  synthetic files, fake collectors, and isolated temporary libraries. No
+  physical disc or user media was read, transcoded, moved, overwritten,
+  deleted, or ejected while implementing these changes.
+
+## TV-related feature films (2026-08-11)
+
+- After aired-episode matching fails, a TV-disc title lasting at least 45
+  minutes is now tested as a related movie before generic bonus-feature naming.
+  RipWeaver searches at most eight TMDb movie candidates using the canonical
+  series name and keeps only candidates within 15 percent of the source runtime
+  (with a five-minute minimum tolerance).
+- Each retained movie candidate receives at most one English OpenSubtitles
+  reference addressed by its exact TMDb movie ID. References use an isolated
+  ID-scoped cache, so similarly named films cannot contaminate one another or
+  repeatedly consume a subtitle download after the first successful fetch.
+- Movie dialogue uses the same six-window, timestamp-independent anchor scorer
+  as extended television episodes. A match requires two qualifying dialogue
+  windows, or one exceptional 92-percent window, plus an eight-point lead over
+  the runner-up. Runtime alone can never identify a movie.
+- A subtitle-validated movie records its TMDb ID and is routed to the configured
+  Jellyfin movie library rather than the television show's `Extras` directory.
+  If no usable movie subtitle exists, Gemini may still propose a movie title,
+  but that result remains explicitly provisional.
+- This closes the Disc 10 classification gap represented by the 89-minute
+  `The Man Called Flintstone` supplement in The Flintstones complete-series
+  release. Validation uses synthetic transcripts, subtitles, provider replies,
+  and contracts only; no staged MKV or physical disc was read.
+- The complete Python regression suite passes, as do focused Ruff lint and
+  formatting, frontend ESLint and TypeScript, and the packaged Vite production
+  build.
+
+## Legacy Superfan recovery (2026-08-11)
+
+- Old `all_season_analysis_failed` items may predate durable identification
+  attempts and therefore do not rerun merely because matcher code changed. The
+  Needs Attention card now offers one explicit whole-disc retry; its confirmation
+  remains the media-read/provider-lookup boundary and does not rerip the disc.
+- The canonical series name submitted by either the recovery card or dashboard
+  now overrides stale packaging context in the verified-rip contract. `The
+  Office` can no longer be silently replaced by `The Office Superfan Episodes
+  S1`.
+- Recovery parsing recognizes compact `S1` and `S2-D1` labels, removes the
+  Superfan-edition marker from the canonical series name, and limits each retry
+  to the indicated aired season.
+- On new automatic runs, only one exact, packaging-free TMDb series name may
+  bypass Gemini. Any inexact singleton, ambiguous result, empty result, or name
+  carrying disc/season/Superfan packaging markers is sent through the configured
+  Gemini series resolver first. Gemini's canonical proposal must then validate
+  through TMDb; only a failed or uncertain validated Gemini attempt reaches the
+  user-name field.

@@ -9,7 +9,7 @@ import threading
 from loguru import logger
 
 from mkv_episode_matcher.core.config_manager import get_config_manager
-from mkv_episode_matcher.pipeline_queue import DownstreamDispatcher
+from mkv_episode_matcher.pipeline_queue import DownstreamDispatcher, PipelineQueueError
 
 _DISC_TITLE_ID = re.compile(
     r"-disc-\d+-([0-9a-f]{16})-title-(\d{3})(?:-|$)", re.IGNORECASE
@@ -34,6 +34,7 @@ class DownstreamWorker:
         self._last_automatic_transcode_plan: str | None = None
         self._automatic_transcode_media_ids: tuple[str, ...] = ()
         self._automatic_analysis_attempts: set[str] = set()
+        self._version_coexistence_reconciled = False
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -70,6 +71,52 @@ class DownstreamWorker:
         self._apply_automatic_fallback(item)
         return self._apply_automatic_disc_analysis()
 
+    def _resume_version_coexistence_reviews(self) -> bool:
+        """Requeue old broad episode collisions under the exact-version rule."""
+
+        if self._version_coexistence_reconciled:
+            return False
+        config = get_config_manager().load()
+        if not (
+            config.automatic_processing_enabled
+            and config.automatic_organization_enabled
+        ):
+            return False
+        from mkv_episode_matcher.backend.organization_authorization import (
+            organization_item_has_collision,
+        )
+
+        resumed = 0
+        for item in self.dispatcher.store.list_items():
+            if (
+                item.state != "review_required"
+                or item.review_code != "library_collision"
+            ):
+                continue
+            if item.stage in {"identify", "transcode"}:
+                self.dispatcher.store.retry(item.media_id)
+                resumed += 1
+                continue
+            if item.stage != "organize":
+                continue
+            try:
+                payload = json.loads(
+                    item.artifact.contract_path.read_text(encoding="utf-8")
+                )
+                collision = organization_item_has_collision(payload, config)
+            except (OSError, json.JSONDecodeError, PipelineQueueError):
+                continue
+            if not collision:
+                self.dispatcher.store.retry(item.media_id)
+                resumed += 1
+        self._version_coexistence_reconciled = True
+        if resumed:
+            logger.info(
+                "Resumed {} prior broad episode-collision review(s) under exact-version checks",
+                resumed,
+            )
+        return resumed > 0
+
     def _apply_automatic_disc_analysis(self) -> bool:  # noqa: C901
         """Recover automatic TV batches that settled into a sequence hold."""
 
@@ -93,6 +140,7 @@ class DownstreamWorker:
         expected: dict[str, set[int]] = {}
         observed: dict[str, set[int]] = {}
         items = self.dispatcher.store.list_items()
+        visual_reviews = self.dispatcher.store.silent_video_review_flags()
         for item in items:
             media_match = _DISC_TITLE_ID.search(item.media_id)
             if media_match is not None:
@@ -121,17 +169,13 @@ class DownstreamWorker:
                 if item.state in {"queued", "running"}:
                     pending.add(fingerprint)
                     continue
-                if (
-                    item.state != "review_required"
-                    or item.review_code
-                    not in {
-                        "missing_season_context",
-                        "unmatched_disc_analysis_required",
-                        "all_season_analysis_running",
-                        "all_season_analysis_failed",
-                        "all_season_sequence_review_required",
-                    }
-                ):
+                if item.state != "review_required" or item.review_code not in {
+                    "missing_season_context",
+                    "unmatched_disc_analysis_required",
+                    "all_season_analysis_running",
+                    "all_season_analysis_failed",
+                    "all_season_sequence_review_required",
+                }:
                     continue
                 groups.setdefault(fingerprint, []).append(item.media_id)
                 if item.review_code in {
@@ -139,6 +183,15 @@ class DownstreamWorker:
                     "unmatched_disc_analysis_required",
                     "all_season_analysis_running",
                 }:
+                    triggered.add(fingerprint)
+                elif (
+                    item.review_code == "all_season_sequence_review_required"
+                    and config.automatic_gemini_ambiguity_fallback
+                    and item.media_id not in visual_reviews
+                ):
+                    # Older automatic fallbacks could silently skip OCR because
+                    # their evidence directory was absent. Retry such a disc
+                    # once after restart; a durable visual flag prevents loops.
                     triggered.add(fingerprint)
         ready = next(
             (
@@ -225,9 +278,17 @@ class DownstreamWorker:
         )
         return True
 
-    def _run(self) -> None:
+    def _run(self) -> None:  # noqa: C901 - isolated worker recovery boundaries
         logger.info("Downstream identification worker started")
         while not self._stop.is_set():
+            try:
+                if self._resume_version_coexistence_reviews():
+                    continue
+            except Exception as exc:
+                logger.error(
+                    "Version-coexistence review reconciliation could not run: {}",
+                    type(exc).__name__,
+                )
             try:
                 item = self.dispatcher.run_one(allowed_stages=self.allowed_stages)
             except Exception as exc:

@@ -50,6 +50,7 @@ _MATCHING_PROVIDER_BRANCHES = {
     "tv-opensubtitles",
     "tv-gemini",
     "tv-play-all",
+    "tv-movie",
     "movie-bonus",
     "tv-bonus",
     "gemini-synthesis",
@@ -2109,6 +2110,7 @@ class PipelineQueueStore:
             "all_season_evidence_failed",
             "all_season_catalog_unavailable",
             "all_season_sequence_review_required",
+            "visual_content_review_required",
             "gemini_series_resolution_uncertain",
             "play_all_aggregate_detected",
         }:
@@ -2148,6 +2150,7 @@ class PipelineQueueStore:
                     "all_season_evidence_failed",
                     "all_season_catalog_unavailable",
                     "all_season_sequence_review_required",
+                    "visual_content_review_required",
                     "gemini_series_resolution_uncertain",
                 }
             ):
@@ -2201,6 +2204,7 @@ class PipelineQueueStore:
                     "all_season_catalog_unavailable",
                     "all_season_sequence_review_required",
                     "gemini_series_resolution_uncertain",
+                    "catalogue_candidate_help_available",
                 }
             ):
                 connection.rollback()

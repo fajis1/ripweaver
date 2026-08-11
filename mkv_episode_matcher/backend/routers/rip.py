@@ -11,7 +11,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import asdict, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Annotated
 from uuid import uuid4
@@ -1213,6 +1213,10 @@ def prepare_drive_pipeline(  # noqa: C901
                     registration = catalogue_client.register()
                     store_credential("ripweaver-catalogue", registration.access_token)
                     catalogue_token = registration.access_token
+                elif not catalogue_client.capabilities().compatible:
+                    raise RipWeaverCatalogueError(
+                        "RipWeaver Catalogue protocol is not compatible with this desktop"
+                    )
                 catalogue_lookup = catalogue_client.lookup(
                     identity.content_hash,
                     inventory,
@@ -1957,10 +1961,13 @@ class PipelineItemResponse(BaseModel):
     location_root_key: str | None = None
     output_size_bytes: int | None = None
     retained_source_available: bool = False
+    retained_source_expired: bool = False
     retention_candidate_available: bool = False
+    original_source_unavailable: bool = False
     staged_source_available: bool = False
     provisional_match: bool = False
     gemini_confidence: float | None = None
+    retained_source_ttl_days: int = 30
     state: str
     stage: str
     created_at: str
@@ -1986,6 +1993,8 @@ class DiscTitleDispositionResponse(BaseModel):
 class PipelineQueueResponse(BaseModel):
     paused: bool
     downstream_worker_limit: int
+    automatic_processing_enabled: bool
+    automatic_organization_enabled: bool
     items: list[PipelineItemResponse]
     title_dispositions: list[DiscTitleDispositionResponse] = Field(default_factory=list)
 
@@ -2095,6 +2104,10 @@ class DeleteRetainedSourceRequest(RetainedSourceRequest):
     confirm_delete: bool = False
 
 
+class PostponeRetainedSourceCleanupRequest(BaseModel):
+    postpone_days: int = Field(default=7, ge=1, le=90)
+
+
 class RetainExistingSourceRequest(RetainedSourceRequest):
     expected_plan_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     authorized_file_count: int = Field(ge=1, le=999)
@@ -2132,6 +2145,9 @@ class RenameProvisionalItemRequest(BaseModel):
 class ManualEpisodeIdentificationRequest(BaseModel):
     new_name: str = Field(min_length=1, max_length=160)
     content_type: str = Field(default="episode", pattern=r"^(episode|bonus)$")
+    evidence_source: str = Field(
+        default="manual_playback", pattern=r"^(manual_playback|catalogue_candidate)$"
+    )
     confirm_identification: bool = False
 
 
@@ -2379,9 +2395,12 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
     visual_review_code: str | None = None,
 ) -> dict[str, object]:
     location_label, location_relative, location_root_key = _pipeline_item_location(item)
+    config = get_config_manager().load()
     output_size_bytes = None
     retained_source_available = False
+    retained_source_expired = False
     retention_candidate_available = False
+    original_source_unavailable = False
     staged_source_available = False
     provisional_match = False
     gemini_confidence = None
@@ -2429,12 +2448,28 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
             output_size_bytes = value
         retained = payload.get("archived_source_path")
         retained_size = payload.get("archived_source_size_bytes")
-        if isinstance(retained, str) and isinstance(retained_size, int):
-            retained_path = Path(retained)
-            retained_source_available = (
-                retained_path.is_file()
-                and retained_path.stat().st_size == retained_size
-            )
+        retained_at = payload.get("archived_source_retained_at")
+        retained_status = _retained_source_status(
+            retained_path=retained if isinstance(retained, str) else None,
+            retained_size=retained_size if isinstance(retained_size, int) else None,
+            retained_at=retained_at if isinstance(retained_at, str) else None,
+            contract_path=item.artifact.contract_path,
+            ttl_days=config.retained_source_ttl_days,
+        )
+        if retained_status == "active":
+            retained_source_available = True
+        elif retained_status == "expired":
+            retained_source_expired = True
+        original_source_unavailable = bool(payload.get("original_source_unavailable"))
+        if (
+            not original_source_unavailable
+            and payload.get("mode") == "verified-transcode-contract"
+            and isinstance(payload.get("original_source_path"), str)
+            and isinstance(payload.get("original_source_size_bytes"), int)
+        ):
+            original_source_unavailable = not Path(
+                payload["original_source_path"]
+            ).is_file()
         provisional_match = bool(payload.get("provisional_match"))
         confidence = payload.get("gemini_confidence")
         if isinstance(confidence, int | float) and not isinstance(confidence, bool):
@@ -2475,10 +2510,13 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
         "location_root_key": location_root_key,
         "output_size_bytes": output_size_bytes,
         "retained_source_available": retained_source_available,
+        "retained_source_expired": retained_source_expired,
         "retention_candidate_available": retention_candidate_available,
+        "original_source_unavailable": original_source_unavailable,
         "staged_source_available": staged_source_available,
         "provisional_match": provisional_match,
         "gemini_confidence": gemini_confidence,
+        "retained_source_ttl_days": config.retained_source_ttl_days,
         "state": item.state,
         "stage": item.stage,
         "created_at": item.created_at,
@@ -3516,9 +3554,12 @@ def get_pipeline_items(
         get_pipeline_contract_root().parent / "identification-evidence"
     )
     visual_reviews = store.silent_video_review_flags()
+    config = get_config_manager().load()
     return {
         "paused": store.is_paused(),
         "downstream_worker_limit": 1,
+        "automatic_processing_enabled": config.automatic_processing_enabled,
+        "automatic_organization_enabled": config.automatic_organization_enabled,
         "title_dispositions": list(store.list_title_dispositions()),
         "items": [
             _pipeline_item_response(item, dossier, visual_reviews.get(item.media_id))
@@ -3828,27 +3869,12 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
         raise HTTPException(
             status_code=409, detail="No unmatched disc titles are ready"
         )
-    contract_series_names: set[str] = set()
-    for media_id in selected:
-        try:
-            payload = json.loads(
-                store.rip_artifact(media_id).contract_path.read_text(encoding="utf-8")
-            )
-        except (OSError, json.JSONDecodeError, PipelineQueueError):
-            continue
-        context = payload.get("media_context")
-        candidate = context.get("series_name") if isinstance(context, dict) else None
-        if (
-            isinstance(candidate, str)
-            and candidate.strip()
-            and candidate.strip().casefold() not in {"unmatched", "unknown", "series"}
-        ):
-            contract_series_names.add(" ".join(candidate.split()))
-    series_name = (
-        next(iter(contract_series_names))
-        if len(contract_series_names) == 1
-        else requested_series_name
-    )
+    # This endpoint is an explicit reviewed recovery boundary.  The submitted
+    # canonical name must therefore win over an old packaging label retained in
+    # the rip contract (for example, "The Office Superfan Episodes S1").
+    # Falling back to contract context made the dashboard's editable canonical
+    # name misleading and could repeat the exact failed lookup.
+    series_name = requested_series_name
     for media_id in selected:
         store.choose_review_path(media_id, "all_season_analysis_running")
 
@@ -4005,6 +4031,44 @@ def _review_media_path(store: PipelineQueueStore, media_id: str) -> tuple[Path, 
     return candidate, size
 
 
+def _retained_source_status(
+    *,
+    retained_path: str | None,
+    retained_size: int | None,
+    retained_at: str | None,
+    contract_path: Path,
+    ttl_days: int,
+) -> str:
+    if not isinstance(retained_path, str) or not isinstance(retained_size, int):
+        return "missing"
+    candidate = Path(retained_path).resolve()
+    if not candidate.is_file() or candidate.stat().st_size != retained_size:
+        return "missing"
+    if ttl_days < 1:
+        return "active"
+    retained_time: datetime
+    if isinstance(retained_at, str) and retained_at.strip():
+        try:
+            retained_time = datetime.fromisoformat(retained_at)
+        except ValueError:
+            retained_time = datetime.fromtimestamp(
+                contract_path.stat().st_mtime, tz=UTC
+            )
+    else:
+        retained_time = datetime.fromtimestamp(contract_path.stat().st_mtime, tz=UTC)
+    if retained_time.tzinfo is None:
+        retained_time = retained_time.replace(tzinfo=UTC)
+    return (
+        "active"
+        if datetime.now(UTC) - retained_time <= timedelta(days=ttl_days)
+        else "expired"
+    )
+
+
+def _retained_source_is_active(**kwargs) -> bool:
+    return _retained_source_status(**kwargs) == "active"
+
+
 @router.post("/pipeline/items/{media_id}/play-review")
 def play_pipeline_item_for_review(
     media_id: str,
@@ -4144,6 +4208,7 @@ def apply_manual_episode_identification(  # noqa: C901 - guarded review boundary
                 "all_season_sequence_review_required",
                 "special_feature_manual_assignment_required",
                 "gemini_descriptive_review_required",
+                "catalogue_candidate_help_available",
             }
         ):
             raise PipelineQueueError(
@@ -4154,6 +4219,25 @@ def apply_manual_episode_identification(  # noqa: C901 - guarded review boundary
         title_index = payload.get("title_index")
         if not isinstance(title_index, int) or isinstance(title_index, bool):
             raise PipelineQueueError("Verified rip title identity is unavailable")
+        if request.evidence_source == "catalogue_candidate":
+            candidate = _pipeline_catalogue_candidate_help(item)
+            if (
+                item.review_code != "catalogue_candidate_help_available"
+                or request.content_type != "episode"
+                or candidate is None
+            ):
+                raise PipelineQueueError(
+                    "Catalogue candidate evidence is unavailable for this title"
+                )
+            expected_name = (
+                f"{candidate['series_name']} - "
+                f"S{int(candidate['season']):02d}E{int(candidate['episode']):02d} - "
+                f"{candidate['title']}"
+            )
+            if cleaned.casefold() != expected_name.casefold():
+                raise PipelineQueueError(
+                    "The reviewed name does not match the displayed catalogue candidate"
+                )
         revised = dict(payload)
         context = dict(revised.get("media_context", {}))
         if request.content_type == "bonus":
@@ -4206,7 +4290,11 @@ def apply_manual_episode_identification(  # noqa: C901 - guarded review boundary
                     }
                 ],
                 special_feature_assignments=[],
-                episode_assignment_source="manual-playback-review",
+                episode_assignment_source=(
+                    "ripweaver-catalogue-help-reviewed"
+                    if request.evidence_source == "catalogue_candidate"
+                    else "manual-playback-review"
+                ),
                 identification_policy_version=2,
             )
         revised["media_context"] = context
@@ -4300,10 +4388,15 @@ def rename_provisional_pipeline_item(
 
 
 def _retained_source_plan(
-    store: PipelineQueueStore, media_ids: list[str], deletion_root: Path | None
+    store: PipelineQueueStore,
+    media_ids: list[str],
+    deletion_root: Path | None,
+    *,
+    require_expired: bool = False,
 ) -> tuple[str, list[tuple[str, Path, int]]]:
     if deletion_root is None or not deletion_root.is_dir():
         raise PipelineQueueError("Configure an existing staging-for-deletion root")
+    config = get_config_manager().load()
     root = deletion_root.resolve()
     if len(set(media_ids)) != len(media_ids):
         raise PipelineQueueError("Retained-source selection contains duplicates")
@@ -4318,11 +4411,21 @@ def _retained_source_plan(
             )
             path = Path(str(payload["archived_source_path"])).resolve()
             size = int(payload["archived_source_size_bytes"])
+            retained_at = payload.get("archived_source_retained_at")
             path.relative_to(root)
         except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError) as exc:
             raise PipelineQueueError("Retained source contract is unavailable") from exc
-        if not path.is_file() or size <= 0 or path.stat().st_size != size:
+        retained_status = _retained_source_status(
+            retained_path=str(path),
+            retained_size=size,
+            retained_at=retained_at if isinstance(retained_at, str) else None,
+            contract_path=item.artifact.contract_path,
+            ttl_days=config.retained_source_ttl_days,
+        )
+        if retained_status == "missing":
             raise PipelineQueueError("Retained source is missing or changed")
+        if require_expired and retained_status != "expired":
+            raise PipelineQueueError("Retained source has not reached its TTL")
         entries.append((media_id, path, size))
     identity = json.dumps(
         [
@@ -4332,6 +4435,31 @@ def _retained_source_plan(
         separators=(",", ":"),
     ).encode()
     return hashlib.sha256(identity).hexdigest(), entries
+
+
+def _expired_retained_source_ids(store: PipelineQueueStore, ttl_days: int) -> list[str]:
+    expired: list[str] = []
+    for item in store.list_items():
+        if item.state != "completed" or item.stage != "organize":
+            continue
+        try:
+            payload = json.loads(
+                item.artifact.contract_path.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            continue
+        if (
+            _retained_source_status(
+                retained_path=payload.get("archived_source_path"),
+                retained_size=payload.get("archived_source_size_bytes"),
+                retained_at=payload.get("archived_source_retained_at"),
+                contract_path=item.artifact.contract_path,
+                ttl_days=ttl_days,
+            )
+            == "expired"
+        ):
+            expired.append(item.media_id)
+    return sorted(expired)
 
 
 def _existing_source_retention_plan(
@@ -4424,7 +4552,9 @@ def retain_existing_sources(
             )
             revised = dict(payload)
             revised.update(
-                archived_source_path=str(destination), archived_source_size_bytes=size
+                archived_source_path=str(destination),
+                archived_source_size_bytes=size,
+                archived_source_retained_at=datetime.now(UTC).isoformat(),
             )
             contract = (
                 contract_root / f"{media_id}.organize.retain-{uuid4().hex[:12]}.json"
@@ -4449,6 +4579,81 @@ def retain_existing_sources(
     ) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"retained_file_count": completed, "jellyfin_files_affected": 0}
+
+
+@router.get("/pipeline/retained-sources/expired")
+def get_expired_retained_sources(
+    store: Annotated[PipelineQueueStore, Depends(get_pipeline_queue_store)],
+) -> dict[str, object]:
+    """Return an exact, path-redacted cleanup proposal for TTL-expired originals."""
+
+    config = get_config_manager().load()
+    media_ids = _expired_retained_source_ids(store, config.retained_source_ttl_days)
+    postponed_until = config.retained_source_cleanup_postponed_until
+    postponed = False
+    if postponed_until:
+        try:
+            value = datetime.fromisoformat(postponed_until)
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=UTC)
+            postponed = value.astimezone(UTC) > datetime.now(UTC)
+        except ValueError:
+            postponed_until = None
+    if not media_ids:
+        return {
+            "cleanup_due": False,
+            "postponed": postponed,
+            "postponed_until": postponed_until,
+            "ttl_days": config.retained_source_ttl_days,
+            "media_ids": [],
+            "file_count": 0,
+            "total_size_bytes": 0,
+            "plan_sha256": None,
+            "jellyfin_files_affected": 0,
+        }
+    try:
+        digest, entries = _retained_source_plan(
+            store,
+            media_ids,
+            config.deletion_staging_root,
+            require_expired=True,
+        )
+    except PipelineQueueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "cleanup_due": not postponed,
+        "postponed": postponed,
+        "postponed_until": postponed_until,
+        "ttl_days": config.retained_source_ttl_days,
+        "media_ids": media_ids,
+        "file_count": len(entries),
+        "total_size_bytes": sum(entry[2] for entry in entries),
+        "plan_sha256": digest,
+        "jellyfin_files_affected": 0,
+    }
+
+
+@router.post("/pipeline/retained-sources/postpone-cleanup")
+def postpone_expired_retained_source_cleanup(
+    request: PostponeRetainedSourceCleanupRequest,
+) -> dict[str, object]:
+    """Persist a bounded postponement for the next TTL cleanup prompt."""
+
+    manager = get_config_manager()
+    config = manager.load()
+    postponed_until = datetime.now(UTC) + timedelta(days=request.postpone_days)
+    manager.save(
+        config.model_copy(
+            update={
+                "retained_source_cleanup_postponed_until": postponed_until.isoformat()
+            }
+        )
+    )
+    return {
+        "postponed": True,
+        "postponed_until": postponed_until.isoformat(),
+        "postpone_days": request.postpone_days,
+    }
 
 
 @router.post("/pipeline/retained-sources/preview-delete")
@@ -4500,6 +4705,12 @@ def delete_retained_sources(
         raise HTTPException(
             status_code=409, detail="A retained source could not be deleted"
         ) from exc
+    manager = get_config_manager()
+    config = manager.load()
+    if config.retained_source_cleanup_postponed_until is not None:
+        manager.save(
+            config.model_copy(update={"retained_source_cleanup_postponed_until": None})
+        )
     return {"deleted_file_count": len(entries), "jellyfin_files_affected": 0}
 
 
@@ -4886,9 +5097,9 @@ def pause_pipeline(
 
 @router.get("/pipeline/transcode/preview")
 def preview_transcode_authorization(
-    profile_id: str | None,
     store: Annotated[PipelineQueueStore, Depends(get_pipeline_queue_store)],
     profiles: Annotated[HandBrakeProfileStore, Depends(get_handbrake_profile_store)],
+    profile_id: str | None = None,
 ) -> dict[str, object]:
     """Review the exact currently queued transcode set without starting tools."""
 
@@ -4956,6 +5167,7 @@ def _run_authorized_organization_batch(
             library_root=library_root,
             contract_root=contract_root,
             confirm_organize=True,
+            allow_version_coexistence=config.automatic_organization_enabled,
             deletion_staging_root=config.deletion_staging_root,
         )(item)
 
@@ -5016,6 +5228,7 @@ def authorize_transcode_batch(
             resolution_profile_ids=plan.resolution_profile_ids,
             tv_library_root=config.jellyfin_tv_root,
             movie_library_root=config.jellyfin_movie_root,
+            allow_version_coexistence=config.automatic_organization_enabled,
         )
         threading.Thread(
             target=_run_authorized_transcode_batch,

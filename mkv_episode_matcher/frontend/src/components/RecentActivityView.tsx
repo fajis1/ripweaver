@@ -30,6 +30,7 @@ const RecentActivityView = ({ onOpenDashboard }: RecentActivityViewProps) => {
   const [geminiProgress, setGeminiProgress] = useState<Record<string, string>>({});
   const [renameDrafts, setRenameDrafts] = useState<Record<string, string>>({});
   const [roots, setRoots] = useState({ tv: '', movie: '' });
+  const [retentionDays, setRetentionDays] = useState(30);
   const [readIds, setReadIds] = useState<Set<string>>(() => new Set(JSON.parse(localStorage.getItem('ripweaver-recent-read') || '[]')));
   const [hiddenIds, setHiddenIds] = useState<Set<string>>(() => new Set(JSON.parse(localStorage.getItem('ripweaver-recent-hidden') || '[]')));
 
@@ -53,7 +54,11 @@ const RecentActivityView = ({ onOpenDashboard }: RecentActivityViewProps) => {
           if (!payload.items.some((item: HistoryItem) => ['gemini_evidence_required', 'gemini_analysis_running'].includes(item.review_code || ''))) return 'Gemini review finished and successful matches returned to the pipeline.';
           return current;
         });
-        if (configResponse.ok) { const config = await configResponse.json(); setRoots({ tv: config.jellyfin_tv_root || '', movie: config.jellyfin_movie_root || '' }); }
+        if (configResponse.ok) {
+          const config = await configResponse.json();
+          setRoots({ tv: config.jellyfin_tv_root || '', movie: config.jellyfin_movie_root || '' });
+          setRetentionDays(Number(config.retained_source_ttl_days || 30));
+        }
         setError('');
       } catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'History could not be loaded.'); }
     };
@@ -110,7 +115,7 @@ const RecentActivityView = ({ onOpenDashboard }: RecentActivityViewProps) => {
 
   const reencodeDisc = async (discItems: HistoryItem[]) => {
     const mediaIds = discItems.filter((item) => item.retained_source_available).map((item) => item.media_id);
-    if (!mediaIds.length || !window.confirm(`Queue ${mediaIds.length} retained original(s) for a fresh HandBrake encode? Saved matched names will be reused. Jellyfin files will not be replaced or deleted.`)) return;
+    if (!mediaIds.length || !window.confirm(`Queue ${mediaIds.length} retained original(s) for a fresh HandBrake encode? Saved matched names will be reused. Jellyfin files will not be replaced or deleted. Retained originals expire after ${retentionDays} day(s).`)) return;
     setWorking(true); setError('');
     try {
       const response = await fetch('/rip/pipeline/retained-sources/reencode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ media_ids: mediaIds, confirm_reencode: true }) });
@@ -152,7 +157,7 @@ const RecentActivityView = ({ onOpenDashboard }: RecentActivityViewProps) => {
         const unread = discItems.filter((item) => !readIds.has(item.media_id)).length;
         return <details key={discKey} className="glass-panel rounded-xl overflow-hidden" open={attention > 0} onToggle={(event) => { if (event.currentTarget.open) markRead(discItems.map((item) => item.media_id)); }}>
           <summary className="cursor-pointer list-none border-b border-[var(--border-color)] p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><div className="font-bold text-white">{discName(discItems)}{unread > 0 && <span className="ml-2 rounded-full bg-blue-500/20 px-2 py-0.5 text-xs text-blue-200">{unread} unread</span>}</div><div className="mt-1 font-mono text-[11px] text-[var(--text-muted)]">Disc record: {discKey}</div></div><div className="text-sm"><span className="text-green-300">{completed} completed</span>{attention > 0 && <span className="ml-3 text-amber-300">{attention} need attention</span>}{retained > 0 && <span className="ml-3 text-blue-200">{retained} retained originals</span>}</div></div></summary>
-          {retained > 0 && <div className="flex flex-wrap gap-2 border-b border-[var(--border-color)] p-4"><button type="button" className="btn btn-primary text-xs" disabled={working} onClick={() => reencodeDisc(discItems)}>Re-encode this disc</button><button type="button" className="btn btn-secondary text-xs" disabled={working} onClick={() => deleteDiscSources(discItems)}>Delete retained originals</button><div className="w-full text-xs text-amber-200">Re-encode keeps Jellyfin unchanged and queues a new HandBrake review. Delete is permanent for retained originals only and requires exact confirmation.</div></div>}
+          {retained > 0 && <div className="flex flex-wrap gap-2 border-b border-[var(--border-color)] p-4"><button type="button" className="btn btn-primary text-xs" disabled={working} onClick={() => reencodeDisc(discItems)}>Re-encode this disc</button><button type="button" className="btn btn-secondary text-xs" disabled={working} onClick={() => deleteDiscSources(discItems)}>Delete retained originals</button><div className="w-full text-xs text-amber-200">Re-encode keeps Jellyfin unchanged and queues a new HandBrake review. Delete is permanent for retained originals only and requires exact confirmation. Retained originals expire after {retentionDays} day(s).</div></div>}
           <div className="divide-y divide-[var(--border-color)]">{discItems.map((item) => <div key={item.media_id} className="grid gap-3 p-4 md:grid-cols-[1fr_auto]">
             <div><div className="font-semibold text-white">{item.display_name || 'Unmatched title'}</div><div className="mt-1 font-mono text-[11px] text-[var(--text-muted)]">{item.media_id}</div><div className="mt-2 text-sm text-blue-100">{item.location_label}{item.location_relative ? ` / ${item.location_relative}` : ''}</div>{fullPath(item) && <div className="mt-2 break-all font-mono text-[11px] text-blue-50">{fullPath(item)}</div>}{formatBytes(item.output_size_bytes) && <div className="mt-2 text-sm text-green-200">Finished file size: {formatBytes(item.output_size_bytes)}</div>}{(item.review_code || item.error_type) && <div className="mt-2 text-xs text-amber-300">Why it stopped: {item.review_code || item.error_type}</div>}
               {['gemini_evidence_required', 'gemini_analysis_failed', 'gemini_audio_evidence_insufficient', 'gemini_catalog_unavailable', 'gemini_provider_failed', 'gemini_credential_rejected', 'gemini_rate_limited', 'gemini_provider_unavailable', 'gemini_request_rejected', 'gemini_network_failed', 'gemini_response_invalid'].includes(item.review_code || '') && <button type="button" className="btn btn-primary mt-3 text-xs" disabled={working} onClick={() => runGeminiReview(item.media_id)}>{item.review_code === 'gemini_evidence_required' ? 'Run local evidence and Gemini review' : 'Retry local evidence and Gemini review'}</button>}

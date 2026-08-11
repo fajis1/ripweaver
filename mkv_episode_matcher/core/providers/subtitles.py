@@ -285,6 +285,7 @@ class OpenSubtitlesProvider(SubtitleProvider):
         query: str | None = None,
         languages: str = "en",
         parent_tmdb_id: int | None = None,
+        tmdb_id: int | None = None,
         season_number: int | None = None,
         type: str | None = None,
     ):
@@ -309,6 +310,7 @@ class OpenSubtitlesProvider(SubtitleProvider):
                 query=query,
                 languages=languages,
                 parent_tmdb_id=parent_tmdb_id,
+                tmdb_id=tmdb_id,
                 season_number=season_number,
                 type=type,
             )
@@ -565,6 +567,58 @@ class OpenSubtitlesProvider(SubtitleProvider):
         except Exception as e:
             logger.error(f"OpenSubtitles search failed: {type(e).__name__}")
             return downloaded_subtitles
+
+    def get_movie_subtitle(
+        self,
+        movie_title: str,
+        *,
+        tmdb_id: int,
+        year: int | None = None,
+    ) -> SubtitleFile | None:
+        """Return one cached or downloaded English movie subtitle reference.
+
+        Movie references live in an ID-scoped cache so similarly named films
+        cannot contaminate each other.  This method is intentionally bounded to
+        one download: callers use it only after TMDb runtime filtering has
+        reduced a TV-disc feature to a small related-film candidate set.
+        """
+
+        if tmdb_id <= 0:
+            raise ValueError("TMDb movie ID is invalid")
+        cache_dir = self.config.cache_dir / "data" / "movies" / f"tmdb-{tmdb_id}"
+        cached = tuple(sorted(cache_dir.glob("*.srt"))) if cache_dir.is_dir() else ()
+        if cached:
+            return SubtitleFile(path=cached[0], language="en")
+        if not self.client:
+            if self._credential_error is not None:
+                raise self._credential_error
+            return None
+
+        try:
+            response = self._search_with_retry(
+                languages="en",
+                tmdb_id=tmdb_id,
+                type="movie",
+            )
+            candidates = getattr(response, "data", None)
+            if not isinstance(candidates, list) or not candidates:
+                return None
+            downloaded = Path(self._download_with_retry(candidates[0]))
+            if not downloaded.is_file() or downloaded.stat().st_size <= 0:
+                return None
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            safe_title = safe_cache_component(movie_title)
+            year_suffix = f"-{year}" if year is not None else ""
+            target = cache_dir / f"{safe_title}{year_suffix}.srt"
+            if target.exists():
+                return SubtitleFile(path=target, language="en")
+            shutil.move(str(downloaded), str(target))
+            return SubtitleFile(path=target, language="en")
+        except ApiCredentialError:
+            raise
+        except Exception as exc:
+            logger.error("OpenSubtitles movie reference failed: {}", type(exc).__name__)
+            return None
 
 
 class CompositeSubtitleProvider(SubtitleProvider):

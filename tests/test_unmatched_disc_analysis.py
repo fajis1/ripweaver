@@ -55,7 +55,10 @@ def test_disc_route_allows_unresolved_titles_to_use_content_fallback(
             "source_size_bytes": source.stat().st_size,
             "disc_fingerprint": fingerprint,
             "title_index": 0,
-            "media_context": {"series_name": "The Flintstones", "season": None},
+            "media_context": {
+                "series_name": "The Office Superfan Episodes S1",
+                "season": None,
+            },
         }),
         encoding="utf-8",
     )
@@ -66,6 +69,7 @@ def test_disc_route_allows_unresolved_titles_to_use_content_fallback(
     captured = {}
 
     def fake_analysis(*_args, **kwargs):
+        captured["series_name"] = _args[2]
         captured.update(kwargs)
         return ()
 
@@ -95,7 +99,7 @@ def test_disc_route_allows_unresolved_titles_to_use_content_fallback(
     result = rip_router.analyze_unmatched_disc(
         rip_router.UnmatchedDiscAnalysisRequest(
             disc_fingerprint=fingerprint,
-            series_name="The Flintstones",
+            series_name="The Office",
             confirm_media_read=True,
             confirm_provider_lookup=True,
             confirm_external_fallback=True,
@@ -105,6 +109,8 @@ def test_disc_route_allows_unresolved_titles_to_use_content_fallback(
     )
 
     assert result["started"] is True
+    assert result["series_name"] == "The Office"
+    assert captured["series_name"] == "The Office"
     assert captured["allow_content_fallback"] is True
 
 
@@ -158,6 +164,66 @@ def test_series_catalog_uses_gemini_to_choose_ambiguous_tmdb_candidate(monkeypat
     assert name == "The Flintstones"
 
 
+def test_series_catalog_uses_gemini_before_trusting_one_inexact_candidate(
+    monkeypatch,
+):
+    unrelated = _show(900, "The Office UK")
+    canonical = _show(2316, "The Office")
+    searches = []
+
+    def search(name):
+        searches.append(name)
+        return (unrelated,) if len(searches) == 1 else (canonical,)
+
+    monkeypatch.setattr(analysis, "search_tv_show_candidates", search)
+    monkeypatch.setattr(
+        analysis, "fetch_aired_episode_catalog", lambda _show_id: _episode_catalog()
+    )
+    resolver = SimpleNamespace(
+        resolve_with_configured_keys=lambda _hint, _candidates: GeminiSeriesResolution(
+            None,
+            "The Office",
+            0.98,
+            ("Removed release-specific packaging text.",),
+        )
+    )
+    monkeypatch.setattr(analysis, "GeminiSeriesResolver", lambda **_kwargs: resolver)
+
+    name, catalog = analysis.resolve_series_catalog(
+        "Office Superfan Extended Set One",
+        SimpleNamespace(gemini_model="test", min_confidence=0.7),
+        allow_gemini=True,
+    )
+
+    assert searches == ["Office Superfan Extended Set One", "The Office"]
+    assert name == "The Office"
+    assert catalog == _episode_catalog()
+
+
+def test_unvalidated_gemini_series_requires_review_only_after_gemini(monkeypatch):
+    monkeypatch.setattr(analysis, "search_tv_show_candidates", lambda _name: ())
+    resolver = SimpleNamespace(
+        resolve_with_configured_keys=lambda _hint, _candidates: GeminiSeriesResolution(
+            None,
+            "Possible Show",
+            0.95,
+            ("The label resembles a release title.",),
+        )
+    )
+    monkeypatch.setattr(analysis, "GeminiSeriesResolver", lambda **_kwargs: resolver)
+
+    with pytest.raises(
+        analysis.GeminiAnalysisError, match="could not be validated through TMDb"
+    ) as caught:
+        analysis.resolve_series_catalog(
+            "Oddly Named Disc",
+            SimpleNamespace(gemini_model="test", min_confidence=0.7),
+            allow_gemini=True,
+        )
+
+    assert caught.value.review_code == "gemini_series_resolution_uncertain"
+
+
 def test_series_catalog_validates_gemini_proposed_name_through_tmdb(monkeypatch):
     calls = []
 
@@ -184,6 +250,46 @@ def test_series_catalog_validates_gemini_proposed_name_through_tmdb(monkeypatch)
 
     assert calls == ["The Flintstones CSR DIM2", "The Flintstones"]
     assert name == "The Flintstones"
+
+
+def test_series_catalog_retries_canonical_name_after_catalogueless_label_match(
+    monkeypatch,
+):
+    packaging_result = _show(900, "The Office Superfan Episodes S1")
+    canonical = _show(2316, "The Office")
+    searches = []
+
+    def search(name):
+        searches.append(name)
+        return (packaging_result,) if len(searches) == 1 else (canonical,)
+
+    monkeypatch.setattr(analysis, "search_tv_show_candidates", search)
+    monkeypatch.setattr(
+        analysis,
+        "fetch_aired_episode_catalog",
+        lambda show_id: ()
+        if show_id == packaging_result.tmdb_id
+        else _episode_catalog(),
+    )
+    resolver = SimpleNamespace(
+        resolve_with_configured_keys=lambda _hint, _candidates: GeminiSeriesResolution(
+            canonical.tmdb_id,
+            canonical.name,
+            0.98,
+            ("Edition and season packaging markers removed.",),
+        )
+    )
+    monkeypatch.setattr(analysis, "GeminiSeriesResolver", lambda **_kwargs: resolver)
+
+    name, catalog = analysis.resolve_series_catalog(
+        "THE OFFICE SUPERFAN EPISODES S1",
+        SimpleNamespace(gemini_model="test", min_confidence=0.7),
+        allow_gemini=True,
+    )
+
+    assert searches == ["THE OFFICE SUPERFAN EPISODES S1", "The Office"]
+    assert name == "The Office"
+    assert catalog == _episode_catalog()
 
 
 @pytest.mark.parametrize(
@@ -395,6 +501,124 @@ def test_opensubtitles_records_exact_review_reason():
         "candidate_episode_id": "S01E01",
         "reason": "insufficient_qualifying_windows",
     }
+
+
+def test_regular_subtitles_match_extended_cut_after_large_timeline_insertions(
+    monkeypatch,
+):
+    """Unchanged dialogue remains useful even after added scenes shift timing."""
+
+    monkeypatch.setattr(
+        analysis.SubtitleReader,
+        "extract_subtitle_chunk",
+        lambda *_args, **_kwargs: ["different dialogue near the old timestamp"],
+    )
+
+    class ASR:
+        @staticmethod
+        def calculate_match_score(transcript, reference):
+            if transcript in reference:
+                return 0.96
+            return 0.1
+
+    average, window_scores = analysis._score_subtitle(
+        ASR(),
+        (
+            "rare warehouse anchor alpha",
+            "superfan only inserted scene",
+            "distinct conference room anchor omega",
+        ),
+        (
+            "opening regular dialogue rare warehouse anchor alpha then many words "
+            "from the broadcast episode before distinct conference room anchor omega"
+        ),
+        2400,
+    )
+
+    assert window_scores == pytest.approx((0.96, 0.96, 0.1))
+    assert average == pytest.approx((0.96 + 0.96 + 0.1) / 3)
+
+
+def test_extended_anchor_global_search_is_bounded_and_keeps_rare_dialogue():
+    decoy = "ordinary office conversation repeats every day for many people "
+    content = (decoy * 900) + "rare pretzel day anchor with stanley at the end"
+
+    windows = analysis._subtitle_reference_windows(
+        content,
+        "rare pretzel day anchor with stanley",
+    )
+
+    assert len(windows) <= 96
+    assert any("rare pretzel day anchor with stanley" in window for window in windows)
+
+
+def test_extended_only_whisper_windows_are_neutral_when_two_regular_anchors_match(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        analysis.SubtitleReader,
+        "extract_subtitle_chunk",
+        lambda *_args, **_kwargs: ["unrelated timestamp dialogue"],
+    )
+    catalog = (
+        EpisodeCatalogEntry("S01E01", 1, 1, "Pilot", "", 1320),
+        EpisodeCatalogEntry("S01E02", 1, 2, "Second", "", 1320),
+    )
+    files = (
+        UnmatchedFileEvidence(
+            "extended-title",
+            2280,
+            (
+                "rare warehouse anchor alpha",
+                "new deleted scene dialogue",
+                "distinct conference room anchor omega",
+            ),
+        ),
+    )
+    references = []
+    for episode, content in (
+        (
+            1,
+            "rare warehouse anchor alpha ordinary dialogue "
+            "distinct conference room anchor omega",
+        ),
+        (2, "different episode dialogue with no matching anchors"),
+    ):
+        path = tmp_path / f"s01e{episode:02d}.srt"
+        path.write_text("", encoding="utf-8")
+        references.append(
+            SubtitleFile(
+                path=path,
+                content=content,
+                episode_info=EpisodeInfo(
+                    series_name="Example", season=1, episode=episode
+                ),
+            )
+        )
+
+    class ASR:
+        @staticmethod
+        def calculate_match_score(transcript, reference):
+            return 0.96 if transcript in reference else 0.1
+
+    scored = analysis._subtitle_candidates(
+        files,
+        references,
+        {(entry.season, entry.episode): entry for entry in catalog},
+        ASR(),
+        min_confidence=0.7,
+    )
+    details = {}
+    accepted, _diagnostics = analysis._accept_subtitle_candidates(
+        scored,
+        0.7,
+        set(),
+        diagnostic_details=details,
+    )
+
+    assert accepted["extended-title"].episode_id == "S01E01"
+    assert details["extended-title"]["qualifying_window_count"] == 2
+    assert details["extended-title"]["reason"] == "accepted"
 
 
 def test_opensubtitles_bootstraps_season_without_existing_matches(tmp_path):

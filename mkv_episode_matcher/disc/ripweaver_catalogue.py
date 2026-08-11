@@ -66,6 +66,40 @@ class InstallationRegistration:
 
 
 @dataclass(frozen=True)
+class CatalogueCapabilities:
+    schema_version: int
+    service_version: str
+    public_lookup: bool
+    installation_registration: bool
+    metered_lookup: bool
+    manual_lookup_after_prompt: bool
+    contribution_credits: bool
+    support_checkout: bool
+    authenticated_submissions: bool
+    automatic_piecewise_consensus: bool
+    provisional_help: bool
+    independent_quorum: int
+    human_moderation_required: bool
+    attachments_accepted: bool
+    media_accepted: bool
+
+    @property
+    def compatible(self) -> bool:
+        return (
+            self.schema_version == 3
+            and self.public_lookup is False
+            and self.installation_registration is True
+            and self.authenticated_submissions is True
+            and self.automatic_piecewise_consensus is True
+            and self.provisional_help is True
+            and self.independent_quorum == 2
+            and self.human_moderation_required is False
+            and self.attachments_accepted is False
+            and self.media_accepted is False
+        )
+
+
+@dataclass(frozen=True)
 class CatalogueLookup:
     resolution: TheDiscDbResolution
     usage: CatalogueUsage
@@ -125,6 +159,14 @@ def _required_string(value: object, field: str, *, maximum: int = 2000) -> str:
             f"RipWeaver Catalogue returned invalid {field} metadata"
         )
     return value.strip()
+
+
+def _required_bool(value: object, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise RipWeaverCatalogueError(
+            f"RipWeaver Catalogue returned invalid {field} metadata"
+        )
+    return value
 
 
 def _usage(value: object) -> CatalogueUsage:
@@ -278,7 +320,66 @@ class RipWeaverCatalogueClient:
             ) from exc
         return response
 
+    def capabilities(self) -> CatalogueCapabilities:
+        response = self._send("GET", "/v1/schema")
+        if response.status_code != 200:
+            raise RipWeaverCatalogueError(
+                f"RipWeaver Catalogue schema check failed (HTTP {response.status_code})"
+            )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise RipWeaverCatalogueError(
+                "RipWeaver Catalogue schema check returned invalid JSON"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise RipWeaverCatalogueError(
+                "RipWeaver Catalogue schema check returned invalid metadata"
+            )
+        capabilities = CatalogueCapabilities(
+            schema_version=_required_int(
+                payload.get("schema_version"), "schema version", minimum=1
+            ),
+            service_version=_required_string(
+                payload.get("service_version"), "service version", maximum=64
+            ),
+            public_lookup=_required_bool(payload.get("public_lookup"), "schema"),
+            installation_registration=_required_bool(
+                payload.get("installation_registration"), "schema"
+            ),
+            metered_lookup=_required_bool(payload.get("metered_lookup"), "schema"),
+            manual_lookup_after_prompt=_required_bool(
+                payload.get("manual_lookup_after_prompt"), "schema"
+            ),
+            contribution_credits=_required_bool(
+                payload.get("contribution_credits"), "schema"
+            ),
+            support_checkout=_required_bool(payload.get("support_checkout"), "schema"),
+            authenticated_submissions=_required_bool(
+                payload.get("authenticated_submissions"), "schema"
+            ),
+            automatic_piecewise_consensus=_required_bool(
+                payload.get("automatic_piecewise_consensus"), "schema"
+            ),
+            provisional_help=_required_bool(payload.get("provisional_help"), "schema"),
+            independent_quorum=_required_int(
+                payload.get("independent_quorum"), "schema quorum", minimum=1
+            ),
+            human_moderation_required=_required_bool(
+                payload.get("human_moderation_required"), "schema"
+            ),
+            attachments_accepted=_required_bool(
+                payload.get("attachments_accepted"), "schema"
+            ),
+            media_accepted=_required_bool(payload.get("media_accepted"), "schema"),
+        )
+        return capabilities
+
     def register(self) -> InstallationRegistration:
+        if not self.capabilities().compatible:
+            raise RipWeaverCatalogueError(
+                "RipWeaver Catalogue protocol is not compatible with this desktop"
+            )
         response = self._send(
             "POST",
             "/v1/installations/register",

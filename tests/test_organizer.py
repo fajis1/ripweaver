@@ -9,6 +9,7 @@ from mkv_episode_matcher.media.organizer import (
     SequenceAssignment,
     add_jellyfin_version_label,
     build_episode_filename,
+    inspect_episode_version_destination,
     jellyfin_resolution_label,
     load_sequence_assignments,
     plan_tv_organization,
@@ -98,6 +99,30 @@ def test_same_episode_with_different_title_routes_to_dedup_review(tmp_path):
 
     assert plan.items[0].status == "review-existing-episode"
     assert plan.items[0].conflicts == ("Old Name - S03E01 - Different Title.mkv",)
+
+
+def test_version_inspection_allows_other_resolution_and_blocks_same_resolution(
+    tmp_path,
+):
+    season = tmp_path / "Test Series" / "Season 03"
+    season.mkdir(parents=True)
+    (season / "Old Name - S03E01 - Different Title - 480p.mkv").touch()
+
+    status, _conflicts = inspect_episode_version_destination(
+        season,
+        "Test Series - S03E01 - A Story - 1080p.mkv",
+        "S03E01",
+    )
+
+    assert status == "coexist-existing-episode-version"
+    (season / "Old Name - S03E01 - Another Title - 1080p.mkv").touch()
+    status, conflicts = inspect_episode_version_destination(
+        season,
+        "Test Series - S03E01 - A Story - 1080p.mkv",
+        "S03E01",
+    )
+    assert status == "review-existing-episode-version"
+    assert conflicts == ("Old Name - S03E01 - Another Title - 1080p.mkv",)
 
 
 def test_unsafe_series_component_is_rejected(tmp_path):

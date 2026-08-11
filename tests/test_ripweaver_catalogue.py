@@ -17,6 +17,28 @@ from mkv_episode_matcher.disc.ripweaver_catalogue import (
 CONTENT_HASH = "8B6FCE0775F77E41B1EB2E293BA9BA80"
 
 
+def capabilities_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_version": 3,
+        "service_version": "0.1.0",
+        "public_lookup": False,
+        "installation_registration": True,
+        "metered_lookup": True,
+        "manual_lookup_after_prompt": True,
+        "contribution_credits": True,
+        "support_checkout": False,
+        "authenticated_submissions": True,
+        "automatic_piecewise_consensus": True,
+        "provisional_help": True,
+        "independent_quorum": 2,
+        "human_moderation_required": False,
+        "attachments_accepted": False,
+        "media_accepted": False,
+    }
+    payload.update(overrides)
+    return payload
+
+
 def inventory() -> DiscInventory:
     return DiscInventory(
         drive=MakeMKVDrive(
@@ -84,6 +106,43 @@ class Response:
 
     def json(self):
         return self._payload
+
+
+def test_schema_v3_capabilities_are_validated_before_registration() -> None:
+    calls: list[tuple[str, str]] = []
+
+    def request(method, url, **_kwargs):
+        calls.append((method, url))
+        if url.endswith("/v1/schema"):
+            return Response(200, capabilities_payload())
+        return Response(
+            201,
+            {
+                "installation_id": "synthetic-installation",
+                "access_token": "rwc_synthetic_token_value_1234567890abcdef",
+            },
+        )
+
+    registration = RipWeaverCatalogueClient(request=request).register()
+
+    assert registration.installation_id == "synthetic-installation"
+    assert calls == [
+        ("GET", "https://api.ripweaver.com/v1/schema"),
+        ("POST", "https://api.ripweaver.com/v1/installations/register"),
+    ]
+
+
+def test_registration_stops_on_an_incompatible_or_unsafe_server_schema() -> None:
+    calls: list[str] = []
+
+    def request(_method, url, **_kwargs):
+        calls.append(url)
+        return Response(200, capabilities_payload(media_accepted=True))
+
+    with pytest.raises(RipWeaverCatalogueError, match="not compatible"):
+        RipWeaverCatalogueClient(request=request).register()
+
+    assert calls == ["https://api.ripweaver.com/v1/schema"]
 
 
 def test_lookup_sends_only_hash_token_mode_and_idempotency() -> None:

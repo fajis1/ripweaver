@@ -6,18 +6,21 @@ from mkv_episode_matcher.backend.gemini_fallback import (
     _descriptive_release_hint,
     execute_gemini_fallback,
 )
+from mkv_episode_matcher.backend.related_movie_analysis import RelatedMovieMatch
 from mkv_episode_matcher.core.models import Config
 from mkv_episode_matcher.media.gemini_matcher import (
     GeminiDescriptivePlan,
     GeminiDescriptiveResult,
     UnmatchedFileEvidence,
 )
+from mkv_episode_matcher.tmdb_client import MovieCandidate
 
 
 class FakeStore:
     def __init__(self, items):
         self.items = {item.media_id: item for item in items}
         self.applied = {}
+        self.visual_reviews = {}
 
     def get(self, media_id):
         return self.items[media_id]
@@ -27,6 +30,9 @@ class FakeStore:
 
     def choose_review_path(self, media_id, code):
         self.items[media_id].review_code = code
+
+    def record_silent_video_review(self, media_id, category):
+        self.visual_reviews[media_id] = category
 
 
 class FakeDossier:
@@ -293,6 +299,137 @@ def test_descriptive_tv_extra_stays_with_canonical_series(tmp_path, monkeypatch)
     assert any(details["branch"] == "tv-bonus" for _, details in dossier.attempts)
 
 
+def test_tv_disc_related_movie_is_validated_before_generic_bonus(tmp_path, monkeypatch):
+    item = _item(tmp_path, "disc-title-020", 89 * 60)
+    payload = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
+    payload["media_context"].update(series_name="The Flintstones", content_hint=None)
+    item.artifact.contract_path.write_text(json.dumps(payload), encoding="utf-8")
+    store = FakeStore([item])
+    dossier = FakeDossier()
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.gemini_fallback.collect_dossier_evidence",
+        lambda selected, *_args: (
+            (
+                UnmatchedFileEvidence(
+                    item.media_id,
+                    89 * 60,
+                    ("first movie anchor", "second movie anchor"),
+                ),
+            ),
+            dossier,
+        ),
+    )
+    candidate = MovieCandidate(
+        tmdb_id=123,
+        title="The Man Called Flintstone",
+        original_title="The Man Called Flintstone",
+        release_year=1966,
+        overview="",
+        runtime_seconds=89 * 60,
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.related_movie_analysis.match_related_tv_movies",
+        lambda *_args, **_kwargs: (
+            {
+                item.media_id: RelatedMovieMatch(
+                    candidate=candidate,
+                    confidence=0.94,
+                    qualifying_window_count=2,
+                    margin=0.31,
+                )
+            },
+            {item.media_id: {"reason": "accepted", "candidate_tmdb_id": 123}},
+        ),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.gemini_fallback.GeminiDescriptiveRanker.describe_with_configured_keys",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Validated movie must bypass generic Gemini naming")
+        ),
+    )
+
+    applied = execute_gemini_fallback(
+        store,
+        (item.media_id,),
+        Config(gemini_model="test"),
+        SimpleNamespace(),
+        tmp_path / "contracts",
+    )
+
+    assert applied == (item.media_id,)
+    revised = json.loads(
+        store.applied[item.media_id].contract_path.read_text(encoding="utf-8")
+    )
+    context = revised["media_context"]
+    assignment = context["special_feature_assignments"][0]
+    assert context["special_feature_library_title"] == "The Man Called Flintstone"
+    assert context["special_feature_library_year"] == 1966
+    assert assignment["media_kind"] == "movie"
+    assert assignment["library_kind"] == "movie"
+    assert assignment["provisional_match"] is False
+    assert assignment["candidate_feature_ids"] == ["tmdb-movie-123"]
+    assert assignment["identification_method"] == "tv-related-movie-opensubtitles"
+    assert any(details["branch"] == "tv-movie" for _, details in dossier.attempts)
+
+
+def test_tv_disc_accepts_provisional_gemini_movie_when_subtitles_are_unavailable(
+    tmp_path, monkeypatch
+):
+    item = _item(tmp_path, "disc-title-020", 89 * 60)
+    payload = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
+    payload["media_context"].update(series_name="The Flintstones", content_hint=None)
+    item.artifact.contract_path.write_text(json.dumps(payload), encoding="utf-8")
+    store = FakeStore([item])
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.gemini_fallback.collect_dossier_evidence",
+        lambda selected, *_args: (
+            (UnmatchedFileEvidence(item.media_id, 89 * 60, ("movie dialogue",)),),
+            FakeDossier(),
+        ),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.related_movie_analysis.match_related_tv_movies",
+        lambda *_args, **_kwargs: (
+            {},
+            {item.media_id: {"reason": "no_usable_movie_subtitles"}},
+        ),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.gemini_fallback.GeminiDescriptiveRanker.describe_with_configured_keys",
+        lambda self, evidence, release_hint, prior_attempts=None: GeminiDescriptivePlan(
+            mode="gemini-descriptive-review-plan",
+            model="test",
+            matches=(
+                GeminiDescriptiveResult(
+                    item.media_id,
+                    "movie",
+                    "The Man Called Flintstone",
+                    1966,
+                    0.88,
+                    ("Feature-length animated movie evidence.",),
+                ),
+            ),
+        ),
+    )
+
+    applied = execute_gemini_fallback(
+        store,
+        (item.media_id,),
+        Config(gemini_model="test"),
+        SimpleNamespace(),
+        tmp_path / "contracts",
+    )
+
+    assert applied == (item.media_id,)
+    revised = json.loads(
+        store.applied[item.media_id].contract_path.read_text(encoding="utf-8")
+    )
+    assignment = revised["media_context"]["special_feature_assignments"][0]
+    assert assignment["media_kind"] == "movie"
+    assert assignment["library_kind"] == "movie"
+    assert assignment["provisional_match"] is True
+
+
 def test_unresolved_descriptive_result_stops_showing_running(tmp_path, monkeypatch):
     item = _item(tmp_path, "disc-title-000", 1200)
     store = FakeStore([item])
@@ -331,3 +468,39 @@ def test_unresolved_descriptive_result_stops_showing_running(tmp_path, monkeypat
 
     assert applied == ()
     assert item.review_code == "gemini_descriptive_review_required"
+
+
+def test_warning_screen_is_held_before_gemini_matching(tmp_path, monkeypatch):
+    item = _item(tmp_path, "disc-title-001", 20)
+    store = FakeStore([item])
+
+    def fake_collect(selected, _config, _asr, _root, _visual, recorder):
+        recorder(item.media_id, "likely_warning_screen")
+        return (
+            (UnmatchedFileEvidence(item.media_id, 20, ("copyright warning",)),),
+            FakeDossier(),
+        )
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.gemini_fallback.collect_dossier_evidence",
+        fake_collect,
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.gemini_fallback.GeminiDescriptiveRanker.describe_with_configured_keys",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Warning screens must not be sent to Gemini matching")
+        ),
+    )
+
+    handled = execute_gemini_fallback(
+        store,
+        (item.media_id,),
+        Config(gemini_model="test"),
+        SimpleNamespace(),
+        tmp_path / "contracts",
+    )
+
+    assert handled == (item.media_id,)
+    assert store.visual_reviews == {item.media_id: "likely_warning_screen"}
+    assert item.review_code == "visual_content_review_required"
+    assert store.applied == {}

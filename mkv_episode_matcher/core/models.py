@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -79,6 +80,8 @@ class Config(BaseModel):
     rip_output_root: Path | None = None
     transcode_output_root: Path | None = None
     deletion_staging_root: Path | None = None
+    retained_source_ttl_days: int = 30
+    retained_source_cleanup_postponed_until: str | None = None
     jellyfin_tv_root: Path | None = None
     jellyfin_movie_root: Path | None = None
     makemkv_path: Path | None = None
@@ -171,6 +174,26 @@ class Config(BaseModel):
         if len(cleaned) > 80:
             raise ValueError("HandBrake profile name is invalid")
         return cleaned
+
+    @field_validator("retained_source_ttl_days")
+    @classmethod
+    def validate_retained_source_ttl_days(cls, value: int) -> int:
+        if isinstance(value, bool) or value < 1:
+            raise ValueError("Retained-source TTL must be at least 1 day")
+        return value
+
+    @field_validator("retained_source_cleanup_postponed_until")
+    @classmethod
+    def validate_cleanup_postponement(cls, value: str | None) -> str | None:
+        if value in (None, ""):
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError("Cleanup postponement must be an ISO timestamp") from exc
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC).isoformat()
 
     @field_validator("gemini_model")
     @classmethod

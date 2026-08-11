@@ -20,6 +20,7 @@ _downstream_lock = threading.Lock()
 _AUTOMATIC_UNMATCHED_CODES = frozenset({
     "missing_season_context",
     "unmatched_disc_analysis_required",
+    "all_season_sequence_review_required",
 })
 
 
@@ -369,7 +370,11 @@ def _resolve_automatic_unmatched_disc(  # noqa: C901
             )
         for item in held:
             try:
-                if store.get(item.media_id).state == "review_required":
+                current = store.get(item.media_id)
+                if (
+                    current.state == "review_required"
+                    and current.review_code != "visual_content_review_required"
+                ):
                     store.choose_review_path(item.media_id, code)
             except PipelineQueueError:
                 pass

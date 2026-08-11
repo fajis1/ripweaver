@@ -20,6 +20,7 @@ _EPISODE_ID = re.compile(r"^S(\d{2})E(\d{2,3})$")
 _INVALID_COMPONENT = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _WHITESPACE = re.compile(r"\s+")
 _VERSION_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{0,79}$")
+_RESOLUTION_VERSION_SUFFIX = re.compile(r"(?i) - (?P<label>\d{3,4}[pi])\.mkv$")
 _WINDOWS_RESERVED = {
     "CON",
     "PRN",
@@ -236,6 +237,29 @@ def inspect_episode_destination(
     if _EPISODE_ID.fullmatch(episode_id) is None:
         raise OrganizationPlanError("Episode assignment contains an invalid ID")
     return _episode_conflicts(filename, episode_id, _existing_names(directory))
+
+
+def inspect_episode_version_destination(
+    directory: Path, filename: str, episode_id: str
+) -> tuple[str, tuple[str, ...]]:
+    """Allow other resolution versions while refusing the same version twice."""
+
+    status, conflicts = inspect_episode_destination(directory, filename, episode_id)
+    if status != "review-existing-episode":
+        return status, conflicts
+    expected = _RESOLUTION_VERSION_SUFFIX.search(filename)
+    if expected is None:
+        return status, conflicts
+    expected_label = expected.group("label").casefold()
+    same_version = tuple(
+        name
+        for name in conflicts
+        if (match := _RESOLUTION_VERSION_SUFFIX.search(name)) is not None
+        and match.group("label").casefold() == expected_label
+    )
+    if same_version:
+        return "review-existing-episode-version", same_version
+    return "coexist-existing-episode-version", conflicts
 
 
 def plan_tv_organization(

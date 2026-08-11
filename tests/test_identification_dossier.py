@@ -116,9 +116,13 @@ def test_gemini_evidence_adds_bounded_on_screen_ocr_text(tmp_path, monkeypatch):
         dossier_module,
         "collect_silent_video_review",
         lambda **_kwargs: SimpleNamespace(
-            ocr_excerpt="Songs of the Synthetic Family featuring the original voices"
+            category="text_detected",
+            ocr_excerpt="Songs of the Synthetic Family featuring the original voices",
+            ocr_text_characters=66,
+            sampled_frame_count=6,
         ),
     )
+    recorded = []
 
     evidence, _dossier = collect_dossier_evidence(
         ((item, payload),),
@@ -126,12 +130,54 @@ def test_gemini_evidence_adds_bounded_on_screen_ocr_text(tmp_path, monkeypatch):
         object(),
         contracts,
         True,
+        lambda media_id, category: recorded.append((media_id, category)),
     )
 
     assert evidence[0].transcript_excerpts == (
         "On-screen text (OCR): Songs of the Synthetic Family featuring the original voices",
         "cached dialogue",
     )
+    assert recorded == [("media-1", "text_detected")]
+    assert next(_dossier.root.glob("visual-*"), None) is not None
+    assert _dossier.safe_attempts("media-1")[-1]["branch"] == "visual-ocr"
+
+
+def test_visual_failure_is_recorded_instead_of_silently_skipped(tmp_path, monkeypatch):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    payload = _payload(source)
+    item = SimpleNamespace(media_id="media-1")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    identity = source_identity(payload, source, "small")
+    IdentificationDossierStore(tmp_path / "identification-evidence").save_evidence(
+        identity, UnmatchedFileEvidence("media-1", 1200, ("cached dialogue",))
+    )
+    monkeypatch.setattr(
+        dossier_module, "resolve_ffmpeg_path", lambda _path: Path("ffmpeg")
+    )
+    monkeypatch.setattr(
+        dossier_module, "resolve_tesseract_path", lambda _path: Path("tesseract")
+    )
+    monkeypatch.setattr(
+        dossier_module,
+        "collect_silent_video_review",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("synthetic failure")),
+    )
+
+    evidence, dossier = collect_dossier_evidence(
+        ((item, payload),),
+        Config(asr_model_name="small"),
+        object(),
+        contracts,
+        True,
+    )
+
+    assert evidence[0].transcript_excerpts == ("cached dialogue",)
+    attempt = dossier.safe_attempts("media-1")[-1]
+    assert attempt["branch"] == "visual-ocr"
+    assert attempt["disposition"] == "failed"
+    assert attempt["summary"] == {"reason": "RuntimeError"}
 
 
 def test_collect_reuses_exact_source_cache_after_media_id_changes(

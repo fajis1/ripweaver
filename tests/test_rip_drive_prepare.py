@@ -938,6 +938,9 @@ def test_drive_preparation_holds_automatic_work_for_catalogue_support_prompt(
         def __init__(self, *, base_url):
             assert base_url == "https://api.ripweaver.com"
 
+        def capabilities(self):
+            return SimpleNamespace(compatible=True)
+
         def lookup(self, *_args, **_kwargs):
             raise RipWeaverCatalogueSupportRequiredError(
                 usage=CatalogueUsage(10, 10, 0, 0, 0, 0),

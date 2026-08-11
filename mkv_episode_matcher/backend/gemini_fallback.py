@@ -12,6 +12,7 @@ from mkv_episode_matcher.core.models import Config
 from mkv_episode_matcher.media.episode_catalog import EpisodeCatalogEntry
 from mkv_episode_matcher.media.gemini_matcher import (
     GeminiDescriptiveRanker,
+    GeminiDescriptiveResult,
     GeminiEpisodeRanker,
 )
 from mkv_episode_matcher.pipeline_queue import (
@@ -70,6 +71,7 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
 
     if not media_ids:
         raise PipelineQueueError("No Gemini-held items were selected")
+    requested_media_ids = media_ids
     held = [store.get(media_id) for media_id in media_ids]
     payloads = []
     catalog_id = None
@@ -119,13 +121,39 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
     remaining = [
         item for item in features.values() if item["title"] not in assigned_titles
     ]
+    visual_categories: dict[str, str] = {}
+
+    def record_visual_review(media_id: str, category: str) -> None:
+        store.record_silent_video_review(media_id, category)
+        visual_categories[media_id] = category
+
     evidence, dossier = collect_dossier_evidence(
         tuple(zip(held, payloads, strict=True)),
         config,
         asr,
         contract_root,
         True,
+        record_visual_review,
     )
+    visually_held = {
+        media_id
+        for media_id, category in visual_categories.items()
+        if category in {"likely_warning_screen", "likely_disc_menu"}
+    }
+    for media_id in visually_held:
+        store.choose_review_path(media_id, "visual_content_review_required")
+    eligible = tuple(
+        (item, payload, item_evidence)
+        for item, payload, item_evidence in zip(held, payloads, evidence, strict=True)
+        if item.media_id not in visually_held
+    )
+    if not eligible:
+        return tuple(
+            media_id for media_id in requested_media_ids if media_id in visually_held
+        )
+    held = [entry[0] for entry in eligible]
+    payloads = [entry[1] for entry in eligible]
+    evidence = tuple(entry[2] for entry in eligible)
     media_ids = tuple(item.media_id for item in held)
     first_context = payloads[0]["media_context"]
     series_name = str(first_context.get("series_name") or "").strip()
@@ -133,12 +161,6 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
         first_context.get("content_hint") not in {"movie", "extras"}
         and bool(series_name)
         and series_name.casefold() not in {"unmatched", "unknown"}
-    )
-    dossier.record_attempt(
-        media_ids,
-        branch="tv-bonus" if tv_series_context else "movie-bonus",
-        disposition="started",
-        summary={"catalogue_available": catalogue is not None},
     )
     durations = {item.file_id: item.duration_seconds for item in evidence}
     runtime_candidates = [
@@ -166,32 +188,107 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
         if isinstance(item.get("runtime_seconds"), int | float)
     )
     descriptive = catalog_id is None
-    if descriptive:
-        release_hint = _descriptive_release_hint(payloads[0], held[0].media_id)
+    release_hint = _descriptive_release_hint(payloads[0], held[0].media_id)
+    related_matches = {}
+    if descriptive and tv_series_context:
+        from mkv_episode_matcher.backend.related_movie_analysis import (
+            match_related_tv_movies,
+        )
+
+        excluded_movie_ids = set()
+        for payload in payloads:
+            assignments = payload["media_context"].get(
+                "special_feature_assignments", []
+            )
+            for assignment in assignments if isinstance(assignments, list) else []:
+                if not isinstance(assignment, dict):
+                    continue
+                for candidate_id in assignment.get("candidate_feature_ids", []):
+                    match = re.fullmatch(r"tmdb-movie-(\d+)", str(candidate_id))
+                    if match is not None:
+                        excluded_movie_ids.add(int(match.group(1)))
+        try:
+            related_matches, related_diagnostics = match_related_tv_movies(
+                evidence,
+                series_name,
+                config,
+                asr,
+                excluded_tmdb_ids=frozenset(excluded_movie_ids),
+            )
+        except Exception as exc:
+            dossier.record_attempt(
+                media_ids,
+                branch="tv-movie",
+                disposition="failed",
+                summary={"reason": type(exc).__name__},
+            )
+        else:
+            for media_id, summary in related_diagnostics.items():
+                dossier.record_attempt(
+                    (media_id,),
+                    branch="tv-movie",
+                    disposition=(
+                        "matched" if media_id in related_matches else "review"
+                    ),
+                    summary=summary,
+                )
+
+    comparison_evidence = tuple(
+        item for item in evidence if item.file_id not in related_matches
+    )
+    comparison_ids = tuple(item.file_id for item in comparison_evidence)
+    results = {}
+    if comparison_evidence:
+        dossier.record_attempt(
+            comparison_ids,
+            branch="tv-bonus" if tv_series_context else "movie-bonus",
+            disposition="started",
+            summary={"catalogue_available": catalogue is not None},
+        )
+    if descriptive and comparison_evidence:
         review = GeminiDescriptiveRanker(
             model=config.gemini_model
         ).describe_with_configured_keys(
-            evidence,
+            comparison_evidence,
             release_hint=release_hint,
             prior_attempts={
-                media_id: dossier.safe_attempts(media_id) for media_id in media_ids
+                media_id: dossier.safe_attempts(media_id) for media_id in comparison_ids
             },
         )
-    else:
+        results.update({item.file_id: item for item in review.matches})
+    elif not descriptive:
         review = GeminiEpisodeRanker(
             model=config.gemini_model
         ).rank_with_configured_keys(
-            evidence,
+            comparison_evidence,
             candidates,
             prior_attempts={
-                media_id: dossier.safe_attempts(media_id) for media_id in media_ids
+                media_id: dossier.safe_attempts(media_id) for media_id in comparison_ids
             },
         )
-    results = {item.file_id: item for item in review.matches}
+        results.update({item.file_id: item for item in review.matches})
+    for media_id, movie_match in related_matches.items():
+        candidate = movie_match.candidate
+        results[media_id] = GeminiDescriptiveResult(
+            file_id=media_id,
+            content_kind="movie",
+            suggested_title=candidate.title,
+            year=candidate.release_year,
+            confidence=movie_match.confidence,
+            evidence=(
+                "Matched ordinary movie subtitles using independent dialogue anchors.",
+            ),
+            summary=(
+                "TMDb runtime metadata and ordinary movie subtitles matched "
+                "independent dialogue anchors from this TV-disc title."
+            ),
+        )
     applied = []
     contract_root.mkdir(parents=True, exist_ok=True)
     for item, payload in zip(held, payloads, strict=True):
-        result = results[item.media_id]
+        result = results.get(item.media_id)
+        if result is None:
+            continue
         context = payload["media_context"]
         title_index = _title_index(item.media_id)
         assignments = context.get("special_feature_assignments", [])
@@ -201,15 +298,22 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
         if descriptive:
             if result.content_kind in {"menu", "unknown", "tv_episode"}:
                 continue
-            if tv_series_context and result.content_kind != "extra":
+            if tv_series_context and result.content_kind not in {"extra", "movie"}:
                 continue
-            feature_id = f"provisional-title-{title_index:03d}"
+            related_movie = related_matches.get(item.media_id)
+            feature_id = (
+                f"tmdb-movie-{related_movie.candidate.tmdb_id}"
+                if related_movie is not None
+                else f"provisional-title-{title_index:03d}"
+            )
             feature_title = result.suggested_title
             feature_summary = (result.summary or " ".join(result.evidence)).strip()[
                 :320
             ]
-            feature_folder = "Extras" if tv_series_context else "other"
             media_kind = result.content_kind
+            feature_folder = (
+                "Extras" if tv_series_context and media_kind != "movie" else "other"
+            )
             existing = next(
                 (
                     assignment
@@ -230,10 +334,21 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
                 jellyfin_folder=feature_folder,
                 fallback_name_policy="none",
                 media_kind=media_kind,
-                provisional_match=True,
+                provisional_match=related_movie is None,
                 gemini_confidence=result.confidence,
-                library_kind="tv" if tv_series_context else "movie",
+                library_kind=(
+                    "movie"
+                    if media_kind == "movie"
+                    else "tv"
+                    if tv_series_context
+                    else "movie"
+                ),
             )
+            if related_movie is not None:
+                existing.update(
+                    tmdb_movie_id=related_movie.candidate.tmdb_id,
+                    identification_method="tv-related-movie-opensubtitles",
+                )
             if media_kind == "movie":
                 context["special_feature_library_title"] = feature_title
                 context["special_feature_library_year"] = result.year
@@ -277,23 +392,32 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
             item.media_id, build_artifact("rip", revised)
         )
         applied.append(item.media_id)
-    dossier.record_attempt(
-        media_ids,
-        branch="tv-bonus" if tv_series_context else "movie-bonus",
-        disposition="matched" if len(applied) == len(media_ids) else "review",
-        summary={
-            "matched_count": len(applied),
-            "item_count": len(media_ids),
-            "catalogue_available": catalogue is not None,
-        },
-    )
+    if comparison_ids:
+        comparison_applied = tuple(
+            media_id for media_id in comparison_ids if media_id in applied
+        )
+        dossier.record_attempt(
+            comparison_ids,
+            branch="tv-bonus" if tv_series_context else "movie-bonus",
+            disposition=(
+                "matched"
+                if len(comparison_applied) == len(comparison_ids)
+                else "review"
+            ),
+            summary={
+                "matched_count": len(comparison_applied),
+                "item_count": len(comparison_ids),
+                "catalogue_available": catalogue is not None,
+            },
+        )
     unresolved = tuple(media_id for media_id in media_ids if media_id not in applied)
-    result_by_id = {item.file_id: item for item in review.matches}
+    result_by_id = results
     should_try_tv = (
         descriptive
         and len(unresolved) >= 2
         and all(
-            result_by_id[media_id].content_kind in {"tv_episode", "unknown"}
+            media_id in result_by_id
+            and result_by_id[media_id].content_kind in {"tv_episode", "unknown"}
             for media_id in unresolved
         )
         and not any(dossier.attempted(media_id, "tv-local") for media_id in unresolved)
@@ -339,4 +463,5 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
         )
         for media_id in unresolved:
             store.choose_review_path(media_id, "gemini_descriptive_review_required")
-    return tuple(applied)
+    handled = visually_held | set(applied)
+    return tuple(media_id for media_id in requested_media_ids if media_id in handled)

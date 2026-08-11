@@ -73,6 +73,18 @@ class TvShowCandidate:
     overview: str
 
 
+@dataclass(frozen=True)
+class MovieCandidate:
+    """One path-free TMDb movie candidate with validated runtime metadata."""
+
+    tmdb_id: int
+    title: str
+    original_title: str
+    release_year: int | None
+    overview: str
+    runtime_seconds: float | None
+
+
 class RateLimitedRequest:
     """
     A class that represents a rate-limited request object.
@@ -229,6 +241,66 @@ def search_tv_show_candidates(
                     " ".join(overview.split())[:500]
                     if isinstance(overview, str)
                     else ""
+                ),
+            )
+        )
+    return tuple(candidates)
+
+
+def search_movie_candidates(
+    movie_name: str, *, limit: int = 8
+) -> tuple[MovieCandidate, ...]:
+    """Return a bounded TMDb movie set with runtime data for local matching."""
+
+    query = " ".join(movie_name.split())
+    if not query:
+        raise ValueError("TMDb movie query is empty")
+    if limit < 1 or limit > 12:
+        raise ValueError("TMDb movie candidate limit is invalid")
+    results = _tmdb_get_json("/search/movie", query=query).get("results", [])
+    candidates = []
+    for item in results[:limit] if isinstance(results, list) else []:
+        if not isinstance(item, dict):
+            continue
+        tmdb_id = item.get("id")
+        if not isinstance(tmdb_id, int) or tmdb_id <= 0:
+            continue
+        details = _tmdb_get_json(f"/movie/{tmdb_id}")
+        title = details.get("title") or item.get("title")
+        if not isinstance(title, str) or not title.strip():
+            continue
+        original_title = details.get("original_title") or item.get("original_title")
+        release_date = details.get("release_date") or item.get("release_date")
+        release_year = (
+            int(release_date[:4])
+            if isinstance(release_date, str)
+            and len(release_date) >= 4
+            and release_date[:4].isdigit()
+            else None
+        )
+        runtime = details.get("runtime")
+        overview = details.get("overview") or item.get("overview")
+        candidates.append(
+            MovieCandidate(
+                tmdb_id=tmdb_id,
+                title=" ".join(title.split())[:160],
+                original_title=(
+                    " ".join(original_title.split())[:160]
+                    if isinstance(original_title, str)
+                    else ""
+                ),
+                release_year=release_year,
+                overview=(
+                    " ".join(overview.split())[:500]
+                    if isinstance(overview, str)
+                    else ""
+                ),
+                runtime_seconds=(
+                    float(runtime) * 60.0
+                    if isinstance(runtime, int | float)
+                    and not isinstance(runtime, bool)
+                    and runtime > 0
+                    else None
                 ),
             )
         )

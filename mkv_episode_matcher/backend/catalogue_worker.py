@@ -73,6 +73,10 @@ class CatalogueContributionWorker:
                 registration = client.register()
                 store_credential("ripweaver-catalogue", registration.access_token)
                 token = registration.access_token
+            elif not client.capabilities().compatible:
+                raise RipWeaverCatalogueError(
+                    "RipWeaver Catalogue protocol is not compatible with this desktop"
+                )
             receipt = client.contribute(
                 contribution.payload,
                 token=token,

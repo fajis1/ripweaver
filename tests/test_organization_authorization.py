@@ -71,6 +71,14 @@ def test_organization_preview_is_path_redacted_and_collision_free(tmp_path):
     assert public["item_count"] == 1
     assert public["movie_count"] == 1
     assert public["collision_count"] == 0
+    assert public["items"] == [
+        {
+            "media_id": "disc-01-title-000",
+            "destination_relative": "Movie/Extras/Feature - 1080p.mkv",
+            "kind": "movie",
+            "collision": False,
+        }
+    ]
     assert str(tmp_path) not in json.dumps(public)
 
 
@@ -80,3 +88,54 @@ def test_organization_preview_reports_existing_destination(tmp_path):
     plan = build_organization_authorization_plan(store, config)
 
     assert plan.collision_media_ids == ("disc-01-title-000",)
+
+
+def test_organization_preview_allows_other_episode_resolution_but_not_same_version(
+    tmp_path,
+):
+    _unused, config = _queued_organization(tmp_path)
+    payload = {
+        "mode": "verified-transcode-contract",
+        "episode_id": "S01E01",
+        "library_relative": "Show/Season 01/Show - S01E01 - First.mkv",
+        "encoded_height": 1080,
+        "encoded_field_order": "progressive",
+    }
+    store = PipelineQueueStore(tmp_path / "tv-pipeline.sqlite3")
+    store.enqueue_verified_rip(
+        "disc-01-title-000",
+        _artifact(tmp_path, "tv-media", "rip", {"mode": "verified-rip-contract"}),
+    )
+    store.claim_next()
+    store.complete_stage(
+        "disc-01-title-000",
+        "identify",
+        _artifact(
+            tmp_path,
+            "tv-media",
+            "identify",
+            {
+                "mode": "identified-episode-contract",
+                "library_relative": "Show/Season 01/Show - S01E01 - First.mkv",
+            },
+        ),
+    )
+    store.claim_next()
+    store.complete_stage(
+        "disc-01-title-000",
+        "transcode",
+        _artifact(tmp_path, "tv-media", "transcode", payload),
+    )
+    config.automatic_organization_enabled = True
+    season = config.jellyfin_tv_root / "Show" / "Season 01"
+    season.mkdir(parents=True)
+    (season / "Show - S01E01 - Existing - 480p.mkv").write_bytes(b"480")
+
+    assert (
+        build_organization_authorization_plan(store, config).collision_media_ids == ()
+    )
+
+    (season / "Show - S01E01 - Renamed - 1080p.mkv").write_bytes(b"1080")
+    assert build_organization_authorization_plan(store, config).collision_media_ids == (
+        "disc-01-title-000",
+    )

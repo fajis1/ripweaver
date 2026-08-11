@@ -236,17 +236,19 @@ def build_contribution_payload(
     snapshot: CatalogueDiscSnapshot,
     history: dict[int, dict[str, str | int | None]],
 ) -> dict[str, object] | None:
-    """Build only when every selected structural title has a durable match."""
+    """Build one cumulative layout from every currently durable title match."""
 
     titles: list[dict[str, object]] = []
     for title in snapshot.titles:
         outcome = history.get(title.title_index)
         if outcome is None:
-            return None
+            continue
         payload = _title_payload(title, outcome)
         if payload is None:
-            return None
+            continue
         titles.append(payload)
+    if not titles:
+        return None
     return {
         "schema_version": 2,
         "content_hash": snapshot.content_hash,
@@ -376,23 +378,52 @@ class CatalogueContributionStore:
             payload_sha256 = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
             now = self._now()
             with self._connect() as connection:
-                cursor = connection.execute(
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
                     """
-                    INSERT OR IGNORE INTO catalogue_contribution_outbox (
-                        payload_sha256, content_hash, payload_json, state,
-                        attempt_count, next_attempt_at, created_at, updated_at
-                    ) VALUES (?, ?, ?, 'pending', 0, ?, ?, ?)
+                    UPDATE catalogue_contribution_outbox
+                    SET state = 'superseded', updated_at = ?
+                    WHERE content_hash = ? AND state = 'pending'
+                        AND payload_sha256 != ?
                     """,
-                    (
-                        payload_sha256,
-                        snapshot.content_hash,
-                        encoded,
-                        now,
-                        now,
-                        now,
-                    ),
+                    (now, snapshot.content_hash, payload_sha256),
                 )
-                prepared += max(0, cursor.rowcount)
+                existing = connection.execute(
+                    """
+                    SELECT state FROM catalogue_contribution_outbox
+                    WHERE payload_sha256 = ?
+                    """,
+                    (payload_sha256,),
+                ).fetchone()
+                if existing is None:
+                    connection.execute(
+                        """
+                        INSERT INTO catalogue_contribution_outbox (
+                            payload_sha256, content_hash, payload_json, state,
+                            attempt_count, next_attempt_at, created_at, updated_at
+                        ) VALUES (?, ?, ?, 'pending', 0, ?, ?, ?)
+                        """,
+                        (
+                            payload_sha256,
+                            snapshot.content_hash,
+                            encoded,
+                            now,
+                            now,
+                            now,
+                        ),
+                    )
+                    prepared += 1
+                elif existing["state"] == "superseded":
+                    connection.execute(
+                        """
+                        UPDATE catalogue_contribution_outbox
+                        SET state = 'pending', attempt_count = 0,
+                            next_attempt_at = ?, last_error_type = NULL,
+                            updated_at = ? WHERE payload_sha256 = ?
+                        """,
+                        (now, now, payload_sha256),
+                    )
+                    prepared += 1
                 connection.commit()
         return prepared
 
@@ -474,4 +505,5 @@ class CatalogueContributionStore:
             "snapshots": int(snapshots["count"]),
             "pending": counts.get("pending", 0),
             "sent": counts.get("sent", 0),
+            "superseded": counts.get("superseded", 0),
         }
