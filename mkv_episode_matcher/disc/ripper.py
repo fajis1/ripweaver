@@ -99,7 +99,7 @@ def validate_job(job: RipJob) -> None:
         if (
             output_name.name != job.output_basename
             or output_name.suffix.lower() != ".mkv"
-            or re.fullmatch(r"[A-Za-z0-9._-]{1,180}", job.output_basename) is None
+            or re.fullmatch(r"[A-Za-z0-9._ -]{1,180}", job.output_basename) is None
         ):
             raise RipError("Rip output filename is not a safe MKV basename")
 

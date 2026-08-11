@@ -23,6 +23,7 @@ CredentialName = Literal[
     "opensubtitles-password",
     "gemini-primary",
     "gemini-paid",
+    "ripweaver-catalogue",
 ]
 
 
@@ -74,6 +75,12 @@ CREDENTIAL_SPECS: dict[CredentialName, CredentialSpec] = {
         display_name="Gemini paid/fallback API key",
         environment_variable="GEMINI_PAID_API_KEY",
         management_url="https://aistudio.google.com/app/apikey",
+    ),
+    "ripweaver-catalogue": CredentialSpec(
+        name="ripweaver-catalogue",
+        display_name="RipWeaver Catalogue installation token",
+        environment_variable="RIPWEAVER_CATALOGUE_TOKEN",
+        management_url="https://ripweaver.com/support",
     ),
 }
 

@@ -72,7 +72,11 @@ class AutomaticRipCoordinator:
                 drive.current_disc_fingerprint,
             )
             for drive in snapshot.drives
-            if drive.has_disc
+            if (
+                drive.has_disc
+                and drive.mapping_status == "trusted"
+                and drive.makemkv_confirmed
+            )
         }
         with self._lock:
             newly_loaded = {

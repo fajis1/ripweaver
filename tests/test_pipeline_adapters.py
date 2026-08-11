@@ -65,6 +65,47 @@ def test_identify_adapter_runs_engine_in_dry_run_and_writes_handoff(tmp_path):
     assert payload["library_relative"].endswith("Test Show - S01E02 - Second.mkv")
 
 
+def test_single_catalogue_candidate_is_held_as_help_after_local_match_fails(
+    tmp_path,
+):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+
+    class Engine:
+        def process_path(self, *_args, **_kwargs):
+            return [], []
+
+    item = _queued_item(
+        tmp_path,
+        {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "title_index": 4,
+            "media_context": {
+                "series_name": "Test Show",
+                "season": 1,
+                "catalogue_help_assignments": [
+                    {
+                        "title_index": 4,
+                        "season": 1,
+                        "episode": 2,
+                        "title": "Second",
+                        "identification_source": "ripweaver-catalogue-help",
+                    }
+                ],
+            },
+        },
+    )
+
+    with pytest.raises(
+        PipelineReviewRequiredError, match="catalogue_candidate_help_available"
+    ):
+        IdentifyStageAdapter(Engine(), contracts)(item)
+
+
 def test_movie_hint_routes_to_movie_identifier_before_tv_fallback(tmp_path):
     source = tmp_path / "source.mkv"
     source.write_bytes(b"synthetic")

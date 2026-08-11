@@ -86,6 +86,7 @@ class ConfigManager:
             "handbrake_path": environment.handbrake_path,
             "ffmpeg_path": environment.ffmpeg_path,
             "ffprobe_path": environment.ffprobe_path,
+            "tesseract_path": environment.tesseract_path,
             "gemini_model": environment.gemini_model,
         }
         return {key: value for key, value in values.items() if value not in (None, "")}

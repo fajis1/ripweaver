@@ -9,6 +9,7 @@
 .mkv-runs/
 .test-tmp/
 .test-tmp-*/
+.test-temp-*/
 /mkv_episode_matcher/__pycache__
 build/
 /dist/

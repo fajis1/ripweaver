@@ -2,7 +2,8 @@ import asyncio
 import json
 from datetime import UTC, datetime
 
-from fastapi import FastAPI
+import pytest
+from fastapi import FastAPI, HTTPException
 
 from mkv_episode_matcher.backend.dependencies import (
     get_orchestration_store,
@@ -16,10 +17,38 @@ from mkv_episode_matcher.backend.routers.rip import router
 from mkv_episode_matcher.disc.orchestration_store import OrchestrationStore
 from mkv_episode_matcher.disc.private_bindings import PrivateBindingStore
 from mkv_episode_matcher.disc.rip_manifest import MediaContext
+from mkv_episode_matcher.disc.rip_orchestrator import ParallelRipError
 from mkv_episode_matcher.disc.rip_preview import build_rip_preview
 from mkv_episode_matcher.disc.ripper import RipResult, resolve_final_output
 from mkv_episode_matcher.pipeline_queue import PipelineQueueStore
 from tests.test_rip_manifest import _inventory, _make_batch_names, _write_report
+
+
+def test_repeated_read_failure_skip_endpoint_updates_future_plans_only(tmp_path):
+    pipeline = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+
+    response = rip.skip_disc_title_after_read_failure(
+        rip.SkipDiscTitleDispositionRequest(
+            disc_fingerprint="0123456789abcdef",
+            title_index=16,
+            reason="repeated_read_failure",
+            confirm_skip=True,
+        ),
+        pipeline,
+    )
+
+    assert response["items"] == []
+    assert response["title_dispositions"] == [
+        {
+            "disc_fingerprint": "0123456789abcdef",
+            "title_index": 16,
+            "disposition": "skip",
+            "reason": "repeated_read_failure",
+        }
+    ]
+    assert pipeline.title_dispositions("0123456789abcdef") == {
+        16: {"disposition": "skip", "reason": "repeated_read_failure"}
+    }
 
 
 def test_collision_resolution_can_create_missing_only_review(tmp_path):
@@ -32,6 +61,7 @@ def test_collision_resolution_can_create_missing_only_review(tmp_path):
     output_root.mkdir()
     public = OrchestrationStore(tmp_path / "public.sqlite3")
     private = PrivateBindingStore(tmp_path / "private.sqlite3")
+    pipeline = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
     context = MediaContext(
         disc_id="disc-01",
         series_name="Synthetic Show",
@@ -86,8 +116,26 @@ def test_collision_resolution_can_create_missing_only_review(tmp_path):
         "selected-review-0001",
         public,
         private,
+        pipeline,
     )
     assert [item["title_index"] for item in selected["preview"]["jobs"]] == [1]
+
+    fingerprint = next(
+        part
+        for part in source.preview["jobs"][0]["staging_destination"].split("/")
+        if len(part) == 16
+        and all(character in "0123456789abcdef" for character in part)
+    )
+    pipeline.remember_title_skip(fingerprint, 1, reason="repeated_read_failure")
+    with pytest.raises(HTTPException, match="saved as skipped"):
+        rip.select_rip_titles(
+            source.job_id,
+            rip.SelectRipTitlesRequest(title_indexes=[1], confirm_selection=True),
+            "selected-review-skipped-0001",
+            public,
+            private,
+            pipeline,
+        )
 
 
 def _post(app, path, payload, *, idempotency_key):
@@ -280,3 +328,174 @@ def test_api_job_composes_through_private_dispatch_with_fake_queue(tmp_path):
     assert not (tmp_path / "unused-fake-run").exists()
     assert len(pipeline.list_items()) == len(created["preview"]["jobs"])
     assert {item.stage for item in pipeline.list_items()} == {"identify"}
+    assert {
+        rip._pipeline_item_response(item)["title_index"]
+        for item in pipeline.list_items()
+    } == {0, 1}
+
+
+def test_failed_disc_queues_verified_titles_and_retry_runs_only_unfinished(tmp_path):
+    report = _write_report(
+        tmp_path,
+        "saved-report.json",
+        _make_batch_names(_inventory(4, "Synthetic Disc", [1300, 1300])),
+    )
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    public = OrchestrationStore(tmp_path / "public.sqlite3")
+    private = PrivateBindingStore(tmp_path / "private.sqlite3")
+    pipeline = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_orchestration_store] = lambda: public
+    app.dependency_overrides[get_private_binding_store] = lambda: private
+    app.dependency_overrides[get_pipeline_queue_store] = lambda: pipeline
+    app.dependency_overrides[get_pipeline_contract_root] = lambda: (
+        tmp_path / "pipeline-contracts"
+    )
+    created_status, _, created = _post(
+        app,
+        "/rip/jobs",
+        {
+            "report_paths": [str(report)],
+            "media_contexts": {
+                "disc-01": {"series_name": "Synthetic Show", "season": 1}
+            },
+            "output_root": str(output_root),
+        },
+        idempotency_key="create-partial-composition-0001",
+    )
+    assert created_status == 200
+    assert (
+        _post(
+            app,
+            f"/rip/jobs/{created['job_id']}/authorize",
+            {
+                "expected_plan_sha256": created["plan_sha256"],
+                "confirm_authorization": True,
+            },
+            idempotency_key="authorize-partial-composition-0001",
+        )[0]
+        == 200
+    )
+    assert (
+        _post(
+            app,
+            f"/rip/jobs/{created['job_id']}/start",
+            {"confirm_queue": True},
+            idempotency_key="queue-partial-composition-0001",
+        )[0]
+        == 200
+    )
+
+    executable = tmp_path / "makemkvcon64.exe"
+    executable.write_bytes(b"synthetic executable placeholder")
+    calls = []
+
+    def fake_queue(_executable, root, jobs, _run_directory, **_kwargs):
+        calls.append(tuple(jobs))
+        selected = tuple(jobs) if len(calls) > 1 else tuple(jobs[:1])
+        now = datetime.now(UTC).isoformat()
+        results = []
+        for job in selected:
+            destination = resolve_final_output(root, job)
+            assert destination is not None
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(b"x")
+            results.append(
+                RipResult(
+                    job_id=job.job_id,
+                    return_code=0,
+                    output_count=1,
+                    output_bytes=1,
+                    warning_count=0,
+                    started_at=now,
+                    finished_at=now,
+                )
+            )
+        if len(calls) == 1:
+            raise ParallelRipError(
+                "second title failed",
+                completed_results=results,
+                drive_failures={jobs[0].drive_index: "RipError"},
+            )
+        return results
+
+    app.dependency_overrides[get_rip_queue_runner] = lambda: fake_queue
+    execute_payload = {
+        "expected_plan_sha256": created["plan_sha256"],
+        "authorized_job_count": len(created["preview"]["jobs"]),
+        "makemkv_executable": str(executable),
+        "run_directory": str(tmp_path / "first-fake-run"),
+        "timeout_seconds": 600,
+        "max_drives": 1,
+        "confirm_execute": True,
+    }
+    failed_status, _, failed = _post(
+        app,
+        f"/rip/jobs/{created['job_id']}/execute",
+        execute_payload,
+        idempotency_key="dispatch-partial-composition-0001",
+    )
+
+    assert failed_status == 409
+    assert failed["detail"] == "second title failed"
+    assert len(pipeline.list_items()) == 1
+    first_contract = json.loads(
+        pipeline.list_items()[0].artifact.contract_path.read_text(encoding="utf-8")
+    )
+    assert first_contract["disc_expected_title_indexes"] == [0, 1]
+
+    missing_title_index = created["preview"]["jobs"][1]["title_index"]
+    selection_status, _, selected = _post(
+        app,
+        f"/rip/jobs/{created['job_id']}/select-titles",
+        {"title_indexes": [missing_title_index], "confirm_selection": True},
+        idempotency_key="select-partial-composition-0001",
+    )
+    assert selection_status == 200
+    assert [item["title_index"] for item in selected["preview"]["jobs"]] == [
+        missing_title_index
+    ]
+    assert (
+        _post(
+            app,
+            f"/rip/jobs/{selected['job_id']}/authorize",
+            {
+                "expected_plan_sha256": selected["plan_sha256"],
+                "confirm_authorization": True,
+            },
+            idempotency_key="authorize-partial-composition-0002",
+        )[0]
+        == 200
+    )
+    assert (
+        _post(
+            app,
+            f"/rip/jobs/{selected['job_id']}/start",
+            {"confirm_queue": True},
+            idempotency_key="queue-partial-composition-0002",
+        )[0]
+        == 200
+    )
+    execute_payload["expected_plan_sha256"] = selected["plan_sha256"]
+    execute_payload["authorized_job_count"] = 1
+    execute_payload["run_directory"] = str(tmp_path / "retry-fake-run")
+    completed_status, _, completed = _post(
+        app,
+        f"/rip/jobs/{selected['job_id']}/execute",
+        execute_payload,
+        idempotency_key="dispatch-partial-composition-0002",
+    )
+
+    assert completed_status == 200
+    assert completed["state"] == "completed"
+    assert len(calls) == 2
+    assert len(calls[0]) == 2
+    assert len(calls[1]) == 1
+    assert calls[1][0].job_id != calls[0][0].job_id
+    assert len(pipeline.list_items()) == 2
+    for item in pipeline.list_items():
+        contract = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
+        assert contract["disc_expected_title_indexes"] == [0, 1]

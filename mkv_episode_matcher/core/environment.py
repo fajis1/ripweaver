@@ -19,10 +19,12 @@ class EnvironmentSettings(BaseSettings):
     handbrake_path: Path | None = None
     ffprobe_path: Path | None = None
     ffmpeg_path: Path | None = None
+    tesseract_path: Path | None = None
 
     gemini_primary_api_key: str | None = None
     gemini_paid_api_key: str | None = None
     gemini_model: str = "gemini-3.6-flash"
+    ripweaver_catalogue_token: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

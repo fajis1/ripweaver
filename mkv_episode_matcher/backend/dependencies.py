@@ -4,6 +4,13 @@ from pathlib import Path
 from mkv_episode_matcher.backend.rip_runtime import RipExecutionRegistry
 from mkv_episode_matcher.core.config_manager import ConfigManager
 from mkv_episode_matcher.core.engine import MatchEngineV2
+from mkv_episode_matcher.disc.catalogue_contributions import (
+    CatalogueContributionStore,
+)
+from mkv_episode_matcher.disc.drive_mapping import (
+    DriveMappingStore,
+    discover_windows_optical_devices,
+)
 from mkv_episode_matcher.disc.drive_watcher import DriveWatcher
 from mkv_episode_matcher.disc.orchestration_store import OrchestrationStore
 from mkv_episode_matcher.disc.preflight import resolve_makemkv_path, run_info_command
@@ -27,7 +34,8 @@ _orchestration_lock = threading.Lock()
 _private_binding_store: PrivateBindingStore | None = None
 _rip_execution_registry = RipExecutionRegistry()
 _pipeline_queue_store: PipelineQueueStore | None = None
-_drive_watcher = DriveWatcher()
+_catalogue_contribution_store: CatalogueContributionStore | None = None
+_drive_watcher: DriveWatcher | None = None
 _handbrake_profile_store: HandBrakeProfileStore | None = None
 _drive_refresh_coordinator: DriveRefreshCoordinator | None = None
 _windows_volume_listener: WindowsVolumeEventListener | None = None
@@ -136,6 +144,22 @@ def get_pipeline_queue_store() -> PipelineQueueStore:
     return _pipeline_queue_store
 
 
+def get_catalogue_contribution_store() -> CatalogueContributionStore:
+    """Return the private durable community-contribution outbox."""
+
+    global _catalogue_contribution_store
+    with _orchestration_lock:
+        if _catalogue_contribution_store is None:
+            config = get_config_manager().load()
+            database_path = (
+                config.cache_dir.parent
+                / "orchestration"
+                / "catalogue-contributions.sqlite3"
+            )
+            _catalogue_contribution_store = CatalogueContributionStore(database_path)
+    return _catalogue_contribution_store
+
+
 def get_pipeline_contract_root() -> Path:
     """Return the private root for immutable inter-stage JSON contracts."""
 
@@ -146,6 +170,15 @@ def get_pipeline_contract_root() -> Path:
 def get_drive_watcher() -> DriveWatcher:
     """Return the read-only process-local drive status cache."""
 
+    global _drive_watcher
+    with _orchestration_lock:
+        if _drive_watcher is None:
+            config = get_config_manager().load()
+            mapping_path = config.cache_dir.parent / "orchestration" / "drive-map.json"
+            _drive_watcher = DriveWatcher(
+                native_identity_discovery=discover_windows_optical_devices,
+                mapping_store=DriveMappingStore(mapping_path),
+            )
     return _drive_watcher
 
 
@@ -170,14 +203,15 @@ def start_windows_drive_events() -> bool:
 
     def refresh() -> None:
         config = get_config_manager().load()
+        watcher = get_drive_watcher()
         if _rip_execution_registry.has_active_executor():
-            snapshot = _drive_watcher.refresh_native_media()
+            snapshot = watcher.refresh_native_media()
         else:
             # A volume event means the media occupying a tray may have changed.
             # Clear process-local attachments before a full MakeMKV refresh.
-            _drive_watcher.invalidate_current_disc_bindings()
+            watcher.invalidate_current_disc_bindings()
             executable = resolve_makemkv_path(config.makemkv_path)
-            snapshot = _drive_watcher.refresh(executable, timeout_seconds=30)
+            snapshot = watcher.refresh(executable, timeout_seconds=120)
         from mkv_episode_matcher.backend.automatic_rip import automatic_rip_coordinator
 
         automatic_rip_coordinator.observe(

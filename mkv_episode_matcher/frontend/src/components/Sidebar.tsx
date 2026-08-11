@@ -72,9 +72,9 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, systemStatus
             {/* Logo Section */}
             <div className="p-6 border-b border-[var(--border-color)]">
                 <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400">
-                    MKV Matcher
+                    RipWeaver
                 </h1>
-                <p className="text-xs text-[var(--text-muted)] mt-1">Episode Identifier v{systemStatus.version}</p>
+                <p className="text-xs text-[var(--text-muted)] mt-1">Version {systemStatus.version}</p>
             </div>
 
             {/* Navigation */}

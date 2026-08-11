@@ -127,6 +127,10 @@ def discover_tools():
             ),
             "ffmpeg_path": _find_executable(("ffmpeg.exe", "ffmpeg")),
             "ffprobe_path": _find_executable(("ffprobe.exe", "ffprobe")),
+            "tesseract_path": _find_executable(
+                ("tesseract.exe", "tesseract"),
+                (program_files / "Tesseract-OCR" / "tesseract.exe",),
+            ),
         }
     }
 
@@ -203,6 +207,7 @@ def _validate_executable_paths(config) -> dict[str, str]:
         "handbrake_path": {"handbrakecli.exe", "handbrakecli"},
         "ffmpeg_path": {"ffmpeg.exe", "ffmpeg"},
         "ffprobe_path": {"ffprobe.exe", "ffprobe"},
+        "tesseract_path": {"tesseract.exe", "tesseract"},
     }
     errors = {}
     for field, names in expected_names.items():
@@ -328,7 +333,10 @@ def _cleanup_context(*, require_library: bool = True):
     if (
         config.rip_output_root is None
         or config.transcode_output_root is None
-        or (require_library and not (config.jellyfin_tv_root or config.jellyfin_movie_root))
+        or (
+            require_library
+            and not (config.jellyfin_tv_root or config.jellyfin_movie_root)
+        )
     ):
         raise CleanupError(
             "Configure rip, encoded, and at least one Jellyfin library root first"
@@ -345,7 +353,9 @@ def _cleanup_plans(payload: dict):  # noqa: C901
         raise CleanupError("Cleanup mode is invalid")
     if mode == "older_than" and days not in {7, 14}:
         raise CleanupError("Cleanup age must be 7 or 14 days")
-    config, contract_root, planner = _cleanup_context(require_library=mode != "all_staging")
+    config, contract_root, planner = _cleanup_context(
+        require_library=mode != "all_staging"
+    )
     plans = []
     library_roots = []
     if mode == "all_staging":
@@ -414,7 +424,9 @@ def _cleanup_plans(payload: dict):  # noqa: C901
             for plan in unique_plans
         ]
     combined = hashlib.sha256(
-        json.dumps([plan.plan_sha256 for plan in unique_plans], separators=(",", ":")).encode()
+        json.dumps(
+            [plan.plan_sha256 for plan in unique_plans], separators=(",", ":")
+        ).encode()
     ).hexdigest()
     return config, list(zip(unique_plans, unique_roots, strict=True)), combined
 
@@ -429,7 +441,9 @@ def preview_jellyfin_cleanup(payload: dict):
         _config, planned, combined = _cleanup_plans(payload)
     except CleanupError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    candidates = [candidate for plan, _library in planned for candidate in plan.candidates]
+    candidates = [
+        candidate for plan, _library in planned for candidate in plan.candidates
+    ]
     logger.info(
         "Cleanup preview completed: mode={}, candidate_count={}, group_selection={}",
         payload.get("mode", "older_than"),
@@ -466,16 +480,26 @@ def delete_jellyfin_cleanup(payload: dict):
     from mkv_episode_matcher.backend.jellyfin_cleanup import CleanupError, apply_cleanup
 
     if payload.get("confirm_delete") is not True:
-        raise HTTPException(status_code=400, detail="Explicit cleanup confirmation is required")
+        raise HTTPException(
+            status_code=400, detail="Explicit cleanup confirmation is required"
+        )
     expected = payload.get("expected_plan_sha256")
     authorized_count = payload.get("authorized_file_count")
     if not isinstance(expected, str) or not isinstance(authorized_count, int):
-        raise HTTPException(status_code=400, detail="Cleanup authorization is incomplete")
+        raise HTTPException(
+            status_code=400, detail="Cleanup authorization is incomplete"
+        )
     try:
         config, planned, combined = _cleanup_plans(payload)
-        if combined != expected or sum(len(plan.candidates) for plan, _library in planned) != authorized_count:
+        if (
+            combined != expected
+            or sum(len(plan.candidates) for plan, _library in planned)
+            != authorized_count
+        ):
             raise CleanupError("Cleanup plan changed; review a fresh scan")
-        contract_root = _cleanup_context(require_library=payload.get("mode") != "all_staging")[1]
+        contract_root = _cleanup_context(
+            require_library=payload.get("mode") != "all_staging"
+        )[1]
         deleted = 0
         for plan, library_root in planned:
             deleted += apply_cleanup(

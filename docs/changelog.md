@@ -5,6 +5,30 @@ All notable changes to MKV Episode Matcher are documented here.
 > [!TIP]
 > For the complete changelog history, see [CHANGELOG.md](https://github.com/Jsakkos/mkv-episode-matcher/blob/main/CHANGELOG.md) in the repository.
 
+## Unreleased - 2026-08-10
+
+- Added opt-in, path-free matched-disc contributions with a private retryable
+  outbox and durable match-provenance tracking.
+- Added piecewise community consensus: two independent matching uploads with a
+  strict lead confirm each title, while conflicts hold only affected titles.
+- Added non-authorizing single-upload candidate help after local matching is
+  unable to resolve a title; server-assisted results cannot vote or earn credit.
+- Added partial catalogue lookup handling so confirmed titles can continue while
+  disputed bonus items remain in local review.
+- Added stable hashed Windows optical-device mapping so temporary MakeMKV slot
+  renumbering cannot redirect work to another physical drive.
+- Added a first-run/change-detection wizard with one-click approval for all
+  currently detected intentional drives and exact-snapshot batch saving.
+- Added fail-closed USB identity-change handling, safe similar-device warnings,
+  and retirement of absent old trusted identities.
+- Added a MakeMKV-confirmation guard: a Windows-only provisional slot cannot
+  prepare or rip a disc.
+- Added separately confirmed continuation for loaded discs after drive setup
+  when automatic processing is enabled.
+- Documented exact-device Windows restart, USB/SATA power-cycle recovery, and
+  the remaining loaded-but-Windows-unreadable state distinction in
+  [Windows optical-drive mapping and recovery](WINDOWS_OPTICAL_DRIVE_RECOVERY.md).
+
 ## [1.1.0] - 2026-01-11 - Polish Release ✨
 
 ### 🖥️ UI/UX Improvements

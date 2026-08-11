@@ -21,6 +21,16 @@ Gemini is an optional final ambiguity-resolution provider. It is contacted only
 through the separately disclosed and confirmed evidence workflow. Google does
 not endorse RipWeaver.
 
+## TheDiscDB
+
+TheDiscDB is an optional disc-layout metadata provider. When enabled, RipWeaver
+calculates a compatibility identifier from the inserted disc's file names and
+sizes and sends only that identifier to TheDiscDB. Returned episode metadata is
+accepted only after its source playlist and, when both sides provide one,
+segment map agree with the read-only MakeMKV inventory. TheDiscDB does not
+endorse RipWeaver. Its public data repository is MIT-licensed and its web/API
+repository is Apache-2.0 licensed; see `THIRD_PARTY_NOTICES.md`.
+
 ## External media tools
 
 RipWeaver can invoke separately installed MakeMKV, HandBrakeCLI, FFmpeg, and

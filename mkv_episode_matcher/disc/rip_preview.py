@@ -61,6 +61,9 @@ class RipPreviewDrive:
     minimum_length_seconds: int | None
     reason: str
     selection_mode: str
+    metadata_source: str | None = None
+    metadata_status: str | None = None
+    metadata_matched_title_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -78,6 +81,7 @@ class RipPreviewJob:
     prior_outcome_name: str | None = None
     prior_library_relative: str | None = None
     prior_episode_id: str | None = None
+    prior_library_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -88,9 +92,11 @@ class RipPreview:
     drives: tuple[RipPreviewDrive, ...]
     jobs: tuple[RipPreviewJob, ...]
     skipped_discs: tuple[dict[str, object], ...]
+    skipped_titles: tuple[dict[str, object], ...]
     collision_count: int
     requires_review: bool
     limitations: tuple[str, ...]
+    held_titles: tuple[dict[str, object], ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -121,6 +127,9 @@ def compatible_manifest_sha256s(manifest: RipManifest) -> frozenset[str]:
         "special_feature_library_year": None,
         "special_feature_assignments": (),
         "episode_assignments": (),
+        "disc_metadata_source": None,
+        "disc_metadata_status": None,
+        "disc_metadata_matched_title_count": 0,
         "existing_output_policy": "preserve",
     }
     contexts = identity.get("media_contexts", [])
@@ -153,6 +162,21 @@ def _collision_status(
     if final_destination is not None and final_destination.exists():
         return "final-exists"
     return "clear"
+
+
+def _episode_assignment_display(assignment: object) -> str | None:
+    if not isinstance(assignment, dict):
+        return None
+    try:
+        season = int(assignment["season"])
+        episode = int(assignment["episode"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not 0 <= season <= 99 or not 1 <= episode <= 999:
+        return None
+    title = assignment.get("title")
+    suffix = f" - {title}" if isinstance(title, str) and title.strip() else ""
+    return f"S{season:02d}E{episode:02d}{suffix}"
 
 
 def build_rip_preview(
@@ -191,6 +215,7 @@ def build_rip_preview(
             cutoff = None
             reason = "no-exact-runtime-cutoff"
         disc_id = drive_jobs[0].job_id.rsplit("-title-", 1)[0]
+        context = media_contexts.get(disc_id)
         drives.append(
             RipPreviewDrive(
                 disc_id=disc_id,
@@ -206,6 +231,11 @@ def build_rip_preview(
                     disc_id=disc_id,
                     drive_index=drive_index,
                 ),
+                metadata_source=(context.disc_metadata_source if context else None),
+                metadata_status=(context.disc_metadata_status if context else None),
+                metadata_matched_title_count=(
+                    context.disc_metadata_matched_title_count if context else 0
+                ),
             )
         )
 
@@ -214,7 +244,7 @@ def build_rip_preview(
     for job in manifest.jobs:
         disc_id = job.job_id.rsplit("-title-", 1)[0]
         context = media_contexts.get(disc_id)
-        assignment = next(
+        feature_assignment = next(
             (
                 item
                 for item in (context.special_feature_assignments if context else ())
@@ -222,6 +252,15 @@ def build_rip_preview(
             ),
             None,
         )
+        episode_assignment = next(
+            (
+                item
+                for item in (context.episode_assignments if context else ())
+                if item.get("title_index") == job.title_index
+            ),
+            None,
+        )
+        episode_display = _episode_assignment_display(episode_assignment)
         if output_root is None:
             staging = Path(job.relative_output_dir)
             final = (
@@ -253,22 +292,25 @@ def build_rip_preview(
                 ),
                 collision_status=collision,
                 display_name=(
-                    str(assignment["matched_title"])
-                    if assignment and assignment.get("matched_title")
-                    else None
+                    str(feature_assignment["matched_title"])
+                    if feature_assignment and feature_assignment.get("matched_title")
+                    else episode_display
                 ),
                 extras_folder=(
-                    str(assignment["jellyfin_folder"])
-                    if assignment and assignment.get("jellyfin_folder")
+                    str(feature_assignment["jellyfin_folder"])
+                    if feature_assignment and feature_assignment.get("jellyfin_folder")
                     else None
                 ),
                 identification_status=(
                     "catalogue-match"
-                    if assignment
-                    and assignment.get("classification") == "matched-feature"
-                    and assignment.get("fallback_name_policy") == "none"
+                    if feature_assignment
+                    and feature_assignment.get("classification") == "matched-feature"
+                    and feature_assignment.get("fallback_name_policy") == "none"
+                    else "disc-database-match"
+                    if episode_display
+                    and episode_assignment.get("identification_source") == "thediscdb"
                     else "evidence-required"
-                    if assignment
+                    if feature_assignment
                     else None
                 ),
             )
@@ -289,8 +331,16 @@ def build_rip_preview(
         drives=tuple(drives),
         jobs=tuple(jobs),
         skipped_discs=skipped,
+        skipped_titles=(),
         collision_count=collision_count,
-        requires_review=bool(collision_count or skipped),
+        requires_review=bool(
+            collision_count
+            or skipped
+            or any(
+                context.disc_metadata_status == "support-required"
+                for context in media_contexts.values()
+            )
+        ),
         limitations=(
             "This preview reads only the explicit saved JSON reports.",
             "No disc discovery, MakeMKV execution, ripping, rename, move, "
@@ -299,4 +349,5 @@ def build_rip_preview(
             "Physical execution requires a separately reviewed manifest and "
             "explicit authorization.",
         ),
+        held_titles=(),
     )

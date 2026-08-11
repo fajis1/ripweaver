@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 
 import pytest
@@ -64,9 +65,7 @@ def test_clear_current_job_detaches_only_expected_disc_identity():
         0, "rip-0123456789abcdef0123456789abcdef", "0123456789abcdef"
     )
 
-    watcher.clear_current_job(
-        0, expected_disc_fingerprint="0123456789abcdef"
-    )
+    watcher.clear_current_job(0, expected_disc_fingerprint="0123456789abcdef")
 
     drive = watcher.snapshot().drives[0]
     assert drive.current_job_id is None
@@ -82,6 +81,35 @@ def test_snapshot_does_not_invoke_discovery():
 
     assert snapshot.status == "not_scanned"
     assert snapshot.drives == ()
+
+
+def test_snapshot_remains_available_and_duplicate_refresh_is_rejected():
+    started = threading.Event()
+    release = threading.Event()
+
+    def runner(*_args, **_kwargs):
+        started.set()
+        assert release.wait(timeout=2)
+        return _result('DRV:0,2,999,1,"hardware","disc","D:"\n')
+
+    watcher = DriveWatcher(runner, native_discovery=lambda: ())
+    worker = threading.Thread(
+        target=watcher.refresh,
+        args=(Path("makemkvcon64.exe"),),
+    )
+    worker.start()
+    assert started.wait(timeout=1)
+
+    assert watcher.refresh_in_progress() is True
+    assert watcher.snapshot().status == "not_scanned"
+    with pytest.raises(PreflightError, match="already in progress"):
+        watcher.refresh(Path("makemkvcon64.exe"))
+
+    release.set()
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert watcher.refresh_in_progress() is False
+    assert watcher.snapshot().status == "ready"
 
 
 def test_failed_refresh_preserves_last_known_slots():
@@ -101,6 +129,22 @@ def test_failed_refresh_preserves_last_known_slots():
     assert failed.status == "error"
     assert failed.drives == first.drives
     assert failed.error_type == "PreflightError"
+    assert failed.error_code == "no_drives"
+
+
+def test_failed_refresh_classifies_timeout_for_actionable_recovery():
+    def timeout_runner(*_args, **_kwargs):
+        raise PreflightError("MakeMKV info timed out after 30s for disc:9999")
+
+    watcher = DriveWatcher(timeout_runner, native_discovery=lambda: ())
+
+    with pytest.raises(PreflightError, match="timed out"):
+        watcher.refresh(Path("makemkvcon64.exe"))
+
+    failed = watcher.snapshot()
+    assert failed.status == "error"
+    assert failed.error_type == "PreflightError"
+    assert failed.error_code == "timeout"
 
 
 def test_partial_refresh_preserves_previously_discovered_empty_slots():
@@ -150,6 +194,29 @@ def test_native_windows_inventory_adds_makemkv_omitted_empty_trays():
     ]
     assert watcher.device_name(4) == "I:"
     assert watcher.device_name(5) == "J:"
+    assert snapshot.drives[0].makemkv_confirmed is True
+    assert snapshot.drives[-2].makemkv_confirmed is False
+    assert snapshot.drives[-1].makemkv_confirmed is False
+
+
+def test_windows_only_slot_cannot_bind_disc_work_before_makemkv_confirmation():
+    watcher = DriveWatcher(
+        lambda *_args, **_kwargs: _result('DRV:0,2,999,0,"hardware","","D:"\n'),
+        native_discovery=lambda: ("D:", "F:"),
+        native_media_discovery=lambda: {"F:": (True, "disc")},
+    )
+    watcher.refresh(Path("makemkvcon64.exe"))
+    refreshed = watcher.refresh_native_media()
+    provisional = refreshed.drives[-1]
+    assert provisional.has_disc is True
+    assert provisional.makemkv_confirmed is False
+
+    with pytest.raises(ValueError, match="untrusted, unconfirmed, or empty"):
+        watcher.bind_current_job(
+            provisional.drive_index,
+            "rip-0123456789abcdef0123456789abcdef",
+            "0123456789abcdef",
+        )
 
 
 def test_current_job_binding_is_cleared_when_tray_disc_changes():

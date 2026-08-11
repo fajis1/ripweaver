@@ -100,7 +100,7 @@
   still a separate remaining integration; the saved-data BM25/sequence planner
   itself is unchanged.
 
-Last updated: 2026-07-30
+Last updated: 2026-08-10
 
 ## Current State
 
@@ -1470,7 +1470,7 @@ uv run --no-cache pytest tests/test_handbrake_profiles.py tests/test_handbrake_a
 Result:
 
 - `182 passed`, `0 failed`.
-- `pytest` cache warnings persist for `C:\Users\Owner\mkv-episode-matcher\.pytest_cache` path write restrictions.
+- `pytest` cache warnings persist for repository-local `.pytest_cache` path write restrictions.
 
 - Static and frontend checks:
   - `uv run ruff check` (touched Python modules/tests): passed.
@@ -2736,3 +2736,339 @@ for review rather than forcing a TV identity.
 - OpenSubtitles review evidence now retains the best candidate, runner-up,
   decision margin, qualifying transcript-window count, and an exact path-free
   rejection reason. The dashboard exposes those fields without transcript text.
+- Failed pipeline items with an unchanged retained staged MKV now expose the
+  existing confirmed local playback action before retry, clearing, or permanent
+  deletion. Playback revalidates the exact recorded source size and never changes
+  the media file.
+- Audio-less HandBrake failures now offer an explicit local OCR review. After
+  confirmation, RipWeaver verifies the exact staged MKV, samples six bounded
+  frames, and uses configured Tesseract OCR to flag likely warning screens or
+  disc menus. The path-free classification persists across restarts and drives
+  the queue's Likely removable filter; OCR text is not persisted in the queue.
+  The result is advisory only, and media is never deleted automatically.
+- Permanently deleting a title classified as a likely warning screen or disc
+  menu may now record an explicit, reversible `fingerprint + title index` skip.
+  A later preview excludes that exact title from MakeMKV, displays the saved
+  reason, and offers a restore action that creates a fresh read-only review.
+  Ordinary deletions and inconclusive OCR results never teach a future skip.
+- A user may also explicitly mark the exact fingerprint/title currently shown
+  in a stalled MakeMKV status as a repeated-read-failure skip. This changes only
+  future plans: it does not stop or edit the active immutable rip, delete a
+  partial, or change Jellyfin. Recovery counts separate intentionally skipped
+  titles from safely present and still-missing titles, and stale title-selection
+  requests are rejected if they attempt to re-authorize a saved skip. The same
+  restore workflow makes the decision reversible. Failing titles remain included
+  by default; RipWeaver never creates this disposition until the user confirms
+  the per-title exclusion.
+- Gemini bonus-feature fallback now augments bounded Whisper evidence with one
+  separately labeled, six-frame local OCR excerpt when readable on-screen text
+  exists. The same explicit external-evidence confirmation covers transmission;
+  paths, images, full OCR output, and credentials are not sent.
+- Read-only drive refresh failures now distinguish a missing MakeMKVCLI path,
+  discovery timeout, and missing optical-drive records with path-free recovery
+  guidance. The dashboard exposes retry and Settings actions while preserving
+  last-known drive slots.
+
+## OCR deletion, drive recovery, and UI handoff (2026-08-09)
+
+- Silent-video OCR is an explicit exact-file operation for
+  `HandBrakeNoUsableAudio` items. The button now has a busy spinner and live
+  status text, and likely warning-screen results receive a prominent
+  `Likely removable` treatment. OCR samples remain bounded to six frames; the
+  queue stores only the classification, not OCR text, images, or media paths.
+- A confirmed permanent deletion can teach a future-rip skip only when the
+  durable OCR classification is `likely_warning_screen` or `likely_disc_menu`.
+  The skip is keyed by exact inventory fingerprint and MakeMKV title index,
+  applies during fresh automatic or reviewed planning, appears in the preview,
+  and has an explicit restore action. Forgetting the complete saved disc
+  identity also removes these title dispositions. Ordinary deletion remains a
+  one-time media operation and does not create a skip.
+- TV bonus/descriptive Gemini fallback now receives at most one labeled,
+  bounded on-screen OCR excerpt in addition to the existing bounded Whisper
+  evidence. This allows visible feature titles to help distinguish TV extras.
+  The provider receives no image, full OCR document, local path, or credential.
+- Drive discovery now permits a 120-second extended MakeMKV refresh. A separate
+  nonblocking refresh mutex prevents manual, event-driven, and automatic scans
+  from queueing behind one another. Cached `GET /rip/drives` status remains
+  responsive while MakeMKV runs, reports `refresh_in_progress`, and rejects a
+  duplicate refresh immediately. Typed path-free error codes distinguish
+  timeout, missing executable, no-drive, and generic discovery failures.
+- The Disc Dashboard hides stale timeout actions while a new refresh is active,
+  shows the two-minute wait in the button, and presents hardware isolation steps
+  only after a timeout. A valid CLI path is no longer mislabeled as broken merely
+  because optical enumeration timed out.
+- Current local diagnosis: the configured MakeMKV CLI launches successfully,
+  but both MakeMKV all-drive discovery and the Windows CD-ROM device query timed
+  out. Fast Windows logical-drive enumeration currently sees three optical
+  drives, fewer than the five previously displayed. This remains an external
+  drive/enclosure/USB/driver condition, not a parser or executable-path error.
+  Recovery is to close MakeMKV, power-cycle external drives or hubs, reconnect
+  drives individually, verify each in Windows, and restart Windows if the
+  optical driver stack still hangs. Do not add unsafe per-drive guessing: the
+  exact MakeMKV drive index must remain authoritative before rip preparation.
+- The sidebar brand now reads `RipWeaver` and displays the live backend package
+  version from `/system/status`. The current installed version is `1.3.6`; the
+  frontend does not maintain a separate hard-coded display version.
+- Recently Finished now hides a discarded record when both
+  `staged_source_available` and `retained_source_available` are false. The
+  durable audit record remains in SQLite/events, but a permanently deleted file
+  is no longer shown as playable or renameable. Discarded items whose staged
+  MKV was intentionally preserved remain visible for later review or deletion.
+- Verification for this handoff passed: focused drive/watcher/API tests (31),
+  the earlier OCR/fingerprint/Gemini focused tests (77), the broader rip API and
+  orchestration regression set (68), focused Ruff checks, frontend ESLint,
+  TypeScript, and the packaged Vite production build. No credentials were read
+  or exposed. Tests used synthetic/fake media boundaries; diagnostic drive
+  checks were read-only and did not rip, transcode, rename, move, delete, or
+  eject media.
+
+## TheDiscDB metadata integration (2026-08-10)
+
+- RipWeaver now has an independent optional TheDiscDB integration based only on
+  TheDiscDB's permissively licensed sources: its data repository is MIT and its
+  web/API repository is Apache-2.0. No MKV-Auto AGPL code was copied.
+- The read-only MakeMKV parser now exposes TINFO 16 source playlist/file and
+  TINFO 26 segment map while retaining every original structural attribute.
+- The compatibility identifier follows TheDiscDB's documented implementation:
+  Blu-ray/UHD uses sorted `BDMV/STREAM/*.m2ts` file names and sizes; DVD uses
+  the immediate `VIDEO_TS` files. Only the resulting identifier is sent to the
+  unauthenticated GraphQL lookup. Paths, labels, serials, media contents,
+  credentials, and MakeMKV output are not transmitted.
+- Returned metadata never replaces MakeMKV title indexes, durations, sizes,
+  streams, output names, or segment maps. Episode assignments are accepted only
+  when the local source playlist matches and any segment maps present on both
+  sides agree. Duplicate/conflicting records and mismatches retain ordinary
+  review behavior.
+- A disabled-by-default Settings switch controls the external lookup. The Disc
+  Dashboard shows `matched`, `not found`, `title mismatch`, or `unavailable`
+  provenance and labels per-title database matches. Lookup failure falls back
+  to the existing identification pipeline and cannot stop rip preparation.
+- The resulting episode assignments enter the existing immutable media context,
+  so downstream identification can continue without Whisper/OCR when the exact
+  disc and playlist match. Ripping, transcoding, organization, deletion, and
+  ejection authorization boundaries are unchanged.
+- Tests use synthetic disc folders, saved GraphQL-shaped payloads, and fake
+  preparation lookups. No physical disc or real media was read while developing
+  or verifying this integration.
+- Verification passed all 781 Python tests, focused Ruff checks for every
+  touched Python module, frontend ESLint, TypeScript, and the packaged Vite
+  production build. The repository-wide Ruff/format checks still report the
+  documented pre-existing findings in older modules; no unrelated mechanical
+  rewrite was attempted.
+- A future contribution workflow should first create a local, reviewable,
+  path-free JSON proposal compatible with the MIT data schema. Publishing or
+  opening a contribution must remain a separate explicit network mutation;
+  RipWeaver should not copy or call MKV-Auto's AGPL contribution code.
+
+## Missing-title rerip correction (2026-08-10)
+
+- Disc preparation now checks durable title outcomes against the configured
+  Jellyfin roots before creating a `missing-only` review. Television checks use
+  the exact expected season folder and treat any existing filename carrying the
+  same episode ID as the existing destination, including the required
+  resolution-suffixed form such as ` - 1080p.mkv`. Movie history also recognizes
+  the corresponding resolution-suffixed form. Only names and file metadata are
+  inspected; media contents are not read.
+- Titles currently present in Jellyfin are held out of a mixed missing-title
+  plan and reported separately. If every reviewed title is already present, the
+  review remains non-actionable for `missing-only`: each title is marked as held
+  and MakeMKV cannot be queued without an explicit rerip-all choice. A missing or
+  inaccessible library root fails safely into review rather than being treated
+  as proof that an episode is absent.
+- Retrying preparation for a drive with an older `awaiting_review` job now creates
+  and binds a fresh review instead of silently returning the stale one. Active
+  authorized, queued, or running work remains protected from duplicate planning.
+- Regression tests cover partial and all-present Jellyfin sets where historical
+  unsuffixed names have since become resolution-suffixed, plus same-drive review
+  refresh. No disc was read and no media was ripped, probed, renamed, moved,
+  deleted, transcoded, or ejected while implementing or testing this correction.
+
+## Stable Windows optical-device mapping (2026-08-10)
+
+- MakeMKV drive indexes are now treated only as temporary command addresses.
+  A metadata-only Windows query hashes each current Plug-and-Play device
+  identity before it reaches RipWeaver and exposes only an opaque mapping ID,
+  sanitized model name, and broad connection type to the loopback dashboard.
+  Raw device instance IDs and drive letters are not persisted or returned.
+- The Disc Dashboard now opens a first-run/change-detection setup wizard for
+  every newly observed Windows optical device. It can mark all currently
+  detected drives as usable in one review, still permits per-device `Use` or
+  `Ignore` choices, and saves the complete device set against an exact snapshot
+  digest. Unmapped and ignored devices cannot enter automatic preparation, bind
+  a disc job, start a rip, or receive tray-control requests.
+- The private local map now retains only hashed identities, sanitized model and
+  connection descriptors, and trusted/ignored/retired states. If a USB bridge,
+  port, or Windows re-enumeration changes an identity, the new hash fails closed
+  as unmapped and the UI warns when its safe descriptor resembles a prior
+  trusted identity. Saving the exact wizard snapshot retires absent old trusted
+  hashes so they cannot silently regain approval if they later reappear.
+- The wizard can explicitly continue automatic processing for already loaded
+  discs when unattended processing is enabled. The choice states that disc
+  inventory/ripping may start and is separately confirmed in the API request;
+  clearing it saves only the map. A Windows-only synthesized slot is never
+  eligible for preparation or ripping until MakeMKV confirms that slot in a
+  read-only refresh.
+- A reviewed device follows its stable Windows identity when MakeMKV renumbers
+  slots. A successful authoritative Windows inventory also removes disconnected
+  cached slots; the earlier process-local merge no longer retains stale cards
+  indefinitely. If native identity discovery is unavailable, production mapping
+  fails closed instead of trusting a reusable MakeMKV number.
+- Current metadata-only diagnosis found three SATA and two generic USB optical
+  devices, all five of which the owner intends to use. Their presence in the
+  MakeMKV GUI comes from Windows device enumeration; RipWeaver does not mount or
+  create optical devices. The wizard therefore offers `Use all 5 detected
+  drives` while preserving the changed-USB-identity fail-safe.
+- Synthetic verification covers identity redaction, ambiguous-device refusal,
+  durable decisions, USB re-enumeration warnings, old-identity retirement,
+  exact-snapshot wizard saves, automatic-worker filtering, index changes,
+  disconnected slot removal, API confirmation, drive preparation, ejection
+  guards, and Windows event handling. All 795 Python tests, focused Ruff checks,
+  frontend lint, TypeScript, and the packaged production build pass. No MakeMKV
+  command or disc-media read was used for this work.
+
+## Windows locked-drive diagnosis and recovery handoff (2026-08-10)
+
+- A subsequent internal SATA Blu-ray-drive incident demonstrated that Windows
+  device presence and media readiness are distinct. Windows reported the device
+  status as healthy while reporting no loaded media for a physically inserted
+  disc; File Explorer could not read the disc, software eject failed, and no
+  MakeMKV process was active.
+- The documented recovery order is exact-device `pnputil /restart-device`
+  after model validation, followed by a real hardware power cycle if the device
+  remains wedged. Broad CD-ROM class restart and device removal are explicitly
+  excluded because five intentional optical drives are attached.
+- USB recovery should reconnect to the same port when possible. If Windows
+  produces a changed identity, RipWeaver must fail closed and reopen the mapping
+  wizard. Internal SATA recovery requires a complete shutdown and removal of
+  power rather than another ordinary Windows restart.
+- File Explorer mount failure must not become proof that a tray is empty.
+  Follow-up UI/state work should distinguish `empty`, `loaded`, and
+  `loaded/unreadable or unknown`, while requiring MakeMKV confirmation before
+  preparation or ripping.
+- A future exact-mapped `Close tray and refresh` control is recorded, with
+  active-job guards and explicit confirmation. Generic CD-audio tray commands
+  are unsafe on this multi-drive system.
+- The reusable operational procedure is documented in
+  `docs/WINDOWS_OPTICAL_DRIVE_RECOVERY.md`. Diagnosis read only sanitized
+  Windows device metadata and the process list; Codex performed no device
+  restart, eject, media read, or other media mutation.
+
+## Public RipWeaver catalogue foundation (2026-08-10)
+
+- `ripweaver.com`, `ripweaver.net`, and `ripweaver.org` are being delegated to
+  Cloudflare. The `.com` and `.net` zones activated successfully; `.org` was
+  still awaiting registrar propagation at the last check. No application DNS
+  record or public tunnel route has been created yet.
+- The intended public boundary is `api.ripweaver.com` over HTTPS through a
+  dedicated Cloudflare Tunnel. PostgreSQL must remain private on an internal
+  Docker network with no host port, tunnel route, or public DNS record.
+- A separate local `ripweaver-catalogue` repository now contains the initial
+  FastAPI service, reviewed-revision schema, authenticated pending-submission
+  queue, separately authenticated moderation operations, Alembic migration,
+  private PostgreSQL Docker topology, `cloudflared` service definition, and
+  collision-refusing backup helper.
+- The public schema accepts structural disc metadata only and rejects unknown
+  fields and path-bearing source identifiers. It has no fields for media,
+  transcripts, screenshots, local paths, drive identities, Jellyfin details,
+  credentials, or command output. Public lookup returns approved revisions
+  only; a submitted proposal remains private until explicit moderation.
+- Eleven synthetic API/configuration tests, Ruff lint and formatting, the
+  initial migration, and Docker Compose interpolation validation pass. The
+  Docker image build remains unverified because Docker Desktop was not running;
+  no container, database, tunnel, DNS application record, or media operation
+  was started.
+
+## RipWeaver catalogue credits and best-effort support (2026-08-10)
+
+- The separate catalogue service now issues pseudonymous installation tokens
+  while storing only their SHA-256 digests. Reviewed lookups require the token;
+  no personal profile, email address, media path, or drive identity is stored.
+- Each installation receives ten successful uncached automatic disc
+  resolutions per UTC month. A repeated disc hash, an idempotent retry, a miss,
+  or a failed request consumes nothing. Monthly allowance is used before one
+  non-expiring credit per accepted contribution, and contributed credits are
+  used before purchased credits.
+- Exhausting automatic credits returns a structured support-required response,
+  not a hard denial. RipWeaver forces the prepared disc into review, prevents
+  unattended authorization, shows the support choices and best-effort service
+  disclosure, and permits a separately clicked manual lookup without payment.
+- The support UI has a $10 minimum and a user-selected rate from $0.01 through
+  $1.00 per automatic lookup. It shows the exact whole-number credits before
+  checkout. Payments are described as support with lookup credits, not as a
+  charitable or tax-deductible donation.
+- Stripe support is implemented but disabled by default. The server creates a
+  hosted checkout only after an affirmative terms acknowledgement and grants
+  credits only from a signature-verified, exact-amount, idempotent webhook.
+  Browser redirects never fulfill credits, provider secrets remain environment
+  only, and no real Stripe account or credential has been configured.
+- The displayed terms state that the independent service is best-effort,
+  as-is, and as-available; backups do not guarantee uptime, data preservation,
+  maintenance, support, or continued operation. Payments are generally final
+  after credit issuance except where law, payment-network rules, duplicate
+  charges, unauthorized charges, or incorrect fulfillment require otherwise.
+- The catalogue service now has 16 passing synthetic tests plus clean Ruff
+  lint/format checks. All 805 RipWeaver tests pass; frontend lint, TypeScript,
+  and the production build pass. No real payment, provider call, disc read, rip,
+  transcode, rename, move, delete, overwrite, or eject operation was performed.
+
+## Hybrid catalogue consensus and contribution client (2026-08-10)
+
+- The catalogue server now accepts schema-v2 matched-disc layouts without human
+  moderation and recomputes per-title consensus under a PostgreSQL transaction
+  lock. A result needs two independent installations and a strict lead; one
+  upload is a candidate, ties are disputed, and a later third vote can resolve a
+  conflict automatically.
+- Structural identity and semantic assignment are voted separately. Cosmetic
+  episode-title spelling does not split an otherwise identical episode vote,
+  while manual playback, deterministic matching, local evidence, Gemini, and
+  server assistance form an explicit display-label provenance order.
+- A whole-disc consistency pass catches relationships such as duplicate episode
+  assignments and invalid play-all references. It holds only affected titles,
+  allowing confirmed episodes from a 95%-consistent disc to remain usable while
+  one bonus title continues through local matching.
+- RipWeaver now understands partial confirmed responses and uses only confirmed
+  title assignments automatically. The unmetered help endpoint is consulted
+  only after the normal lookup is missing or partial; a lone candidate appears
+  in review with its episode label and is never applied as a match.
+- A separate settings consent enables future matched-layout sharing. During an
+  already authorized preparation read, RipWeaver retains a private path-free
+  structural snapshot. A background outbox creates and sends a schema-v2 layout
+  only after every selected title has a durable identification outcome. Network
+  retries are idempotent and do not block media processing.
+- Contributions include public disc structure, semantic assignments, and match
+  provenance but exclude media, paths, the local fingerprint, Jellyfin state,
+  drive identity, credentials, transcripts, screenshots, and command output.
+  Server-assisted layouts may help recovery but cannot count toward quorum or
+  earn exchange credit, preventing the catalogue from confirming itself.
+- Validation passed all 22 catalogue-server tests, all 812 RipWeaver tests,
+  focused Ruff lint and formatting checks, PostgreSQL offline migration SQL
+  generation through revision `0003`, frontend ESLint and TypeScript, and the
+  packaged Vite production build. Tests used synthetic inventories, contracts,
+  and isolated databases only. No physical disc or media operation was
+  performed.
+
+## Exact missing-title rerip and completed-disc idle eject (2026-08-10)
+
+- A verified title produced before another title on the same drive fails is now
+  admitted to the downstream identification queue immediately. The failed rip
+  still records the exact verified IDs, and retry dispatch remains limited to
+  unfinished work.
+- Verified-rip contracts retain the whole-disc expected title set even when a
+  partial failure or a later selected-title rerip admits only part of the disc.
+  Pipeline status now exposes the path-free title index so the desktop can
+  reconcile a legacy failed run against exact staged identities.
+- A failed drive card computes the missing set as reviewed titles minus exact
+  staged pipeline sources and titles currently present in Jellyfin. Its primary
+  action is now `Rerip missing items`; one confirmation creates, authorizes,
+  queues, and executes a new immutable selected-title plan while preserving the
+  failed attempt and every verified or library file.
+- Identification review without an actual missing rip is labeled as
+  identification review and no longer recommends a fresh rerip, since rereading
+  an already verified MKV does not improve identification evidence.
+- When automatic eject is enabled and every known title is already present in
+  Jellyfin, the dashboard shows a 60-second countdown and then uses the existing
+  guarded eject endpoint. `Keep disc inserted` cancels the countdown; active or
+  queued drive work still causes the backend to refuse ejection safely.
+- Focused synthetic API/adapter/queue tests, frontend ESLint, and TypeScript
+  validation pass. No physical disc was read, ripped, or ejected, and no media
+  was transcoded, renamed, moved, overwritten, or deleted during this work.

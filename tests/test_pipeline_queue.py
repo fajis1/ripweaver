@@ -460,6 +460,97 @@ def test_delete_queued_item_media_runs_exact_callback_and_records_change(tmp_pat
     assert event.details == {"deleted": "staged_source", "media_changed": True}
 
 
+def test_likely_removable_delete_teaches_reversible_future_rip_skip(tmp_path):
+    store = _store(tmp_path)
+    contract = tmp_path / "warning-rip.json"
+    contract.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "disc_fingerprint": "0123456789abcdef",
+            "title_index": 3,
+        }),
+        encoding="utf-8",
+    )
+    store.enqueue_verified_rip("warning-title", build_artifact("rip", contract))
+    store.record_silent_video_review("warning-title", "likely_warning_screen")
+
+    result = store.delete_queued_item_media(
+        "warning-title",
+        lambda _item: None,
+        remember_future_skip=True,
+    )
+
+    assert result.state == "discarded"
+    assert store.title_dispositions("0123456789abcdef") == {
+        3: {"disposition": "skip", "reason": "likely_warning_screen"}
+    }
+    assert store.list_events("warning-title")[-1].details == {
+        "deleted": "staged_source",
+        "future_rip_disposition": "skip",
+        "media_changed": True,
+        "reason": "likely_warning_screen",
+    }
+    assert store.restore_title_disposition("0123456789abcdef", 3) is True
+    assert store.title_dispositions("0123456789abcdef") == {}
+
+
+def test_repeated_read_failure_teaches_reversible_future_rip_skip(tmp_path):
+    store = _store(tmp_path)
+
+    saved = store.remember_title_skip(
+        "0123456789abcdef", 16, reason="repeated_read_failure"
+    )
+
+    assert saved == {
+        "disc_fingerprint": "0123456789abcdef",
+        "title_index": 16,
+        "disposition": "skip",
+        "reason": "repeated_read_failure",
+    }
+    assert store.title_dispositions("0123456789abcdef") == {
+        16: {"disposition": "skip", "reason": "repeated_read_failure"}
+    }
+    assert store.list_title_dispositions() == (saved,)
+    assert store.restore_title_disposition("0123456789abcdef", 16) is True
+    assert store.list_title_dispositions() == ()
+
+
+def test_future_rip_skip_rejects_an_unreviewed_reason(tmp_path):
+    store = _store(tmp_path)
+
+    with pytest.raises(PipelineQueueError, match="reason is invalid"):
+        store.remember_title_skip(
+            "0123456789abcdef", 16, reason="filename_looked_suspicious"
+        )
+
+    assert store.list_title_dispositions() == ()
+
+
+def test_future_rip_skip_requires_likely_removable_ocr_result(tmp_path):
+    store = _store(tmp_path)
+    contract = tmp_path / "ordinary-rip.json"
+    contract.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "disc_fingerprint": "0123456789abcdef",
+            "title_index": 4,
+        }),
+        encoding="utf-8",
+    )
+    store.enqueue_verified_rip("ordinary-title", build_artifact("rip", contract))
+    store.record_silent_video_review("ordinary-title", "text_detected")
+
+    with pytest.raises(PipelineQueueError, match="likely-removable OCR"):
+        store.delete_queued_item_media(
+            "ordinary-title",
+            lambda _item: None,
+            remember_future_skip=True,
+        )
+
+    assert store.get("ordinary-title").state == "queued"
+    assert store.title_dispositions("0123456789abcdef") == {}
+
+
 def test_delete_queued_item_media_accepts_source_already_removed_by_cleanup(tmp_path):
     rip_root = tmp_path / "rip-root"
     rip_root.mkdir()

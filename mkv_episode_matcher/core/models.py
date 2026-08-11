@@ -85,6 +85,7 @@ class Config(BaseModel):
     handbrake_path: Path | None = None
     ffmpeg_path: Path | None = None
     ffprobe_path: Path | None = None
+    tesseract_path: Path | None = None
     default_handbrake_profile: str = "balanced"
     default_handbrake_profile_480p: str | None = None
     default_handbrake_profile_720p: str | None = None
@@ -96,6 +97,10 @@ class Config(BaseModel):
     automatic_eject_after_rip: bool = False
     automatic_gemini_ambiguity_fallback: bool = False
     automatic_organization_enabled: bool = False
+    thediscdb_lookup_enabled: bool = False
+    ripweaver_catalogue_enabled: bool = False
+    ripweaver_catalogue_contributions_enabled: bool = False
+    ripweaver_catalogue_url: str = "https://api.ripweaver.com"
 
     # OpenSubtitles settings
     open_subtitles_api_key: str | None = None
@@ -141,6 +146,7 @@ class Config(BaseModel):
         "handbrake_path",
         "ffmpeg_path",
         "ffprobe_path",
+        "tesseract_path",
     )
     @classmethod
     def normalize_optional_path(cls, value):

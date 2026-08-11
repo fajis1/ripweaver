@@ -21,21 +21,6 @@ CompletionSink = Callable[[BoundRipDispatch, list[RipResult]], None]
 ProgressSink = Callable[[str, str], None]
 
 
-def _fully_ripped_disc_results(
-    bound: BoundRipDispatch, results: list[RipResult]
-) -> list[RipResult]:
-    """Return results only for drives whose entire reviewed disc set completed."""
-
-    result_by_id = {result.job_id: result for result in results}
-    completed: list[RipResult] = []
-    drive_indexes = {job.drive_index for job in bound.manifest.jobs}
-    for drive_index in drive_indexes:
-        jobs = [job for job in bound.manifest.jobs if job.drive_index == drive_index]
-        if all(job.job_id in result_by_id for job in jobs):
-            completed.extend(result_by_id[job.job_id] for job in jobs)
-    return completed
-
-
 def _is_relative_to(path: Path, parent: Path) -> bool:
     try:
         path.relative_to(parent)
@@ -105,11 +90,17 @@ class ProductionRipExecutor:
                 on_event=self.progress_sink,
             )
         except ParallelRipError as exc:
-            complete_discs = _fully_ripped_disc_results(
-                bound, list(exc.completed_results)
-            )
-            if self.completion_sink is not None and complete_discs:
-                self.completion_sink(bound, complete_discs)
+            completed_results = list(exc.completed_results)
+            completed_ids = [result.job_id for result in completed_results]
+            if (
+                len(completed_ids) != len(set(completed_ids))
+                or not set(completed_ids) <= expected_ids
+            ):
+                raise RipError(
+                    "Rip orchestrator returned an unexpected partial result set"
+                ) from exc
+            if self.completion_sink is not None and completed_results:
+                self.completion_sink(bound, completed_results)
             raise
         result_ids = [result.job_id for result in results]
         if len(result_ids) != len(expected_ids) or set(result_ids) != expected_ids:

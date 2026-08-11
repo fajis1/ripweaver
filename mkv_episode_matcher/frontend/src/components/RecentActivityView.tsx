@@ -12,6 +12,9 @@ interface HistoryItem {
 
 interface RecentActivityViewProps { onOpenDashboard?: () => void; }
 
+const hasReviewableMedia = (item: HistoryItem) =>
+  item.state !== 'discarded' || item.staged_source_available || item.retained_source_available;
+
 const responsePayload = async (response: Response): Promise<Record<string, unknown>> => {
   const text = await response.text();
   if (!text) return {};
@@ -42,7 +45,7 @@ const RecentActivityView = ({ onOpenDashboard }: RecentActivityViewProps) => {
         const [response, configResponse] = await Promise.all([fetch('/rip/pipeline/items'), fetch('/system/config')]);
         const payload = await response.json();
         if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : 'History could not be loaded.');
-        setItems(payload.items);
+        setItems((payload.items as HistoryItem[]).filter(hasReviewableMedia));
         setNotice((current) => {
           if (!current.startsWith('Queued evidence and Gemini review')) return current;
           if (payload.items.some((item: HistoryItem) => item.review_code === 'gemini_analysis_running')) return 'Local evidence collection and Gemini review are running.';

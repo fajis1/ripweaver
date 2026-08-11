@@ -1,14 +1,33 @@
+import json
 from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 
 from mkv_episode_matcher.backend.routers import rip
+from mkv_episode_matcher.disc import rip_manifest
 from mkv_episode_matcher.disc.drive_watcher import DriveWatcher
 from mkv_episode_matcher.disc.orchestration_store import OrchestrationStore
-from mkv_episode_matcher.disc.preflight import CommandResult
+from mkv_episode_matcher.disc.preflight import CommandResult, PreflightError
 from mkv_episode_matcher.disc.private_bindings import PrivateBindingStore
-from mkv_episode_matcher.pipeline_queue import PipelineQueueStore
+from mkv_episode_matcher.disc.ripweaver_catalogue import (
+    CatalogueUsage,
+    RipWeaverCatalogueSupportRequiredError,
+    SupportPolicy,
+)
+from mkv_episode_matcher.disc.thediscdb import TheDiscDbResolution
+from mkv_episode_matcher.pipeline_queue import PipelineQueueStore, build_artifact
+
+
+def test_existing_rip_recovery_media_id_normalizes_makemkv_spaces():
+    candidate = SimpleNamespace(
+        basename="Synthetic Show Complete Series Disc 8_t00.mkv",
+        candidate_id="a" * 64,
+    )
+
+    assert rip._existing_rip_recovery_media_id(candidate) == (
+        "Synthetic-Show-Complete-Series-Disc-8_t00-recovery-" + "a" * 16
+    )
 
 
 def test_pipeline_display_name_uses_pending_episode_assignment(tmp_path):
@@ -34,6 +53,51 @@ def test_pipeline_display_name_uses_pending_episode_assignment(tmp_path):
     )
 
 
+def test_pipeline_response_exposes_candidate_help_without_authorizing_it(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contract = tmp_path / "rip.json"
+    contract.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "media_id": "candidate-title",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "disc_fingerprint": "0123456789abcdef",
+            "title_index": 7,
+            "media_context": {
+                "series_name": "Example Series",
+                "catalogue_help_assignments": [
+                    {
+                        "title_index": 7,
+                        "season": 2,
+                        "episode": 3,
+                        "title": "Candidate Episode",
+                        "identification_source": "ripweaver-catalogue-help",
+                    }
+                ],
+            },
+        }),
+        encoding="utf-8",
+    )
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    store.enqueue_verified_rip("candidate-title", build_artifact("rip", contract))
+    store.claim_next()
+    store.require_review("candidate-title", "catalogue_candidate_help_available")
+
+    public = rip._pipeline_item_response(store.list_items()[0])
+
+    assert public["catalogue_candidate_help"] == {
+        "series_name": "Example Series",
+        "season": 2,
+        "episode": 3,
+        "title": "Candidate Episode",
+        "independent_support": 1,
+        "automatic": False,
+    }
+    assert public["display_name"] is None
+
+
 def test_drive_preparation_guard_refuses_duplicate_scan_and_releases():
     claimed = rip._claim_drive_preparation(17)
     try:
@@ -44,6 +108,24 @@ def test_drive_preparation_guard_refuses_duplicate_scan_and_releases():
 
     next_claim = rip._claim_drive_preparation(17)
     next_claim.release()
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("MakeMKV executable not found: private", "Repair the MakeMKVCLI path"),
+        ("MakeMKV info timed out after 30s", "timed out"),
+        (
+            "MakeMKV returned no optical-drive records",
+            "did not report any optical drives",
+        ),
+    ],
+)
+def test_drive_refresh_errors_are_actionable_and_path_free(message, expected):
+    detail = rip._safe_drive_refresh_error(PreflightError(message))
+
+    assert expected in detail
+    assert "private" not in detail
 
 
 def test_disc_staged_mkv_plan_selects_only_exact_fingerprint_files(tmp_path):
@@ -57,9 +139,7 @@ def test_disc_staged_mkv_plan_selects_only_exact_fingerprint_files(tmp_path):
     )
     matching.parent.mkdir(parents=True)
     matching.write_bytes(b"matching-media")
-    other_disc = matching.with_name(
-        "Test-Show--disc-02-fedcba9876543210-title-004.mkv"
-    )
+    other_disc = matching.with_name("Test-Show--disc-02-fedcba9876543210-title-004.mkv")
     other_disc.write_bytes(b"other-disc")
     generic = matching.with_name("episode.mkv")
     generic.write_bytes(b"generic")
@@ -135,6 +215,8 @@ def _result(
                 f'TINFO:{index},2,0,"Episode {index + 1}"',
                 f'TINFO:{index},9,0,"0:22:0{index}"',
                 f'TINFO:{index},11,0,"2000000000"',
+                f'TINFO:{index},16,0,"0080{index}.mpls"',
+                f'TINFO:{index},26,0,"{40 + index}"',
                 f'TINFO:{index},27,0,"title_t{index:02d}.mkv"',
                 f'SINFO:{index},0,1,0,"Video"',
                 f'SINFO:{index},1,1,0,"Audio"',
@@ -337,6 +419,27 @@ def test_loaded_drive_can_prepare_non_authorized_pipeline(monkeypatch, tmp_path)
     )
     public = OrchestrationStore(tmp_path / "public.sqlite3")
     private = PrivateBindingStore(tmp_path / "private.sqlite3")
+    pipeline = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+    fingerprint = "0123456789abcdef"
+    monkeypatch.setattr(
+        rip_manifest, "_inventory_fingerprint", lambda _payload: fingerprint
+    )
+    skipped_contract = tmp_path / "skipped-rip.json"
+    skipped_contract.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "disc_fingerprint": fingerprint,
+            "title_index": 1,
+        }),
+        encoding="utf-8",
+    )
+    pipeline.enqueue_verified_rip(
+        "prior-warning", build_artifact("rip", skipped_contract)
+    )
+    pipeline.record_silent_video_review("prior-warning", "likely_warning_screen")
+    pipeline.delete_queued_item_media(
+        "prior-warning", lambda _item: None, remember_future_skip=True
+    )
 
     response = rip.prepare_drive_pipeline(
         rip.PrepareDrivePipelineRequest(
@@ -350,7 +453,7 @@ def test_loaded_drive_can_prepare_non_authorized_pipeline(monkeypatch, tmp_path)
         watcher,
         public,
         private,
-        PipelineQueueStore(tmp_path / "pipeline.sqlite3"),
+        pipeline,
         inventory_runner,
     )
 
@@ -358,6 +461,14 @@ def test_loaded_drive_can_prepare_non_authorized_pipeline(monkeypatch, tmp_path)
     assert response["state"] == "awaiting_review"
     assert response["preview"]["execution_authorized"] is False
     assert response["preview"]["jobs"]
+    assert {item["title_index"] for item in response["preview"]["jobs"]} == {0, 2}
+    assert response["preview"]["skipped_titles"] == [
+        {
+            "disc_fingerprint": fingerprint,
+            "title_index": 1,
+            "reason": "likely_warning_screen",
+        }
+    ]
     assert public.list_events(response["job_id"])[0].event_type == "job_created"
     binding = private.get(response["job_id"])
     assert binding.output_root == output_root
@@ -370,6 +481,240 @@ def test_loaded_drive_can_prepare_non_authorized_pipeline(monkeypatch, tmp_path)
         "/attempt-" in item["staging_destination"]
         for item in response["preview"]["jobs"]
     )
+
+
+def test_fresh_preparation_rebinds_exact_stale_drive_continuation(
+    monkeypatch, tmp_path
+):
+    executable = tmp_path / "makemkvcon64.exe"
+    executable.write_bytes(b"synthetic")
+    output_root = tmp_path / "rips"
+    output_root.mkdir()
+    cache_dir = tmp_path / "cache"
+
+    def indexed_result(source, drive_index, *, inventory=False):
+        result = _result(source, inventory=inventory)
+        return CommandResult(
+            command=result.command,
+            return_code=result.return_code,
+            stdout=result.stdout.replace("DRV:0,", f"DRV:{drive_index},"),
+            stderr=result.stderr,
+            started_at=result.started_at,
+            finished_at=result.finished_at,
+        )
+
+    monkeypatch.setattr(
+        rip,
+        "get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                makemkv_path=executable,
+                rip_output_root=output_root,
+                cache_dir=cache_dir,
+            )
+        ),
+    )
+    fingerprint = "0123456789abcdef"
+    monkeypatch.setattr(
+        rip_manifest, "_inventory_fingerprint", lambda _payload: fingerprint
+    )
+    public = OrchestrationStore(tmp_path / "public.sqlite3")
+    private = PrivateBindingStore(tmp_path / "private.sqlite3")
+    pipeline = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+    old_watcher = DriveWatcher(
+        lambda _exe, source, **_kwargs: indexed_result(source, 0)
+    )
+    old_watcher.refresh(executable)
+    original = rip.prepare_drive_pipeline(
+        rip.PrepareDrivePipelineRequest(drive_index=0, confirm_read=True),
+        "prepare-old-drive",
+        old_watcher,
+        public,
+        private,
+        pipeline,
+        lambda _exe, source, **_kwargs: indexed_result(source, 0, inventory=True),
+    )
+    continuation = rip.select_rip_titles(
+        original["job_id"],
+        rip.SelectRipTitlesRequest(title_indexes=[2], confirm_selection=True),
+        "select-one-title",
+        public,
+        private,
+        pipeline,
+    )
+    new_watcher = DriveWatcher(
+        lambda _exe, source, **_kwargs: indexed_result(source, 2)
+    )
+    new_watcher.refresh(executable)
+
+    rebound = rip.prepare_drive_pipeline(
+        rip.PrepareDrivePipelineRequest(drive_index=2, confirm_read=True),
+        "prepare-new-drive",
+        new_watcher,
+        public,
+        private,
+        pipeline,
+        lambda _exe, source, **_kwargs: indexed_result(source, 2, inventory=True),
+    )
+
+    assert rebound["job_id"] != continuation["job_id"]
+    assert rebound["preview"]["drives"][0]["drive_index"] == 2
+    assert [item["title_index"] for item in rebound["preview"]["jobs"]] == [2]
+    binding = private.get(rebound["job_id"])
+    assert binding.media_contexts["disc-01"].selected_title_indexes == (2,)
+    assert new_watcher.snapshot().drives[0].current_job_id == rebound["job_id"]
+
+
+@pytest.mark.parametrize(
+    ("present_indexes", "expected_jobs", "expected_collisions"),
+    [
+        ({0, 1}, {2}, 0),
+        ({0, 1, 2}, {0, 1, 2}, 3),
+    ],
+)
+def test_missing_only_preparation_recognizes_resolution_suffixed_jellyfin_episodes(
+    monkeypatch,
+    tmp_path,
+    present_indexes,
+    expected_jobs,
+    expected_collisions,
+):
+    executable = tmp_path / "makemkvcon64.exe"
+    executable.write_bytes(b"synthetic")
+    output_root = tmp_path / "rips"
+    output_root.mkdir()
+    cache_dir = tmp_path / "cache"
+    tv_root = tmp_path / "tv"
+    season_dir = tv_root / "Show" / "Season 01"
+    season_dir.mkdir(parents=True)
+    watcher = DriveWatcher(lambda _exe, source, **_kwargs: _result(source))
+    watcher.refresh(executable)
+    monkeypatch.setattr(
+        rip,
+        "get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                makemkv_path=executable,
+                rip_output_root=output_root,
+                cache_dir=cache_dir,
+                jellyfin_tv_root=tv_root,
+                jellyfin_movie_root=None,
+            )
+        ),
+    )
+    fingerprint = "0123456789abcdef"
+    monkeypatch.setattr(
+        rip_manifest, "_inventory_fingerprint", lambda _payload: fingerprint
+    )
+    public = OrchestrationStore(tmp_path / "public.sqlite3")
+    private = PrivateBindingStore(tmp_path / "private.sqlite3")
+    pipeline = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+    with pipeline._connect() as connection:
+        for title_index in range(3):
+            episode_id = f"S01E{title_index + 1:02d}"
+            historical = (
+                f"Show/Season 01/Show - {episode_id} - Episode {title_index + 1}.mkv"
+            )
+            connection.execute(
+                """
+                INSERT INTO disc_title_history (
+                    disc_fingerprint, title_index, outcome_name,
+                    library_relative, episode_id, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    fingerprint,
+                    title_index,
+                    f"Show - {episode_id} - Episode {title_index + 1}.mkv",
+                    historical,
+                    episode_id,
+                    "2026-08-10T00:00:00+00:00",
+                ),
+            )
+            if title_index in present_indexes:
+                (
+                    season_dir
+                    / f"Show - {episode_id} - Episode {title_index + 1} - 1080p.mkv"
+                ).write_bytes(b"organized")
+
+    response = rip.prepare_drive_pipeline(
+        rip.PrepareDrivePipelineRequest(
+            drive_index=0,
+            content_hint="tv",
+            library_policy="missing-only",
+            confirm_read=True,
+        ),
+        "prepare-library-aware",
+        watcher,
+        public,
+        private,
+        pipeline,
+        lambda _exe, source, **_kwargs: _result(source, inventory=True),
+    )
+
+    preview = response["preview"]
+    assert {item["title_index"] for item in preview["jobs"]} == expected_jobs
+    assert {item["title_index"] for item in preview["held_titles"]} == present_indexes
+    assert preview["collision_count"] == expected_collisions
+    assert preview["requires_review"] is bool(expected_collisions)
+    if expected_collisions:
+        assert {item["prior_library_status"] for item in preview["jobs"]} == {"present"}
+        assert {item["collision_status"] for item in preview["jobs"]} == {
+            "library-exists"
+        }
+    binding = private.get(response["job_id"])
+    assert set(binding.media_contexts["disc-01"].selected_title_indexes or ()) == (
+        expected_jobs
+    )
+
+
+def test_retry_preparation_replaces_same_drive_awaiting_review(monkeypatch, tmp_path):
+    executable = tmp_path / "makemkvcon64.exe"
+    executable.write_bytes(b"synthetic")
+    output_root = tmp_path / "rips"
+    output_root.mkdir()
+    cache_dir = tmp_path / "cache"
+    watcher = DriveWatcher(lambda _exe, source, **_kwargs: _result(source))
+    watcher.refresh(executable)
+    monkeypatch.setattr(
+        rip,
+        "get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                makemkv_path=executable,
+                rip_output_root=output_root,
+                cache_dir=cache_dir,
+            )
+        ),
+    )
+    public = OrchestrationStore(tmp_path / "public.sqlite3")
+    private = PrivateBindingStore(tmp_path / "private.sqlite3")
+    pipeline = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+    inventory_runner = lambda _exe, source, **_kwargs: _result(  # noqa: E731
+        source, inventory=True
+    )
+    first = rip.prepare_drive_pipeline(
+        rip.PrepareDrivePipelineRequest(drive_index=0, confirm_read=True),
+        "prepare-same-drive-first",
+        watcher,
+        public,
+        private,
+        pipeline,
+        inventory_runner,
+    )
+
+    second = rip.prepare_drive_pipeline(
+        rip.PrepareDrivePipelineRequest(drive_index=0, confirm_read=True),
+        "prepare-same-drive-second",
+        watcher,
+        public,
+        private,
+        pipeline,
+        inventory_runner,
+    )
+
+    assert second["job_id"] != first["job_id"]
+    assert watcher.snapshot().drives[0].current_job_id == second["job_id"]
 
 
 def test_bonus_drive_preparation_attaches_reviewed_catalogue(monkeypatch, tmp_path):
@@ -475,3 +820,163 @@ def test_faerie_drive_preparation_requires_fresh_cross_season_analysis(
     assert context.series_name == "FAERIE TALE THEATRE"
     assert context.season is None
     assert context.episode_assignments == ()
+
+
+def test_drive_preparation_uses_thediscdb_episode_assignments_when_enabled(
+    monkeypatch, tmp_path
+):
+    executable = tmp_path / "makemkvcon64.exe"
+    executable.write_bytes(b"synthetic")
+    output_root = tmp_path / "rips"
+    output_root.mkdir()
+    cache_dir = tmp_path / "cache"
+    watcher = DriveWatcher(lambda _exe, source, **_kwargs: _result(source))
+    watcher.refresh(executable)
+    monkeypatch.setattr(
+        rip,
+        "get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                makemkv_path=executable,
+                rip_output_root=output_root,
+                cache_dir=cache_dir,
+                thediscdb_lookup_enabled=True,
+            )
+        ),
+    )
+    calls = []
+
+    def lookup(root, inventory, *, timeout_seconds):
+        calls.append((root, len(inventory.titles), timeout_seconds))
+        return TheDiscDbResolution(
+            status="matched",
+            media_title="Example Series",
+            media_type="Series",
+            tmdb_id=123,
+            episode_assignments=(
+                {
+                    "title_index": 0,
+                    "season": 2,
+                    "episode": 3,
+                    "title": "Database Episode",
+                    "identification_source": "thediscdb",
+                },
+            ),
+            matched_title_indexes=(0,),
+            unmatched_title_indexes=(1, 2),
+        )
+
+    monkeypatch.setattr(rip, "lookup_disc_metadata", lookup)
+    private = PrivateBindingStore(tmp_path / "private.sqlite3")
+
+    response = rip.prepare_drive_pipeline(
+        rip.PrepareDrivePipelineRequest(drive_index=0, confirm_read=True),
+        "prepare-thediscdb-test-0001",
+        watcher,
+        OrchestrationStore(tmp_path / "public.sqlite3"),
+        private,
+        PipelineQueueStore(tmp_path / "pipeline.sqlite3"),
+        lambda _exe, source, **_kwargs: _result(source, inventory=True),
+    )
+
+    assert len(calls) == 1
+    context = private.get(response["job_id"]).media_contexts["disc-01"]
+    assert context.series_name == "Example Series"
+    assert context.season == 2
+    assert context.tmdb_id == 123
+    assert context.content_hint == "tv"
+    assert context.disc_metadata_source == "thediscdb"
+    assert context.disc_metadata_status == "matched"
+    assert context.disc_metadata_matched_title_count == 1
+    assert context.episode_assignments[0]["title"] == "Database Episode"
+    preview_drive = response["preview"]["drives"][0]
+    assert preview_drive["metadata_source"] == "thediscdb"
+    assert preview_drive["metadata_status"] == "matched"
+    title = next(
+        item for item in response["preview"]["jobs"] if item["title_index"] == 0
+    )
+    assert title["display_name"] == "S02E03 - Database Episode"
+    assert title["identification_status"] == "disc-database-match"
+
+
+def test_drive_preparation_holds_automatic_work_for_catalogue_support_prompt(
+    monkeypatch, tmp_path
+):
+    executable = tmp_path / "makemkvcon64.exe"
+    executable.write_bytes(b"synthetic")
+    output_root = tmp_path / "rips"
+    output_root.mkdir()
+    cache_dir = tmp_path / "cache"
+    watcher = DriveWatcher(lambda _exe, source, **_kwargs: _result(source))
+    watcher.refresh(executable)
+    monkeypatch.setattr(
+        rip,
+        "get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                makemkv_path=executable,
+                rip_output_root=output_root,
+                cache_dir=cache_dir,
+                ripweaver_catalogue_enabled=True,
+                ripweaver_catalogue_url="https://api.ripweaver.com",
+                thediscdb_lookup_enabled=True,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        rip,
+        "read_disc_filesystem_identity",
+        lambda _root: SimpleNamespace(content_hash="A" * 32),
+    )
+    monkeypatch.setattr(
+        rip,
+        "load_environment_settings",
+        lambda: SimpleNamespace(ripweaver_catalogue_token="rwc_synthetic"),
+    )
+
+    class Client:
+        def __init__(self, *, base_url):
+            assert base_url == "https://api.ripweaver.com"
+
+        def lookup(self, *_args, **_kwargs):
+            raise RipWeaverCatalogueSupportRequiredError(
+                usage=CatalogueUsage(10, 10, 0, 0, 0, 0),
+                policy=SupportPolicy(
+                    policy_version="2026-08-10",
+                    terms_version="2026-08-10",
+                    minimum_amount_cents=1000,
+                    minimum_rate_cents=1,
+                    maximum_rate_cents=100,
+                    default_rate_cents=10,
+                    payments_enabled=False,
+                    support_message="Support or continue manually.",
+                    availability_disclosure="Best effort.",
+                    refund_disclosure="Generally final.",
+                ),
+            )
+
+    monkeypatch.setattr(rip, "RipWeaverCatalogueClient", Client)
+    direct_fallback_called = False
+
+    def direct_fallback(*_args, **_kwargs):
+        nonlocal direct_fallback_called
+        direct_fallback_called = True
+        return TheDiscDbResolution(status="matched")
+
+    monkeypatch.setattr(rip, "lookup_disc_metadata", direct_fallback)
+    private = PrivateBindingStore(tmp_path / "private.sqlite3")
+    response = rip.prepare_drive_pipeline(
+        rip.PrepareDrivePipelineRequest(drive_index=0, confirm_read=True),
+        "prepare-catalogue-support-0001",
+        watcher,
+        OrchestrationStore(tmp_path / "public.sqlite3"),
+        private,
+        PipelineQueueStore(tmp_path / "pipeline.sqlite3"),
+        lambda _exe, source, **_kwargs: _result(source, inventory=True),
+    )
+
+    assert direct_fallback_called is False
+    context = private.get(response["job_id"]).media_contexts["disc-01"]
+    assert context.disc_metadata_source == "ripweaver-catalogue"
+    assert context.disc_metadata_status == "support-required"
+    assert response["preview"]["requires_review"] is True

@@ -120,7 +120,11 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
         item for item in features.values() if item["title"] not in assigned_titles
     ]
     evidence, dossier = collect_dossier_evidence(
-        tuple(zip(held, payloads, strict=True)), config, asr, contract_root
+        tuple(zip(held, payloads, strict=True)),
+        config,
+        asr,
+        contract_root,
+        True,
     )
     media_ids = tuple(item.media_id for item in held)
     first_context = payloads[0]["media_context"]
@@ -201,7 +205,9 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
                 continue
             feature_id = f"provisional-title-{title_index:03d}"
             feature_title = result.suggested_title
-            feature_summary = (result.summary or " ".join(result.evidence)).strip()[:320]
+            feature_summary = (result.summary or " ".join(result.evidence)).strip()[
+                :320
+            ]
             feature_folder = "Extras" if tv_series_context else "other"
             media_kind = result.content_kind
             existing = next(

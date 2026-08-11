@@ -118,6 +118,25 @@ def test_preview_digest_is_stable_across_replanning(tmp_path):
     assert first.plan_sha256 == second.plan_sha256
 
 
+def test_support_required_catalogue_lookup_forces_review(tmp_path):
+    report = _report(tmp_path)
+    contexts = {
+        "disc-01": MediaContext(
+            disc_id="disc-01",
+            series_name="Test Show",
+            season=1,
+            disc_metadata_source="ripweaver-catalogue",
+            disc_metadata_status="support-required",
+        )
+    }
+
+    preview = build_rip_preview([report], contexts)
+
+    assert preview.requires_review is True
+    assert preview.drives[0].metadata_source == "ripweaver-catalogue"
+    assert preview.drives[0].metadata_status == "support-required"
+
+
 def test_default_only_legacy_context_digest_remains_compatible(tmp_path):
     report = _report(tmp_path)
     manifest = build_rip_manifest([report], _contexts())

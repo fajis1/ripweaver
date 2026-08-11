@@ -105,6 +105,18 @@ class MakeMKVTitle:
         return self.attributes.get(8)
 
     @property
+    def source_file(self) -> str | None:
+        """Return MakeMKV's source playlist or stream filename (TINFO 16)."""
+
+        return self.attributes.get(16)
+
+    @property
+    def segment_map(self) -> str | None:
+        """Return MakeMKV's ordered Blu-ray segment map (TINFO 26)."""
+
+        return self.attributes.get(26)
+
+    @property
     def output_name(self) -> str | None:
         return (
             self.attributes.get(27)

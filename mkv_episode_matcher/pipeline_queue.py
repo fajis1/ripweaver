@@ -54,7 +54,90 @@ _MATCHING_PROVIDER_BRANCHES = {
     "tv-bonus",
     "gemini-synthesis",
 }
+_SILENT_VIDEO_CLASSIFICATIONS = {
+    "likely_warning_screen",
+    "likely_disc_menu",
+    "text_detected",
+    "no_text_detected",
+}
 _SAFE_DIAGNOSTIC_CODE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,95}")
+
+
+def _catalogue_history_metadata(
+    identified: dict[str, object],
+) -> tuple[str, str, str | None, str | None, int | None]:
+    order = identified.get("identification_order")
+    branches = (
+        tuple(value.casefold() for value in order if isinstance(value, str))
+        if isinstance(order, list)
+        else ()
+    )
+    if any("ripweaver-catalogue" in branch for branch in branches):
+        match_source = "server_assisted"
+    elif any("manual" in branch for branch in branches):
+        match_source = "manual_playback"
+    elif any("gemini" in branch for branch in branches):
+        match_source = "gemini"
+    elif any(
+        "thediscdb" in branch or "reviewed-release-catalogue" in branch
+        for branch in branches
+    ):
+        match_source = "deterministic"
+    else:
+        match_source = "local_evidence"
+
+    episode_id = identified.get("episode_id")
+    relative = identified.get("library_relative")
+    parts = (
+        Path(relative.replace("/", "\\")).parts
+        if isinstance(relative, str) and relative
+        else ()
+    )
+    series_name = parts[0] if len(parts) >= 3 else None
+    display_title = identified.get("display_title")
+    if not isinstance(display_title, str) or not display_title.strip():
+        display_title = Path(parts[-1]).stem if parts else None
+    movie_year = identified.get("movie_year")
+    movie_year = (
+        movie_year
+        if isinstance(movie_year, int) and not isinstance(movie_year, bool)
+        else None
+    )
+    classification = identified.get("classification")
+    if isinstance(episode_id, str) and re.fullmatch(
+        r"(?i)S\d{1,3}E\d{1,4}", episode_id
+    ):
+        classification = "episode"
+        if isinstance(display_title, str):
+            stem = re.sub(r"\s+-\s+\d{3,4}[pi]$", "", display_title)
+            marker = re.search(rf"(?i)\s+-\s+{re.escape(episode_id)}\s+-\s+(.+)$", stem)
+            if marker is not None:
+                display_title = marker.group(1)
+    elif classification not in {
+        "movie",
+        "extra",
+        "commentary",
+        "play_all",
+        "menu",
+        "warning",
+        "unknown",
+    }:
+        classification = (
+            "movie"
+            if any("descriptive-movie" in branch for branch in branches)
+            else "extra"
+        )
+    return (
+        str(classification),
+        match_source,
+        display_title.strip()[:300]
+        if isinstance(display_title, str) and display_title.strip()
+        else None,
+        series_name.strip()[:200]
+        if isinstance(series_name, str) and series_name.strip()
+        else None,
+        movie_year,
+    )
 
 
 @dataclass(frozen=True)
@@ -129,6 +212,9 @@ def enqueue_verified_rip_results(  # noqa: C901
     contract_root: Path,
     media_contexts: Mapping[str, MediaContext] | None = None,
     media_id_overrides: Mapping[str, str] | None = None,
+    identity_overrides: Mapping[str, tuple[str, int]] | None = None,
+    expected_title_indexes_by_disc: Mapping[str, tuple[int, ...]] | None = None,
+    repair_recovered_identity: bool = False,
 ) -> tuple[QueuedPipelineItem, ...]:
     """Convert exact verified rip results into private downstream contracts."""
 
@@ -160,6 +246,11 @@ def enqueue_verified_rip_results(  # noqa: C901
         expected_titles_by_disc.setdefault(disc_id, set()).add(
             int(basename_match.group(2))
         )
+    if expected_title_indexes_by_disc is not None:
+        expected_titles_by_disc = {
+            disc_id: set(title_indexes)
+            for disc_id, title_indexes in expected_title_indexes_by_disc.items()
+        }
 
     queued: list[QueuedPipelineItem] = []
     for job in jobs:
@@ -198,6 +289,7 @@ def enqueue_verified_rip_results(  # noqa: C901
                     context.special_feature_assignments
                 ),
                 "episode_assignments": list(context.episode_assignments),
+                "catalogue_help_assignments": list(context.catalogue_help_assignments),
                 "existing_output_policy": context.existing_output_policy,
             }
         basename_match = _RIP_BASENAME.fullmatch(job.output_basename or "")
@@ -217,7 +309,19 @@ def enqueue_verified_rip_results(  # noqa: C901
             "warning_count": result.warning_count,
             "media_context": context_payload,
         }
-        if basename_match is not None:
+        identity_override = (identity_overrides or {}).get(job.job_id)
+        if identity_override is not None:
+            payload["disc_fingerprint"], payload["title_index"] = identity_override
+            payload["disc_expected_title_indexes"] = sorted(
+                expected_titles_by_disc.get(
+                    disc_id,
+                    {
+                        index
+                        for _fingerprint, index in (identity_overrides or {}).values()
+                    },
+                )
+            )
+        elif basename_match is not None:
             payload["disc_fingerprint"] = basename_match.group(1)
             payload["title_index"] = int(basename_match.group(2))
             payload["disc_expected_title_indexes"] = sorted(
@@ -255,9 +359,13 @@ def enqueue_verified_rip_results(  # noqa: C901
                 raise PipelineQueueError(
                     "Verified rip contract could not be written"
                 ) from exc
-        queued.append(
-            store.enqueue_verified_rip(queue_media_id, build_artifact("rip", contract))
-        )
+        artifact = build_artifact("rip", contract)
+        try:
+            queued.append(store.enqueue_verified_rip(queue_media_id, artifact))
+        except PipelineQueueError:
+            if not repair_recovered_identity:
+                raise
+            queued.append(store.repair_recovered_rip_identity(queue_media_id, artifact))
     return tuple(queued)
 
 
@@ -328,6 +436,11 @@ class PipelineQueueStore:
                     outcome_name TEXT NOT NULL,
                     library_relative TEXT NOT NULL,
                     episode_id TEXT,
+                    classification TEXT,
+                    match_source TEXT,
+                    display_title TEXT,
+                    series_name TEXT,
+                    movie_year INTEGER,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (disc_fingerprint, title_index)
                 );
@@ -349,6 +462,19 @@ class PipelineQueueStore:
                     provider_branches TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS silent_video_reviews (
+                    media_id TEXT PRIMARY KEY,
+                    classification TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS disc_title_dispositions (
+                    disc_fingerprint TEXT NOT NULL,
+                    title_index INTEGER NOT NULL,
+                    disposition TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (disc_fingerprint, title_index)
+                );
                 """
             )
             matching_columns = {
@@ -368,6 +494,171 @@ class PipelineQueueStore:
                     connection.execute(
                         f"ALTER TABLE matching_performance ADD COLUMN {column} {declaration}"
                     )
+            history_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(disc_title_history)"
+                ).fetchall()
+            }
+            history_migrations = {
+                "classification": "TEXT",
+                "match_source": "TEXT",
+                "display_title": "TEXT",
+                "series_name": "TEXT",
+                "movie_year": "INTEGER",
+            }
+            for column, declaration in history_migrations.items():
+                if column not in history_columns:
+                    connection.execute(
+                        f"ALTER TABLE disc_title_history ADD COLUMN {column} {declaration}"
+                    )
+
+    def record_silent_video_review(self, media_id: str, classification: str) -> None:
+        """Persist one path- and OCR-text-free visual review classification."""
+
+        checked_id = self._check_media_id(media_id)
+        if classification not in _SILENT_VIDEO_CLASSIFICATIONS:
+            raise PipelineQueueError("Silent-video classification is invalid")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            item = connection.execute(
+                "SELECT stage, state FROM pipeline_items WHERE media_id = ?",
+                (checked_id,),
+            ).fetchone()
+            if item is None:
+                connection.rollback()
+                raise PipelineQueueError("Pipeline item was not found")
+            now = self._now()
+            connection.execute(
+                """
+                INSERT INTO silent_video_reviews (media_id, classification, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(media_id) DO UPDATE SET
+                    classification = excluded.classification,
+                    updated_at = excluded.updated_at
+                """,
+                (checked_id, classification, now),
+            )
+            self._append_event(
+                connection,
+                media_id=checked_id,
+                event_type="silent_video_reviewed",
+                stage=item["stage"],
+                state=item["state"],
+                details={"classification": classification},
+            )
+            connection.commit()
+
+    def silent_video_review_flags(self) -> dict[str, str]:
+        """Return durable path-free visual classifications by media ID."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT media_id, classification FROM silent_video_reviews"
+            ).fetchall()
+        return {row["media_id"]: row["classification"] for row in rows}
+
+    def title_dispositions(self, disc_fingerprint: str) -> dict[int, dict[str, str]]:
+        """Return explicit future-rip decisions for one exact disc identity."""
+
+        if re.fullmatch(r"[0-9a-f]{16}", disc_fingerprint) is None:
+            raise PipelineQueueError("Disc fingerprint is invalid")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT title_index, disposition, reason FROM disc_title_dispositions "
+                "WHERE disc_fingerprint = ? ORDER BY title_index",
+                (disc_fingerprint,),
+            ).fetchall()
+        return {
+            int(row["title_index"]): {
+                "disposition": row["disposition"],
+                "reason": row["reason"],
+            }
+            for row in rows
+        }
+
+    def list_title_dispositions(self) -> tuple[dict[str, str | int], ...]:
+        """Return every path-free future-rip decision for local presentation."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT disc_fingerprint, title_index, disposition, reason "
+                "FROM disc_title_dispositions "
+                "ORDER BY disc_fingerprint, title_index"
+            ).fetchall()
+        return tuple(
+            {
+                "disc_fingerprint": row["disc_fingerprint"],
+                "title_index": int(row["title_index"]),
+                "disposition": row["disposition"],
+                "reason": row["reason"],
+            }
+            for row in rows
+        )
+
+    def remember_title_skip(
+        self,
+        disc_fingerprint: str,
+        title_index: int,
+        *,
+        reason: str,
+    ) -> dict[str, str | int]:
+        """Exclude one exact disc title from future plans without changing media."""
+
+        if re.fullmatch(r"[0-9a-f]{16}", disc_fingerprint) is None:
+            raise PipelineQueueError("Disc fingerprint is invalid")
+        if (
+            isinstance(title_index, bool)
+            or not isinstance(title_index, int)
+            or title_index < 0
+        ):
+            raise PipelineQueueError("Disc title index is invalid")
+        if reason not in {
+            "likely_warning_screen",
+            "likely_disc_menu",
+            "repeated_read_failure",
+        }:
+            raise PipelineQueueError("Future-rip skip reason is invalid")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO disc_title_dispositions (
+                    disc_fingerprint, title_index, disposition, reason, updated_at
+                ) VALUES (?, ?, 'skip', ?, ?)
+                ON CONFLICT(disc_fingerprint, title_index) DO UPDATE SET
+                    disposition = excluded.disposition,
+                    reason = excluded.reason,
+                    updated_at = excluded.updated_at
+                """,
+                (disc_fingerprint, title_index, reason, self._now()),
+            )
+        return {
+            "disc_fingerprint": disc_fingerprint,
+            "title_index": title_index,
+            "disposition": "skip",
+            "reason": reason,
+        }
+
+    def restore_title_disposition(
+        self, disc_fingerprint: str, title_index: int
+    ) -> bool:
+        """Restore one exact title to future rip planning."""
+
+        if re.fullmatch(r"[0-9a-f]{16}", disc_fingerprint) is None:
+            raise PipelineQueueError("Disc fingerprint is invalid")
+        if (
+            isinstance(title_index, bool)
+            or not isinstance(title_index, int)
+            or title_index < 0
+        ):
+            raise PipelineQueueError("Disc title index is invalid")
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM disc_title_dispositions "
+                "WHERE disc_fingerprint = ? AND title_index = ?",
+                (disc_fingerprint, title_index),
+            )
+        return cursor.rowcount == 1
 
     def record_matching_performance(
         self,
@@ -491,7 +782,9 @@ class PipelineQueueStore:
             for row in rows
         )
 
-    def title_history(self, disc_fingerprint: str) -> dict[int, dict[str, str | None]]:
+    def title_history(
+        self, disc_fingerprint: str
+    ) -> dict[int, dict[str, str | int | None]]:
         if re.fullmatch(r"[0-9a-f]{16}", disc_fingerprint) is None:
             raise PipelineQueueError("Disc fingerprint is invalid")
         with self._connect() as connection:
@@ -504,6 +797,32 @@ class PipelineQueueStore:
                 "outcome_name": row["outcome_name"],
                 "library_relative": row["library_relative"],
                 "episode_id": row["episode_id"],
+            }
+            for row in rows
+        }
+
+    def catalogue_title_history(
+        self, disc_fingerprint: str
+    ) -> dict[int, dict[str, str | int | None]]:
+        """Return the private durable fields needed for a path-free contribution."""
+
+        if re.fullmatch(r"[0-9a-f]{16}", disc_fingerprint) is None:
+            raise PipelineQueueError("Disc fingerprint is invalid")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM disc_title_history WHERE disc_fingerprint = ?",
+                (disc_fingerprint,),
+            ).fetchall()
+        return {
+            int(row["title_index"]): {
+                "outcome_name": row["outcome_name"],
+                "library_relative": row["library_relative"],
+                "episode_id": row["episode_id"],
+                "classification": row["classification"],
+                "match_source": row["match_source"],
+                "display_title": row["display_title"],
+                "series_name": row["series_name"],
+                "movie_year": row["movie_year"],
             }
             for row in rows
         }
@@ -639,6 +958,10 @@ class PipelineQueueStore:
                 )
             connection.execute(
                 "DELETE FROM disc_title_history WHERE disc_fingerprint = ?",
+                (disc_fingerprint,),
+            )
+            connection.execute(
+                "DELETE FROM disc_title_dispositions WHERE disc_fingerprint = ?",
                 (disc_fingerprint,),
             )
             connection.commit()
@@ -856,6 +1179,80 @@ class PipelineQueueStore:
             connection.commit()
         return self.get(checked_id)
 
+    def repair_recovered_rip_identity(
+        self, media_id: str, artifact: PipelineArtifact
+    ) -> QueuedPipelineItem:
+        """Requeue one held recovered MKV after adding its missing disc identity."""
+
+        checked_id = self._check_media_id(media_id)
+        _validate_artifact(artifact, "rip")
+        try:
+            corrected = json.loads(artifact.contract_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise PipelineQueueError("Corrected recovery contract is invalid") from exc
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM pipeline_items WHERE media_id = ?", (checked_id,)
+            ).fetchone()
+            if (
+                row is None
+                or row["state"] != "review_required"
+                or row["stage"] != "identify"
+                or row["review_code"]
+                not in {"missing_season_context", "unmatched_disc_analysis_required"}
+            ):
+                connection.rollback()
+                raise PipelineQueueError("Recovered identity repair is not applicable")
+            try:
+                original = json.loads(
+                    Path(row["rip_artifact_path"]).read_text(encoding="utf-8")
+                )
+            except (OSError, json.JSONDecodeError) as exc:
+                connection.rollback()
+                raise PipelineQueueError(
+                    "Original recovery contract is invalid"
+                ) from exc
+            if (
+                corrected.get("media_id") != checked_id
+                or corrected.get("source_path") != original.get("source_path")
+                or corrected.get("source_size_bytes")
+                != original.get("source_size_bytes")
+                or not isinstance(corrected.get("disc_fingerprint"), str)
+                or not isinstance(corrected.get("title_index"), int)
+            ):
+                connection.rollback()
+                raise PipelineQueueError("Recovered identity repair changed media")
+            connection.execute(
+                """
+                UPDATE pipeline_items SET state = 'queued', stage = 'identify',
+                    artifact_path = ?, artifact_sha256 = ?, artifact_count = ?,
+                    rip_artifact_path = ?, rip_artifact_sha256 = ?,
+                    rip_artifact_count = ?, updated_at = ?, error_type = NULL,
+                    review_code = NULL WHERE media_id = ?
+                """,
+                (
+                    str(artifact.contract_path),
+                    artifact.contract_sha256,
+                    artifact.item_count,
+                    str(artifact.contract_path),
+                    artifact.contract_sha256,
+                    artifact.item_count,
+                    self._now(),
+                    checked_id,
+                ),
+            )
+            self._append_event(
+                connection,
+                media_id=checked_id,
+                event_type="recovered_identity_repaired",
+                stage="identify",
+                state="queued",
+                details={"media_unchanged": True},
+            )
+            connection.commit()
+        return self.get(checked_id)
+
     def get(self, media_id: str) -> QueuedPipelineItem:
         checked_id = self._check_media_id(media_id)
         with self._connect() as connection:
@@ -944,6 +1341,36 @@ class PipelineQueueStore:
                 ).fetchall()
             ]
         return tuple(self.get(media_id) for media_id in ids)
+
+    def expected_title_indexes_for_disc(self, disc_fingerprint: str) -> tuple[int, ...]:
+        """Return path-free whole-disc title expectations from durable rip contracts."""
+
+        if re.fullmatch(r"[0-9a-f]{16}", disc_fingerprint) is None:
+            raise PipelineQueueError("Disc fingerprint is invalid")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT rip_artifact_path FROM pipeline_items "
+                "WHERE rip_artifact_path IS NOT NULL"
+            ).fetchall()
+        expected: set[int] = set()
+        for row in rows:
+            try:
+                payload = json.loads(
+                    Path(row["rip_artifact_path"]).read_text(encoding="utf-8")
+                )
+            except (OSError, json.JSONDecodeError):
+                continue
+            if payload.get("disc_fingerprint") != disc_fingerprint:
+                continue
+            values = payload.get("disc_expected_title_indexes", [])
+            if not isinstance(values, list):
+                continue
+            expected.update(
+                value
+                for value in values
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            )
+        return tuple(sorted(expected))
 
     def list_events(self, media_id: str | None = None) -> tuple[QueueEvent, ...]:
         parameters: tuple[str, ...] = ()
@@ -1113,7 +1540,21 @@ class PipelineQueueStore:
         if expected_stage not in DOWNSTREAM_STAGES:
             raise PipelineQueueError("Pipeline stage is invalid")
         _validate_artifact(artifact, expected_stage)
-        history: tuple[str, int, str, str, str | None] | None = None
+        history: (
+            tuple[
+                str,
+                int,
+                str,
+                str,
+                str | None,
+                str,
+                str,
+                str | None,
+                str | None,
+                int | None,
+            ]
+            | None
+        ) = None
         if expected_stage == "identify":
             try:
                 identified = json.loads(
@@ -1140,6 +1581,7 @@ class PipelineQueueStore:
                         identified.get("episode_id")
                         if isinstance(identified.get("episode_id"), str)
                         else None,
+                        *_catalogue_history_metadata(identified),
                     )
             except (OSError, json.JSONDecodeError):
                 history = None
@@ -1206,12 +1648,18 @@ class PipelineQueueStore:
                     """
                     INSERT INTO disc_title_history (
                         disc_fingerprint, title_index, outcome_name,
-                        library_relative, episode_id, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        library_relative, episode_id, classification, match_source,
+                        display_title, series_name, movie_year, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(disc_fingerprint, title_index) DO UPDATE SET
                         outcome_name = excluded.outcome_name,
                         library_relative = excluded.library_relative,
                         episode_id = excluded.episode_id,
+                        classification = excluded.classification,
+                        match_source = excluded.match_source,
+                        display_title = excluded.display_title,
+                        series_name = excluded.series_name,
+                        movie_year = excluded.movie_year,
                         updated_at = excluded.updated_at
                     """,
                     (*history, self._now()),
@@ -1407,7 +1855,11 @@ class PipelineQueueStore:
         return tuple(self.get(media_id) for media_id in checked)
 
     def delete_queued_item_media(
-        self, media_id: str, delete_media: Callable[[QueuedPipelineItem], None]
+        self,
+        media_id: str,
+        delete_media: Callable[[QueuedPipelineItem], None],
+        *,
+        remember_future_skip: bool = False,
     ) -> QueuedPipelineItem:
         """Atomically exclude one inactive item while its exact source is deleted."""
 
@@ -1441,9 +1893,59 @@ class PipelineQueueStore:
                 raise PipelineQueueError(
                     "Staged media cannot be deleted while evidence analysis is running"
                 )
+            future_skip: tuple[str, int, str] | None = None
+            if remember_future_skip:
+                visual = connection.execute(
+                    "SELECT classification FROM silent_video_reviews WHERE media_id = ?",
+                    (checked,),
+                ).fetchone()
+                if visual is None or visual["classification"] not in {
+                    "likely_warning_screen",
+                    "likely_disc_menu",
+                }:
+                    connection.rollback()
+                    raise PipelineQueueError(
+                        "A likely-removable OCR decision is required for a future rip skip"
+                    )
+                try:
+                    rip_payload = json.loads(
+                        Path(row["rip_artifact_path"]).read_text(encoding="utf-8")
+                    )
+                except (OSError, json.JSONDecodeError) as exc:
+                    connection.rollback()
+                    raise PipelineQueueError(
+                        "Verified rip identity is unavailable for a future rip skip"
+                    ) from exc
+                fingerprint = rip_payload.get("disc_fingerprint")
+                title_index = rip_payload.get("title_index")
+                if (
+                    not isinstance(fingerprint, str)
+                    or re.fullmatch(r"[0-9a-f]{16}", fingerprint) is None
+                    or not isinstance(title_index, int)
+                    or isinstance(title_index, bool)
+                    or title_index < 0
+                ):
+                    connection.rollback()
+                    raise PipelineQueueError(
+                        "Verified rip identity is unavailable for a future rip skip"
+                    )
+                future_skip = (fingerprint, title_index, visual["classification"])
             item = self._decode(row)
             delete_media(item)
             now = self._now()
+            if future_skip is not None:
+                connection.execute(
+                    """
+                    INSERT INTO disc_title_dispositions (
+                        disc_fingerprint, title_index, disposition, reason, updated_at
+                    ) VALUES (?, ?, 'skip', ?, ?)
+                    ON CONFLICT(disc_fingerprint, title_index) DO UPDATE SET
+                        disposition = excluded.disposition,
+                        reason = excluded.reason,
+                        updated_at = excluded.updated_at
+                    """,
+                    (*future_skip, now),
+                )
             connection.execute(
                 """
                 UPDATE pipeline_items SET state = 'discarded', updated_at = ?,
@@ -1451,13 +1953,22 @@ class PipelineQueueStore:
                 """,
                 (now, checked),
             )
+            details: dict[str, object] = {
+                "media_changed": True,
+                "deleted": "staged_source",
+            }
+            if future_skip is not None:
+                details.update(
+                    future_rip_disposition="skip",
+                    reason=future_skip[2],
+                )
             self._append_event(
                 connection,
                 media_id=checked,
                 event_type="pipeline_staged_media_deleted",
                 stage=row["stage"],
                 state="discarded",
-                details={"media_changed": True, "deleted": "staged_source"},
+                details=details,
             )
             connection.commit()
         return self.get(checked)

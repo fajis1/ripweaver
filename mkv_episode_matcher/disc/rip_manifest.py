@@ -50,6 +50,10 @@ class MediaContext:
     special_feature_library_year: int | None = None
     special_feature_assignments: tuple[dict[str, object], ...] = ()
     episode_assignments: tuple[dict[str, object], ...] = ()
+    catalogue_help_assignments: tuple[dict[str, object], ...] = ()
+    disc_metadata_source: str | None = None
+    disc_metadata_status: str | None = None
+    disc_metadata_matched_title_count: int = 0
     existing_output_policy: str = "preserve"
 
 
@@ -74,6 +78,12 @@ def media_context_from_dict(value: dict[str, object]) -> MediaContext:
     ):
         raise RipError("Media context episode assignments are invalid")
     normalized["episode_assignments"] = tuple(episode_assignments)
+    help_assignments = normalized.get("catalogue_help_assignments", ())
+    if not isinstance(help_assignments, list | tuple) or not all(
+        isinstance(item, dict) for item in help_assignments
+    ):
+        raise RipError("Media context catalogue-help assignments are invalid")
+    normalized["catalogue_help_assignments"] = tuple(help_assignments)
     if normalized.get("existing_output_policy", "preserve") not in {
         "preserve",
         "missing-only",
@@ -167,6 +177,12 @@ def _inventory_fingerprint(payload: dict[str, Any]) -> str:
     }
     serialized = json.dumps(identity, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
+
+
+def inventory_fingerprint_from_report(report_path: Path) -> str:
+    """Return the stable path-free identity for one validated saved inventory."""
+
+    return _inventory_fingerprint(_load_inventory(report_path))
 
 
 def _canonical_sha256(value: Any) -> str:

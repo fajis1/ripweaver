@@ -209,7 +209,11 @@ class IdentifyStageAdapter:
         )
         if payload.get("existing_output_policy") == "replace-after-verification":
             return artifact
-        root = self.tv_library_root if _uses_tv_library(payload) else self.movie_library_root
+        root = (
+            self.tv_library_root
+            if _uses_tv_library(payload)
+            else self.movie_library_root
+        )
         if root is None or not root.is_dir():
             return artifact
         relative = PurePosixPath(str(payload.get("library_relative", "")))
@@ -280,13 +284,31 @@ class IdentifyStageAdapter:
                     "episode_id": episode_id,
                     "library_kind": "tv",
                     "library_relative": relative.as_posix(),
-                    "identification_order": ["reviewed-release-catalogue"],
+                    "identification_order": [
+                        "manual-playback-review"
+                        if str(context.get("episode_assignment_source", "")).startswith(
+                            "manual"
+                        )
+                        else "ripweaver-catalogue-consensus"
+                        if context.get("disc_metadata_source") == "ripweaver-catalogue"
+                        else "thediscdb-content-hash-and-playlist"
+                        if context.get("disc_metadata_source") == "thediscdb"
+                        and context.get("disc_metadata_status") == "matched"
+                        else "reviewed-release-catalogue"
+                    ],
                     "handbrake_profile_id": context.get("handbrake_profile_id"),
                     "existing_output_policy": context.get(
                         "existing_output_policy", "preserve"
                     ),
                 },
             )
+        help_assignments = context.get("catalogue_help_assignments")
+        title_index = payload.get("title_index")
+        has_catalogue_help = isinstance(help_assignments, list) and any(
+            isinstance(assignment, dict)
+            and assignment.get("title_index") == title_index
+            for assignment in help_assignments
+        )
         assignments = context.get("special_feature_assignments")
         if isinstance(assignments, list) and assignments:
             title_index = payload.get("title_index")
@@ -341,6 +363,8 @@ class IdentifyStageAdapter:
                 )
                 relative = Path(release_name) / folder / f"{feature_title}.mkv"
                 identification = ["extras"]
+            if assignment.get("user_reviewed_name") is True:
+                identification = ["manual-playback-review"]
             return self._identified_outcome(
                 item,
                 {
@@ -377,6 +401,8 @@ class IdentifyStageAdapter:
             )
         season = context.get("season")
         if not isinstance(season, int) or isinstance(season, bool):
+            if has_catalogue_help:
+                raise PipelineReviewRequiredError("catalogue_candidate_help_available")
             raise PipelineReviewRequiredError("unmatched_disc_analysis_required")
         matches, failures = self.engine.process_path(
             path=source.parent,
@@ -389,6 +415,8 @@ class IdentifyStageAdapter:
             files_override=[source],
         )
         if len(matches) != 1 or failures:
+            if has_catalogue_help:
+                raise PipelineReviewRequiredError("catalogue_candidate_help_available")
             raise PipelineReviewRequiredError("episode_match_review")
         match = matches[0]
         episode = match.episode_info
@@ -459,7 +487,9 @@ class TranscodeStageAdapter:
         if payload.get("existing_output_policy") == "replace-after-verification":
             return
         library_root = (
-            self.tv_library_root if _uses_tv_library(payload) else self.movie_library_root
+            self.tv_library_root
+            if _uses_tv_library(payload)
+            else self.movie_library_root
         )
         if library_root is None:
             return
@@ -572,9 +602,7 @@ class TranscodeStageAdapter:
         destination.parent.mkdir(parents=True, exist_ok=True)
 
         profile_id, selected_profile = self._select_profile(payload, source)
-        result = self._recover_or_encode(
-            item, source, destination, selected_profile
-        )
+        result = self._recover_or_encode(item, source, destination, selected_profile)
         if (
             not destination.is_file()
             or destination.stat().st_size != result.output_bytes

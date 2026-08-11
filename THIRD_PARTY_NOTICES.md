@@ -41,6 +41,20 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## TheDiscDB
+
+RipWeaver's optional disc-metadata integration is independently implemented
+against TheDiscDB's public data and GraphQL contracts:
+
+- Data: <https://github.com/TheDiscDb/data>, MIT License,
+  Copyright (c) 2021 Luke Foust.
+- Web/API and disc-hash reference implementation:
+  <https://github.com/TheDiscDb/web>, Apache License 2.0.
+
+TheDiscDB data, software, and service are not relicensed by RipWeaver, and the
+project does not endorse RipWeaver. RipWeaver does not incorporate code from
+MKV-Auto's AGPL-3.0 release.
+
 ## Bundled dependencies
 
 The executable build includes Python and JavaScript dependencies under their

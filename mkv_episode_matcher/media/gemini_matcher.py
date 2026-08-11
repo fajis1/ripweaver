@@ -445,7 +445,8 @@ def build_descriptive_gemini_request(
         "task": (
             "Classify each optical-disc title as movie, tv_episode, extra, menu, "
             "or unknown. Produce a short filesystem-safe descriptive title using "
-            "only the supplied release hint, runtime, dialogue evidence, and safe "
+            "only the supplied release hint, runtime, dialogue evidence, bounded "
+            "on-screen OCR text, and safe "
             "prior-attempt summaries. Use those summaries to arbitrate between "
             "content families instead of repeating a failed classification. "
             "Feature-length titles must not be labeled as extras merely because "
@@ -661,9 +662,7 @@ def _parse_and_validate_response(
                     "Gemini returned an episode outside the catalogue"
                 )
             if item.episode_id in assigned:
-                raise GeminiResponseError(
-                    "Gemini assigned one episode more than once"
-                )
+                raise GeminiResponseError("Gemini assigned one episode more than once")
             assigned.add(item.episode_id)
         results.append(
             GeminiMatchResult(

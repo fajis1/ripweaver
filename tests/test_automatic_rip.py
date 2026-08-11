@@ -78,6 +78,28 @@ def test_disabled_automation_tracks_loaded_disc_without_launching(monkeypatch):
     assert launched == []
 
 
+def test_unmapped_or_ignored_devices_never_launch_automatic_work(monkeypatch):
+    launched = []
+    coordinator = AutomaticRipCoordinator(launched.append)
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.automatic_rip.threading.Thread.start",
+        lambda thread: thread.run(),
+    )
+    snapshot = DriveStatusSnapshot(
+        drives=(
+            PublicDriveStatus(0, True, True, "disc", mapping_status="unmapped"),
+            PublicDriveStatus(1, True, True, "disc", mapping_status="ignored"),
+            PublicDriveStatus(2, True, True, "disc", mapping_status="trusted"),
+        ),
+        refreshed_at="2026-08-10T00:00:00+00:00",
+        status="ready",
+    )
+
+    coordinator.observe(snapshot, enabled=True)
+
+    assert launched == [2]
+
+
 def test_changed_disc_label_launches_without_observed_empty_tray(monkeypatch):
     launched = []
     coordinator = AutomaticRipCoordinator(launched.append)

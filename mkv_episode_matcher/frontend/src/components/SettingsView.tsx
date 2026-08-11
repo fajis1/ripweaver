@@ -21,6 +21,7 @@ interface Config {
     handbrake_path?: string;
     ffmpeg_path?: string;
     ffprobe_path?: string;
+    tesseract_path?: string;
     default_handbrake_profile: string;
     default_handbrake_profile_480p?: string;
     default_handbrake_profile_720p?: string;
@@ -31,6 +32,10 @@ interface Config {
     automatic_eject_after_rip: boolean;
     automatic_gemini_ambiguity_fallback: boolean;
     automatic_organization_enabled: boolean;
+    thediscdb_lookup_enabled: boolean;
+    ripweaver_catalogue_enabled: boolean;
+    ripweaver_catalogue_contributions_enabled: boolean;
+    ripweaver_catalogue_url: string;
     credential_status?: Record<string, {
         configured: boolean;
         last4?: string | null;
@@ -45,6 +50,7 @@ const CREDENTIAL_LABELS: Record<string, string> = {
     'opensubtitles-password': 'OpenSubtitles password',
     'gemini-primary': 'Gemini primary API key',
     'gemini-paid': 'Gemini paid/fallback API key',
+    'ripweaver-catalogue': 'RipWeaver Catalogue installation',
 };
 
 interface StoredProfile {
@@ -464,6 +470,7 @@ const SettingsView: React.FC = () => {
                             ['handbrake_path', 'HandBrakeCLI executable'],
                             ['ffmpeg_path', 'FFmpeg executable'],
                             ['ffprobe_path', 'FFprobe executable'],
+                            ['tesseract_path', 'Tesseract OCR executable'],
                         ].map(([field, label]) => (
                             <label key={field} className="space-y-2">
                                 <span className="text-sm font-medium text-muted">{label}</span>
@@ -486,12 +493,31 @@ const SettingsView: React.FC = () => {
                     </label>
                     <label className="block rounded-xl border border-cyan-500/30 bg-cyan-500/10 p-4 text-sm text-cyan-100">
                         <input type="checkbox" className="mr-3" checked={config.automatic_eject_after_rip} onChange={(event) => handleChange('automatic_eject_after_rip', event.target.checked)} />
-                        Automatically eject a disc only after every reviewed title for its drive has ripped and verified successfully. Failure, timeout, pause, stop, or other active rip work prevents ejection.
+                        Automatically eject a disc after every reviewed title has ripped and verified, or after a one-minute cancellable countdown when every known destination already exists in Jellyfin. Failure, timeout, pause, stop, unfinished rerip work, or other active rip work prevents ejection.
                     </label>
                     <label className="block rounded-xl border border-indigo-500/30 bg-indigo-500/10 p-4 text-sm text-indigo-100">
                         <input type="checkbox" className="mr-3" checked={config.automatic_gemini_ambiguity_fallback} onChange={(event) => handleChange('automatic_gemini_ambiguity_fallback', event.target.checked)} />
                         Use Gemini as the final fallback for unresolved bonus features after local catalogue, subtitle, OCR, and transcription evidence is exhausted. Each external use remains visible; no MKV, local path, credential, or full transcript is sent.
                     </label>
+                    <label className="block rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-100">
+                        <input type="checkbox" className="mr-3" checked={config.thediscdb_lookup_enabled} onChange={(event) => handleChange('thediscdb_lookup_enabled', event.target.checked)} />
+                        Look up inserted discs in TheDiscDB. RipWeaver reads only disc file names and sizes needed for the database identifier, sends only that identifier to TheDiscDB, and accepts episode names only when the returned source playlist and segment map agree with MakeMKV.
+                    </label>
+                    <div className="rounded-xl border border-violet-500/30 bg-violet-500/10 p-4 text-sm text-violet-100 space-y-3">
+                        <label className="block">
+                            <input type="checkbox" className="mr-3" checked={config.ripweaver_catalogue_enabled} onChange={(event) => handleChange('ripweaver_catalogue_enabled', event.target.checked)} />
+                            Use the community RipWeaver Catalogue for automatic disc identification. Only the compatibility disc identifier is sent; media, local paths, drive details, and Jellyfin information are never uploaded.
+                        </label>
+                        <label className="block rounded-lg border border-violet-300/20 bg-black/10 p-3">
+                            <input type="checkbox" className="mr-3" checked={config.ripweaver_catalogue_contributions_enabled} onChange={(event) => handleChange('ripweaver_catalogue_contributions_enabled', event.target.checked)} />
+                            Automatically contribute completed matched-disc layouts. This is one-time consent for future eligible discs; uploads contain only the disc identifier, playlist/segment structure, runtimes, sizes, match provenance, and canonical media names. No media, local paths, drive identity, Jellyfin location, transcript, or credential is uploaded.
+                        </label>
+                        <label className="block space-y-1">
+                            <span className="text-xs font-semibold">Catalogue server</span>
+                            <input type="url" value={config.ripweaver_catalogue_url} onChange={(event) => handleChange('ripweaver_catalogue_url', event.target.value)} className="w-full rounded-lg border border-violet-300/25 bg-[var(--bg-primary)] px-3 py-2 text-white" />
+                            <span className="block text-xs text-violet-100/70">The public service uses ten free automatic successful lookups per month, then earned or supported credits. A manual lookup remains available after the visible support prompt.</span>
+                        </label>
+                    </div>
                     <label className="block rounded-xl border border-blue-500/30 bg-blue-500/10 p-4 text-sm text-blue-100">
                         <input type="checkbox" className="mr-3" checked={config.automatic_organization_enabled} onChange={(event) => handleChange('automatic_organization_enabled', event.target.checked)} />
                         Automatically move collision-free, verified encodes from staging into the configured Jellyfin library. Existing destinations and same-episode conflicts always stop for review; overwrite and deletion are never automatic.

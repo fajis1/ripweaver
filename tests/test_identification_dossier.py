@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -92,6 +93,45 @@ def test_collect_reuses_cache_without_reinvoking_media_tools(tmp_path, monkeypat
     )
 
     assert evidence[0].transcript_excerpts == ("cached evidence",)
+
+
+def test_gemini_evidence_adds_bounded_on_screen_ocr_text(tmp_path, monkeypatch):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    payload = _payload(source)
+    item = SimpleNamespace(media_id="media-1")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    identity = source_identity(payload, source, "small")
+    IdentificationDossierStore(tmp_path / "identification-evidence").save_evidence(
+        identity, UnmatchedFileEvidence("media-1", 1200, ("cached dialogue",))
+    )
+    monkeypatch.setattr(
+        dossier_module, "resolve_ffmpeg_path", lambda _path: Path("ffmpeg")
+    )
+    monkeypatch.setattr(
+        dossier_module, "resolve_tesseract_path", lambda _path: Path("tesseract")
+    )
+    monkeypatch.setattr(
+        dossier_module,
+        "collect_silent_video_review",
+        lambda **_kwargs: SimpleNamespace(
+            ocr_excerpt="Songs of the Synthetic Family featuring the original voices"
+        ),
+    )
+
+    evidence, _dossier = collect_dossier_evidence(
+        ((item, payload),),
+        Config(asr_model_name="small"),
+        object(),
+        contracts,
+        True,
+    )
+
+    assert evidence[0].transcript_excerpts == (
+        "On-screen text (OCR): Songs of the Synthetic Family featuring the original voices",
+        "cached dialogue",
+    )
 
 
 def test_collect_reuses_exact_source_cache_after_media_id_changes(

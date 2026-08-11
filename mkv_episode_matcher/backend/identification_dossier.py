@@ -14,6 +14,10 @@ from uuid import uuid4
 from mkv_episode_matcher.core.models import Config
 from mkv_episode_matcher.media.ffprobe_runner import inspect_mkv, resolve_ffprobe_path
 from mkv_episode_matcher.media.gemini_matcher import UnmatchedFileEvidence
+from mkv_episode_matcher.media.silent_video_review import (
+    collect_silent_video_review,
+    resolve_tesseract_path,
+)
 from mkv_episode_matcher.media.transcript_batch import (
     FFmpegSampleExtractor,
     TranscriptBatchItem,
@@ -267,6 +271,7 @@ def collect_dossier_evidence(  # noqa: C901 - linear cache/probe/audio guards
     config: Config,
     asr,
     contract_root: Path,
+    include_visual_text: bool = False,
 ) -> tuple[tuple[UnmatchedFileEvidence, ...], IdentificationDossierStore]:
     """Reuse exact-source evidence and collect only cache misses.
 
@@ -346,4 +351,44 @@ def collect_dossier_evidence(  # noqa: C901 - linear cache/probe/audio guards
             )
             dossier.save_evidence(identities[item.media_id], evidence)
             cached[item.media_id] = evidence
-    return tuple(cached[media_id] for media_id in ordered_ids), dossier
+    ordered = tuple(cached[media_id] for media_id in ordered_ids)
+    if not include_visual_text:
+        return ordered, dossier
+
+    try:
+        ffmpeg = resolve_ffmpeg_path(config.ffmpeg_path)
+        tesseract = resolve_tesseract_path(config.tesseract_path)
+    except (OSError, ValueError):
+        return ordered, dossier
+    visual_root = (
+        contract_root.parent / "identification-evidence" / f"visual-{uuid4().hex}"
+    )
+    augmented: list[UnmatchedFileEvidence] = []
+    sources = {
+        item.media_id: Path(str(payload.get("source_path", "")))
+        for item, payload in items
+    }
+    for evidence in ordered:
+        excerpts = evidence.transcript_excerpts
+        try:
+            visual = collect_silent_video_review(
+                media_id=evidence.file_id,
+                media_path=sources[evidence.file_id],
+                duration_seconds=evidence.duration_seconds,
+                output_root=visual_root / evidence.file_id,
+                ffmpeg_path=ffmpeg,
+                tesseract_path=tesseract,
+            )
+            if visual.ocr_excerpt:
+                on_screen = f"On-screen text (OCR): {visual.ocr_excerpt}"[:600]
+                excerpts = (on_screen, *excerpts[:5])
+        except (OSError, ValueError, RuntimeError):
+            pass
+        augmented.append(
+            UnmatchedFileEvidence(
+                evidence.file_id,
+                evidence.duration_seconds,
+                excerpts,
+            )
+        )
+    return tuple(augmented), dossier

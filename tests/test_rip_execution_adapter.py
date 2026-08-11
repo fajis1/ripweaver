@@ -181,7 +181,7 @@ def test_adapter_hands_unaffected_drive_results_to_sink_before_failure(tmp_path)
     assert observed == [(bound, [completed])]
 
 
-def test_adapter_does_not_enqueue_partially_completed_disc(tmp_path):
+def test_adapter_hands_partially_completed_disc_results_to_sink(tmp_path):
     bound = _bound(tmp_path)
     first = bound.manifest.jobs[0]
     second = replace(
@@ -194,11 +194,12 @@ def test_adapter_does_not_enqueue_partially_completed_disc(tmp_path):
         manifest=replace(bound.manifest, jobs=(first, second)),
     )
     observed = []
+    completed = _result(first.job_id)
 
     def partially_failing_queue(*_args, **_kwargs):
         raise ParallelRipError(
             "second title failed",
-            completed_results=[_result(first.job_id)],
+            completed_results=[completed],
             drive_failures={first.drive_index: "RipError"},
         )
 
@@ -212,4 +213,21 @@ def test_adapter_does_not_enqueue_partially_completed_disc(tmp_path):
             )),
         )(bound)
 
-    assert observed == []
+    assert observed == [(bound, [completed])]
+
+
+def test_adapter_rejects_unexpected_partial_result_set(tmp_path):
+    bound = _bound(tmp_path)
+
+    def partially_failing_queue(*_args, **_kwargs):
+        raise ParallelRipError(
+            "invalid partial result",
+            completed_results=[_result("wrong-job")],
+            drive_failures={0: "RipError"},
+        )
+
+    with pytest.raises(RipError, match="unexpected partial result set"):
+        ProductionRipExecutor(
+            _options(tmp_path),
+            queue_runner=partially_failing_queue,
+        )(bound)

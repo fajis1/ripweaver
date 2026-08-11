@@ -139,6 +139,19 @@ def test_final_output_path_cannot_escape_root(tmp_path):
         resolve_final_output(output_root, job)
 
 
+def test_existing_makemkv_basename_may_contain_spaces(tmp_path):
+    _, output_root, _ = _paths(tmp_path)
+    job = RipJob(
+        "disc-01-title-003",
+        1,
+        3,
+        ".staging/disc-01/attempt/title-003",
+        output_basename="Synthetic Show Disc 8_t02.mkv",
+    )
+
+    assert resolve_job_output(output_root, job).is_relative_to(output_root)
+
+
 def test_output_sanitization_removes_hardware_and_destination(tmp_path):
     destination = tmp_path / "private" / "output"
 

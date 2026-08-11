@@ -8,7 +8,9 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
 from mkv_episode_matcher import __version__
+from mkv_episode_matcher.backend.catalogue_worker import CatalogueContributionWorker
 from mkv_episode_matcher.backend.dependencies import (
+    get_catalogue_contribution_store,
     get_engine,
     get_orchestration_store,
     get_pipeline_contract_root,
@@ -17,7 +19,7 @@ from mkv_episode_matcher.backend.dependencies import (
     stop_windows_drive_events,
 )
 from mkv_episode_matcher.backend.downstream_worker import DownstreamWorker
-from mkv_episode_matcher.backend.routers import match, rip, scan, system
+from mkv_episode_matcher.backend.routers import catalogue, match, rip, scan, system
 from mkv_episode_matcher.core.config_manager import get_config_manager
 from mkv_episode_matcher.pipeline_adapters import (
     IdentifyStageAdapter,
@@ -29,6 +31,7 @@ from mkv_episode_matcher.pipeline_queue import (
 )
 
 _downstream_worker: DownstreamWorker | None = None
+_catalogue_contribution_worker: CatalogueContributionWorker | None = None
 
 
 def _authorization_required(_item):
@@ -57,6 +60,7 @@ app.include_router(websocket.router)
 app.include_router(scan.router)
 app.include_router(match.router)
 app.include_router(system.router)
+app.include_router(catalogue.router)
 app.include_router(rip.router)
 
 
@@ -103,6 +107,7 @@ if static_dir.exists():
 
 @app.on_event("startup")
 async def startup_event():
+    global _catalogue_contribution_worker
     import threading
 
     # Configure logging
@@ -144,6 +149,11 @@ async def startup_event():
         logger.info("Windows optical-drive event watcher attached")
     else:
         logger.warning("Windows optical-drive event watcher unavailable")
+
+    _catalogue_contribution_worker = CatalogueContributionWorker(
+        get_catalogue_contribution_store(), get_pipeline_queue_store()
+    )
+    _catalogue_contribution_worker.start()
 
     def warm_up_engine():
         global _downstream_worker
@@ -208,7 +218,10 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    global _downstream_worker
+    global _catalogue_contribution_worker, _downstream_worker
+    if _catalogue_contribution_worker is not None:
+        _catalogue_contribution_worker.stop()
+        _catalogue_contribution_worker = None
     if _downstream_worker is not None:
         _downstream_worker.stop()
         _downstream_worker = None
