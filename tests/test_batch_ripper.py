@@ -325,3 +325,25 @@ def test_fatal_batch_output_terminates_and_preserves_directories(tmp_path):
 
     assert process.terminated is True
     assert all((output_root / job.relative_output_dir).is_dir() for job in plan.jobs)
+
+
+def test_unexpected_batch_progress_callback_failure_settles_process(tmp_path):
+    executable, output_root, log_path = _paths(tmp_path)
+    plan = plan_single_open_batch((_job(0), _job(1)), _titles())
+    process = FakeProcess("PRGV:65536,65536,65536\n", running=True)
+
+    def fail_progress(_kind: str, _message: str) -> None:
+        raise RuntimeError("synthetic progress persistence failure")
+
+    with JsonlRipLog(log_path) as event_log:
+        with pytest.raises(RuntimeError, match="progress persistence"):
+            run_single_open_batch(
+                executable,
+                output_root,
+                plan,
+                event_log,
+                popen_factory=lambda *_args, **_kwargs: process,
+                on_event=fail_progress,
+            )
+
+    assert process.terminated is True

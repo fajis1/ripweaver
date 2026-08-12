@@ -299,6 +299,21 @@ worker so unrelated items continue. Restart reconciliation returns a running
 downstream item to the beginning of its current stage. Public queue responses
 and events must never expose private artifact or media paths.
 
+All-season identification also keeps a private append-only per-title audit
+under the identification-evidence root. Each analysis retry has a fresh opaque
+run ID. The audit records workflow boundaries, concise provider attempts, every
+OpenSubtitles episode candidate that was selected or rejected (including
+unavailable references), the bounded Gemini candidate set and returned choice,
+and the final per-title outcome. Audit records must contain no transcript text,
+reviewer scene description, media path, credential, or provider secret. Normal
+`/pipeline/items` polling remains bounded to its concise recent attempt summary;
+the complete trace is returned only by the explicit path- and dialogue-redacted
+per-disc identification-audit route. Audit write failure must be surfaced in
+the application log but must never change or stop an identification decision.
+Gemini's safe trace may report the candidates supplied, returned selection,
+confidence, two-pass consistency, runtime check, and pipeline rejection rule;
+it must not claim an unreturned per-candidate score or hidden provider rationale.
+
 `pipeline_adapters.py` contains explicit identify, transcode, and organization
 adapters. Identification must call the legacy engine with `dry_run=True` and
 must create an immutable contract rather than rename. Transcode is one verified
@@ -419,6 +434,50 @@ lexical scores, selected sequence scores, and best-versus-next margins but no
 dialogue or paths. It must route weak margins to review and must never infer
 disc groups or chronology from filenames.
 
+Sequence matching is advisory only and must never skip, short-circuit, replace,
+or satisfy the independent episode-identification process. A sequence plan may
+act as a map for choosing the next candidates to test, bounding provider work,
+or displaying reviewed suggestions, but sequence position, contiguity, disc
+title order, or a sequence score must never be the reason an episode receives
+its canonical name. Every automatically named episode still requires the normal
+independent evidence boundary (for example, qualifying Whisper/OpenSubtitles
+dialogue matches or a separately confirmed Gemini decision) and the configured
+confidence rules. Evidence-based elimination may remove episode candidates
+already assigned confidently on that same disc and may identify the only
+remaining plausible candidate when its own evidence meets the residual-match
+rules; this must not assume that MakeMKV title indexes are chronological.
+
+Automatic all-season TV assignments use identification-policy version 4. A
+normal OpenSubtitles assignment requires two qualifying independent windows at
+the configured threshold with a hard 70-percent floor, plus the normal margin
+and runtime checks. Residual
+elimination is available only after confident same-disc assignments reduce the
+pool and still requires the unresolved title's own qualifying evidence and
+residual margin. The only automatic assignment sources accepted by the identify
+adapter are `opensubtitles-two-window`,
+`opensubtitles-residual-elimination`, and `gemini-two-pass`; a sequence plan is
+never an assignment source. Older sequence-only contracts must return to
+identification or explicit repair review before further automatic processing.
+
+Ambiguous residual and Gemini candidates must pass an evidence-anchored
+same-disc episode-range fence before automatic assignment. The fence requires
+at least two independently assigned episodes from one season that fit within
+the disc's known title count. It admits every contiguous episode window capable
+of containing those anchors, so it may remove an impossible out-of-range
+candidate but must not infer episode identity or MakeMKV title order. Direct
+two-window subtitle matches establish current-run anchors; restart anchors must
+retain current-policy OpenSubtitles provenance or an explicitly reviewed or
+deterministic source. Gemini outcomes and legacy sequence history must never
+establish the fence. Every applied fence and rejected provider candidate must
+remain visible in the private identification audit.
+
+A held organize-stage wrong-episode collision may be corrected only through
+the metadata-only correction boundary. The replacement must be an already
+displayed OpenSubtitles candidate, be the sole unassigned candidate inside a
+range established by at least two independently matched same-disc siblings,
+and preserve every verified encoded-media field exactly. The corrected item
+must remain held until a separate explicit Jellyfin-placement confirmation.
+
 `mkv-match plan-tv-organization <sequence-plan.json> <aired-catalog.json>
 --library-root <existing-tv-root> --series-name <canonical-name> --report-out
 <new-safe.json>` is destination-name inspection only. It accepts only a fully
@@ -502,6 +561,23 @@ does not retain source filenames. Codex must not run it against real media
 without stating that it will read the file and obtaining explicit approval for
 the specific test input. It must never accept a directory or discover media
 implicitly.
+
+The Library Scan episode-repair channel is separate from normal identification.
+Its discovery step may recursively inspect filenames, sizes, timestamps, and
+private RipWeaver provenance under the configured Jellyfin TV root, but it must
+not open media or contact a provider. The default scope contains only current
+Jellyfin episode IDs whose retained dossier has a matched `tv-local` sequence
+attempt. Before Whisper or subtitle lookup, the UI must present the exact MKVs
+and bind confirmation to the inventory digest. Each file may be compared only
+to the episode already claimed by its filename; this channel must never assign
+another episode, use disc/title order, or treat sequence output as evidence.
+Confirmed names remain unchanged. A mismatch may receive a generic, non-SxxExx
+name in the same season folder only through a separate exact-result-digest and
+exact-file confirmation; inconclusive results remain unselected by default.
+The apply boundary must revalidate source size and timestamp, preflight every
+destination before changing any name, and refuse overwrite. A generic rename
+is intended to make the file eligible for a later standard Season 0X scan; it
+is not itself an episode identification.
 
 `mkv-match plan-rip <fresh-report.json>... --manifest-out <new.json>` creates a
 path-redacted manifest and excludes discs containing unresolved review titles.

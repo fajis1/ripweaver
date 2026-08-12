@@ -16,6 +16,19 @@ _DISC_TITLE_ID = re.compile(
 )
 
 
+def _sequence_only_attempts(attempts: tuple[dict[str, object], ...]) -> bool:
+    sequence_matched = any(
+        attempt.get("branch") == "tv-local" and attempt.get("disposition") == "matched"
+        for attempt in attempts
+    )
+    independently_matched = any(
+        attempt.get("branch") in {"tv-opensubtitles", "tv-gemini"}
+        and attempt.get("disposition") == "matched"
+        for attempt in attempts
+    )
+    return sequence_matched and not independently_matched
+
+
 class DownstreamWorker:
     """Poll one durable queue while preserving its global single-worker lock."""
 
@@ -35,6 +48,7 @@ class DownstreamWorker:
         self._automatic_transcode_media_ids: tuple[str, ...] = ()
         self._automatic_analysis_attempts: set[str] = set()
         self._version_coexistence_reconciled = False
+        self._legacy_sequence_assignments_reconciled = False
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -117,6 +131,73 @@ class DownstreamWorker:
             )
         return resumed > 0
 
+    def _reconcile_legacy_sequence_assignments(  # noqa: C901 - guarded migration
+        self,
+    ) -> bool:
+        """Stop policy-v2 sequence-only assignments before downstream work."""
+
+        if self._legacy_sequence_assignments_reconciled:
+            return False
+        from mkv_episode_matcher.backend.dependencies import (
+            get_pipeline_contract_root,
+        )
+        from mkv_episode_matcher.backend.identification_dossier import (
+            IdentificationDossierStore,
+        )
+        from mkv_episode_matcher.core.tv_identification_policy import (
+            AUTOMATIC_TV_IDENTIFICATION_POLICY_VERSION,
+        )
+
+        dossier = IdentificationDossierStore(
+            get_pipeline_contract_root().parent / "identification-evidence"
+        )
+        restarted = 0
+        held = 0
+        for item in self.dispatcher.store.list_items():
+            if item.stage not in {"transcode", "organize"} or item.state not in {
+                "queued",
+                "review_required",
+                "failed",
+            }:
+                continue
+            try:
+                payload = json.loads(
+                    item.artifact.contract_path.read_text(encoding="utf-8")
+                )
+                attempts = dossier.safe_attempts(item.media_id)
+            except (OSError, json.JSONDecodeError, PipelineQueueError):
+                continue
+            if payload.get("identification_policy_version") == (
+                AUTOMATIC_TV_IDENTIFICATION_POLICY_VERSION
+            ):
+                continue
+            if not _sequence_only_attempts(attempts):
+                continue
+            media_match = _DISC_TITLE_ID.search(item.media_id)
+            try:
+                if item.stage == "transcode" and media_match is not None:
+                    self.dispatcher.store.restart_identification(
+                        item.media_id,
+                        expected_disc_fingerprint=media_match.group(1).lower(),
+                        expected_title_index=int(media_match.group(2)),
+                    )
+                    restarted += 1
+                elif item.stage == "organize" and item.state == "queued":
+                    self.dispatcher.store.hold_for_review(
+                        item.media_id, "legacy_sequence_assignment_review_required"
+                    )
+                    held += 1
+            except PipelineQueueError:
+                continue
+        self._legacy_sequence_assignments_reconciled = True
+        if restarted or held:
+            logger.warning(
+                "Quarantined legacy sequence-only assignments: restarted={} held={}",
+                restarted,
+                held,
+            )
+        return bool(restarted or held)
+
     def _apply_automatic_disc_analysis(self) -> bool:  # noqa: C901
         """Recover automatic TV batches that settled into a sequence hold."""
 
@@ -175,6 +256,7 @@ class DownstreamWorker:
                     "all_season_analysis_running",
                     "all_season_analysis_failed",
                     "all_season_sequence_review_required",
+                    "independent_episode_evidence_required",
                 }:
                     continue
                 groups.setdefault(fingerprint, []).append(item.media_id)
@@ -185,7 +267,11 @@ class DownstreamWorker:
                 }:
                     triggered.add(fingerprint)
                 elif (
-                    item.review_code == "all_season_sequence_review_required"
+                    item.review_code
+                    in {
+                        "all_season_sequence_review_required",
+                        "independent_episode_evidence_required",
+                    }
                     and config.automatic_gemini_ambiguity_fallback
                     and item.media_id not in visual_reviews
                 ):
@@ -281,6 +367,14 @@ class DownstreamWorker:
     def _run(self) -> None:  # noqa: C901 - isolated worker recovery boundaries
         logger.info("Downstream identification worker started")
         while not self._stop.is_set():
+            try:
+                if self._reconcile_legacy_sequence_assignments():
+                    continue
+            except Exception as exc:
+                logger.error(
+                    "Legacy sequence-assignment reconciliation could not run: {}",
+                    type(exc).__name__,
+                )
             try:
                 if self._resume_version_coexistence_reviews():
                     continue

@@ -308,6 +308,26 @@ def _safe_prior_attempts(  # noqa: C901 - strict bounded schema validation
     return safe
 
 
+def _safe_reviewer_scene_descriptions(
+    files: tuple[UnmatchedFileEvidence, ...],
+    descriptions: Mapping[str, str] | None,
+) -> dict[str, str]:
+    """Validate explicit per-title review notes before provider transmission."""
+
+    if descriptions is None:
+        return {}
+    allowed_ids = {item.file_id for item in files}
+    if set(descriptions) - allowed_ids:
+        raise GeminiMatchError("Reviewer scene descriptions contain an unknown file ID")
+    safe: dict[str, str] = {}
+    for file_id, description in descriptions.items():
+        normalized = " ".join(description.split())
+        if not 3 <= len(normalized) <= 1200 or _WINDOWS_PATH.search(normalized):
+            raise GeminiMatchError("Reviewer scene description is unsafe")
+        safe[file_id] = normalized
+    return safe
+
+
 def build_gemini_request(
     model: str,
     files: tuple[UnmatchedFileEvidence, ...],
@@ -315,6 +335,7 @@ def build_gemini_request(
     *,
     prior_attempts: Mapping[str, tuple[dict[str, object], ...]] | None = None,
     existing_episode_ids: frozenset[str] | None = None,
+    reviewer_scene_descriptions: Mapping[str, str] | None = None,
 ) -> dict:
     """Build a path-free Interactions API request with a strict JSON schema."""
 
@@ -322,19 +343,26 @@ def build_gemini_request(
     if not model.strip() or len(model) > 100:
         raise GeminiMatchError("Gemini model name is invalid")
     safe_attempts = _safe_prior_attempts(files, prior_attempts)
+    safe_scene_descriptions = _safe_reviewer_scene_descriptions(
+        files, reviewer_scene_descriptions
+    )
     known_episode_ids = {item.episode_id for item in catalog}
     existing_episode_ids = existing_episode_ids or frozenset()
     if not existing_episode_ids.issubset(known_episode_ids):
         raise GeminiMatchError("Existing-library episodes are outside the catalogue")
-    evidence_payload = [
-        {
+    evidence_payload = []
+    for item in files:
+        evidence_item = {
             "file_id": item.file_id,
             "duration_seconds": round(item.duration_seconds, 3),
             "transcript_excerpts": list(item.transcript_excerpts),
             "prior_attempts": safe_attempts.get(item.file_id, []),
         }
-        for item in files
-    ]
+        if item.file_id in safe_scene_descriptions:
+            evidence_item["reviewer_scene_description"] = safe_scene_descriptions[
+                item.file_id
+            ]
+        evidence_payload.append(evidence_item)
     catalog_payload = [
         {
             "episode_id": item.episode_id,
@@ -354,6 +382,9 @@ def build_gemini_request(
             "candidates. Use dialogue, names, plot, runtime, and disc-wide "
             "one-to-one consistency. Review the supplied prior-attempt summaries "
             "and correct, rather than repeat, their recorded failure modes. "
+            "A reviewer_scene_description, when present, is an explicit human "
+            "observation about that file. Use it as strong plot evidence while "
+            "still checking it against the allowed episode titles and overviews. "
             "Library status is a tie-break hint only: never choose a missing "
             "episode over a present episode when dialogue, plot, or runtime "
             "supports the present episode. "
@@ -781,6 +812,7 @@ class GeminiEpisodeRanker:
         credential: CredentialName,
         prior_attempts: Mapping[str, tuple[dict[str, object], ...]] | None = None,
         existing_episode_ids: frozenset[str] | None = None,
+        reviewer_scene_descriptions: Mapping[str, str] | None = None,
     ) -> GeminiReviewPlan:
         if credential not in ("gemini-primary", "gemini-paid"):
             raise ValueError("Gemini credential name is invalid")
@@ -792,6 +824,7 @@ class GeminiEpisodeRanker:
             catalog,
             prior_attempts=prior_attempts,
             existing_episode_ids=existing_episode_ids,
+            reviewer_scene_descriptions=reviewer_scene_descriptions,
         )
         for attempt in range(self.max_retries + 1):
             try:
@@ -851,6 +884,7 @@ class GeminiEpisodeRanker:
         *,
         prior_attempts: Mapping[str, tuple[dict[str, object], ...]] | None = None,
         existing_episode_ids: frozenset[str] | None = None,
+        reviewer_scene_descriptions: Mapping[str, str] | None = None,
     ) -> GeminiReviewPlan:
         """Try primary then paid key, with one interactive auth recovery each."""
 
@@ -872,6 +906,7 @@ class GeminiEpisodeRanker:
                         credential=credential,
                         prior_attempts=prior_attempts,
                         existing_episode_ids=existing_episode_ids,
+                        reviewer_scene_descriptions=reviewer_scene_descriptions,
                     )
                 except ApiCredentialError as exc:
                     if auth_attempt == 0 and request_credential_recovery(exc):

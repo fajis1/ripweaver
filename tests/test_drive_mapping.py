@@ -317,3 +317,38 @@ def test_mapping_wizard_saves_every_current_device_in_one_plan(tmp_path):
     }
     assert response["automatic_processing_requested"] is False
     assert all(drive["mapping_status"] == "trusted" for drive in response["drives"])
+
+
+def test_transient_native_identity_failure_preserves_prior_trusted_mapping(tmp_path):
+    native = _native("D:", "a", "Reviewed drive")
+    mapping_store = DriveMappingStore(tmp_path / "drive-map.json")
+    mapping_store.set_status(
+        native.device_key,
+        "trusted",
+        display_name=native.display_name,
+        connection_type=native.connection_type,
+    )
+    attempts = 0
+
+    def identities():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return (native,)
+        raise DriveMappingError("Windows optical-device discovery failed safely")
+
+    watcher = DriveWatcher(
+        lambda *_args, **_kwargs: _result(
+            'DRV:0,2,999,1,"private hardware","disc","D:"\n'
+        ),
+        native_discovery=lambda: ("D:",),
+        native_identity_discovery=identities,
+        mapping_store=mapping_store,
+    )
+
+    assert watcher.refresh(Path("makemkvcon64.exe")).drives[0].mapping_status == (
+        "trusted"
+    )
+    assert watcher.refresh(Path("makemkvcon64.exe")).drives[0].mapping_status == (
+        "trusted"
+    )

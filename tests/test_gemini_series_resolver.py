@@ -47,6 +47,7 @@ def test_series_resolver_accepts_only_supplied_tmdb_id():
             "series_name": "Invented",
             "confidence": 0.9,
             "evidence": ["Candidate selected."],
+            "alternative_series_names": ["Another Invented Series"],
         })},
     )
     resolver = GeminiSeriesResolver(

@@ -68,7 +68,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, systemStatus
     };
 
     return (
-        <aside className="w-72 flex-shrink-0 flex flex-col bg-[var(--glass-bg)] backdrop-blur-xl border-r border-[var(--glass-border)]">
+        <aside className="h-full min-h-0 w-72 flex-shrink-0 flex flex-col overflow-x-hidden overflow-y-auto overscroll-contain [scrollbar-gutter:stable] bg-[var(--glass-bg)] backdrop-blur-xl border-r border-[var(--glass-border)]">
             {/* Logo Section */}
             <div className="p-6 border-b border-[var(--border-color)]">
                 <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400">

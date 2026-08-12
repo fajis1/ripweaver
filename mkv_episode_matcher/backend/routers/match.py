@@ -336,8 +336,8 @@ def start_unmatched_match(
                 exc.review_code
                 if isinstance(exc, GeminiAnalysisError)
                 else (
-                    "all_season_sequence_review_required"
-                    if str(exc) == "All-season sequence result requires review"
+                    "independent_episode_evidence_required"
+                    if str(exc) == "Independent episode evidence requires review"
                     else "all_season_analysis_failed"
                 )
             )

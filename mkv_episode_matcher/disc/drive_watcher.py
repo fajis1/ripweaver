@@ -486,7 +486,12 @@ class DriveWatcher:
             try:
                 native_identities = self._native_identity_discovery()
             except DriveMappingError:
-                native_identities = ()
+                # A transient Windows/CIM timeout must not demote every stable
+                # drive after a prior successful identity refresh. Reuse only
+                # the process-local, previously verified bindings; a first
+                # refresh or genuinely new device remains unmapped.
+                with self._lock:
+                    native_identities = tuple(self._mapping_devices.values())
             native_by_name = {
                 item.device_name.upper().rstrip("\\/"): item
                 for item in native_identities

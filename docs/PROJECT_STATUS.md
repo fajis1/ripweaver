@@ -3222,3 +3222,299 @@ for review rather than forcing a TV identity.
   Gemini series resolver first. Gemini's canonical proposal must then validate
   through TMDb; only a failed or uncertain validated Gemini attempt reaches the
   user-name field.
+## Page-independent automatic drive reconciliation (2026-08-11)
+
+- The Windows optical-drive coordinator now performs a backend-owned periodic
+  reconciliation in addition to volume events and the startup scan. A missed
+  event or temporarily failed read-only inventory remains armed for retry, so
+  automatic processing no longer depends on opening or refreshing the Disc
+  Dashboard.
+- Reconciliation defers while RipWeaver owns an active MakeMKV executor. The
+  existing automatic coordinator still suppresses duplicate work for an
+  unchanged loaded disc.
+- A transient automatic preparation failure now rearms that unchanged disc for
+  the next backend reconciliation turn. A successfully dispatched disc or one
+  intentionally held for real review remains suppressed as before.
+- An abandoned `awaiting_review` plan with no authorization or MakeMKV dispatch
+  is no longer classified as earlier rip output. It cannot force a first-time
+  disc through reuse/replacement language on the next automatic attempt.
+- A rejected Gemini canonical-series proposal now retains its bounded proposed
+  name, confidence, and optional TMDb ID in the private queue event stream. The
+  review card displays that proposal once for the disc instead of losing the
+  evidence and merely saying validation failed. Series resolution remains one
+  disc-level operation shared by every held title.
+- TV series discovery now strips common optical packaging markers before its
+  first TMDb query, including Superfan/extended episode labels, complete-series
+  text, disc/season/volume ordinals, `S2 D2`, and `CSR DIM10`. Cleaned and full
+  label results are merged and deduplicated before Gemini is asked to rank up
+  to five canonical names; every ranked name is independently rechecked through
+  TMDb in order.
+- Packaging cleanup is context-sensitive: `S2 D2` and explicit `Disc 2`
+  markers are removed from a TV release query, while a standalone title token
+  such as `D2: The Mighty Ducks` is preserved and remains available to Gemini.
+- The drive dashboard now honors the watcher-bound current job before older
+  plans for the same fingerprint and prioritizes genuinely active states during
+  fallback selection. A live replacement rip is no longer mislabeled as an
+  earlier job merely because an abandoned preparation plan appears first.
+- A transient Windows/CIM optical-identity timeout after a successful refresh
+  now preserves the process-local verified identity bindings. Busy drives no
+  longer all fall back to `unmapped`; first discovery and genuinely new devices
+  remain subject to explicit mapping review.
+- Automatic preparation now recovers a clean job that was durably created and
+  bound to the same loaded-disc fingerprint before the preparation response
+  failed. The worker resumes from the persisted state, authorizing only an
+  `awaiting_review` job whose preview explicitly says no review is required,
+  then queueing and executing that same job. Genuine review plans and prior-disc
+  work remain held. Safe failure logs identify preparation, authorization,
+  queueing, or execution as the interrupted stage.
+
+## Live multi-drive failure observation (2026-08-11)
+
+- An automatic six-title rip on one trusted optical drive created a clean plan,
+  authorized, queued, and began single-open MakeMKV execution normally. Transfer
+  samples were approximately 14-16 MiB/s before the first title stopped at about
+  74% and the disc reached about 14% overall.
+- RipWeaver correctly persisted the terminal result as `ParallelRipError` with
+  category `makemkv_failure`: zero of six titles were verified and all six
+  remained unfinished. No completed result was admitted to identification.
+- The MakeMKV child process remained alive after the orchestration job entered
+  `failed`. The physical drive continued audible seek/retry activity. A later
+  read-only refresh process exited, while the original failed-rip process
+  remained present. This indicates that terminal orchestration state does not
+  currently guarantee child-process settlement.
+- While that orphaned process remained alive, Windows native optical identity
+  discovery became unavailable. The dashboard still saw all five MakeMKV slots
+  and the inserted disc label, but represented every drive as `unmapped` with
+  `identity_unavailable`. The durable trusted mapping file was not deleted.
+- Required follow-up: a failed executor must settle or explicitly surface its
+  still-running child process before detaching; periodic drive reconciliation
+  must preserve the last verified trusted snapshot during transient identity
+  failure instead of replacing it with anonymous slots. Recovery must remain
+  conservative: do not infer trust for a new device or changed hashed identity.
+- No process was terminated and no disc was ejected during this observation.
+  Stopping an orphaned MakeMKV process remains an explicit user-authorized
+  operation; unrelated HandBrake work may continue independently.
+
+## Physical-drive execution claims (2026-08-11)
+
+- The process-local rip execution registry now atomically claims every physical
+  drive index in an authorized job, in addition to claiming the durable job ID.
+  A second job targeting any already-claimed drive is rejected before its
+  MakeMKV adapter can run. Jobs on different drive indexes remain eligible for
+  the approved parallel-across-drives behavior.
+- The Disc Dashboard busy-drive response combines automatic preparation claims
+  with attached physical-executor claims, so an actively ripping drive remains
+  visibly busy even when preparation has finished.
+- The dashboard now distinguishes those states visually: an attached running
+  rip is blue and labeled `ripping`, while amber `MakeMKV busy` is reserved for
+  preparation on that exact drive. A rip on one physical drive no longer marks
+  another inserted drive busy; parallel-across-drives remains available.
+- If the Windows watcher temporarily loses its process-local disc fingerprint
+  while a rip is active, the dashboard now falls back to the exact attached
+  executor whose immutable preview names that drive index. This restores the
+  blue running card, title progress, whole-disc progress, and transfer rate
+  without guessing from an older inactive job that reused the same tray.
+- A synchronous MakeMKV execute request no longer holds the frontend's global
+  control flag for the duration of the rip. Opening another disc's review is a
+  local UI action that remains available, while candidate selection, manual
+  identification, OCR review, and Gemini ambiguity choices use per-item busy
+  state. One active drive can therefore no longer disable unrelated review
+  buttons for minutes or hours.
+- Per-title and single-open MakeMKV runners now settle a still-live child in
+  their `finally` boundary. An unexpected progress callback, log write, stream,
+  or sampling failure can no longer return to orchestration and release the
+  drive claim while its MakeMKV process remains alive.
+- The orchestration control database now initializes in SQLite WAL mode. Live
+  progress writers from two different drives no longer force dashboard readers
+  to wait behind a rollback-journal write transaction, which had left visible
+  percentages and MiB/s stale even though MakeMKV was still doing sustained I/O.
+  The change takes effect when RipWeaver next starts; an active rip is never
+  restarted merely to change the journal mode.
+
+## Reviewer-guided final episode matching (2026-08-11)
+
+- A title held after conflicting episode evidence now offers a bounded scene
+  description field. Pressing its explicit Gemini button confirms transmission
+  of that note with the allowed episode metadata and bounded local evidence;
+  the MKV, full transcript, paths, and credentials are not transmitted. The
+  raw note is not written to identification history or diagnostic events.
+- Reviewer scene descriptions are limited to 1,200 characters, bound to exact
+  held recovery IDs, rejected if they contain a local Windows path, and used in
+  both local candidate shortlisting and the two-pass Gemini episode decision.
+  Only a boolean indicating that reviewer evidence was supplied is retained in
+  the safe dossier.
+- Scene-guided retries remain in the episode route and cannot fall through to
+  bonus-feature naming. A final single held title is now eligible for disc
+  sequence analysis, allowing recorded assignments from the rest of the disc
+  to reduce its remaining episode candidates.
+- The full synthetic suite passed (877 tests), as did Ruff, frontend lint,
+  TypeScript, the production build, and diff checks. No optical drive, media
+  file, MakeMKV process, or live Gemini request was accessed.
+
+## Sequence matching boundary and audit (2026-08-12)
+
+- Sequence matching is now documented as advisory evidence only. It may map or
+  prioritize the next plausible candidates for independent comparison, but it
+  must never skip the remaining identification branches or be the reason an
+  episode receives its canonical name. MakeMKV title index order is not evidence
+  of chronological episode order.
+- Evidence-based elimination remains valid: episodes already assigned
+  confidently on the same disc may be removed from the candidate pool, after
+  which an unresolved title may be accepted under the separately tested
+  residual-evidence rules. Jellyfin presence alone does not eliminate an
+  episode, and counting upward from a prior title is not elimination evidence.
+- The automatic web workflow now enforces this boundary. A sequence plan is
+  still calculated for diagnostics and candidate display, but every `tv-local`
+  sequence attempt is recorded as advisory review evidence. Its disposition,
+  score, margin, and proposed episode are never copied into the assignment map.
+  OpenSubtitles runs even when the sequence planner returns `proposed`, and
+  unresolved titles continue to the separately confirmed two-pass Gemini path.
+- Normal OpenSubtitles acceptance now requires two qualifying transcript
+  windows at the configured threshold with a hard 70-percent floor, an 8-percent
+  runner-up margin, and runtime consistency. The former single-window
+  92-percent shortcut has been removed from automatic disc matching. Residual
+  elimination is attempted only after a current confident assignment or a
+  prior confident same-disc assignment has reduced the pool; the remaining
+  title still needs its own 70-percent window and a 25-percent margin.
+- A saved-metadata audit found 40 affected title records across six discs. None
+  records an independent OpenSubtitles match. Seven Faerie Tale Theatre titles
+  later record Gemini confirmation; 33 titles across one Flintstones disc and
+  three The Office Superfan discs have only the sequence-derived assignment in
+  their identification history. This audit did not read media or change queue
+  state.
+- New automatic contracts use identification-policy version 4 and attach one
+  per-title evidence source: `opensubtitles-two-window`,
+  `opensubtitles-residual-elimination`, or `gemini-two-pass`. The identify-stage
+  adapter rejects an all-season contract with an older version, a missing source,
+  or a sequence source. Identified contracts retain the policy and source for
+  later auditing instead of reporting sequence confidence as episode evidence.
+- On worker startup, queued/reviewed/failed policy-v2 sequence-only items at
+  transcode are returned to their original verified rip contract and restarted
+  at identification. A sequence-only item already queued at organize is held for
+  explicit repair review; it is not organized automatically. Items with a later
+  matched OpenSubtitles or Gemini attempt are not classified as sequence-only.
+  Already organized files remain in the separate Jellyfin repair channel below.
+- Synthetic regressions cover shuffled sequence suggestions, mandatory
+  two-window acceptance, residual-evidence gating, all three allowed v4 evidence
+  sources, v2/sequence-source rejection, and downstream quarantine. No disc,
+  media file, MakeMKV process, HandBrake process, or live provider was accessed.
+
+## Jellyfin episode-name repair channel (2026-08-12)
+
+- Library Scan now has a separate **Verify existing episode names** workflow.
+  Its first step inventories filenames and metadata only. By default it reads
+  the private identification dossiers to find episode IDs from the affected
+  discs that recorded a matched `tv-local` sequence attempt, then searches all
+  folders below the configured Jellyfin TV root for current MKVs carrying those
+  episode IDs. Unrelated television files are not admitted to this audit.
+- The inventory is stored privately and returns only relative paths. The exact
+  file/stat set has a stable digest and is displayed before the user can approve
+  Whisper media reads and OpenSubtitles lookup. Verification runs in a
+  background worker so the HTTP request and the rest of the UI remain
+  responsive, and progress is committed after each file.
+- Each MKV is compared only with the subtitle for the episode its current name
+  claims. Confirmation requires two independent windows at the configured
+  threshold or one definitive 92-percent window. Multiple usable windows with
+  no qualifying support produce `mismatch`; missing references, weak audio,
+  source changes, and one-window uncertainty remain `inconclusive`. This repair
+  path cannot assign an alternative episode and does not call sequence matching.
+- Confirmed names are immutable in the repair UI. Clear mismatches are selected
+  by default for an explicit generic-rename review; inconclusive files are
+  available but unselected. Generic names use `RipWeaver Unmatched - <opaque
+  id>.mkv` in the existing season folder and deliberately contain no SxxExx
+  token, making them eligible for a later standard Season 0X scan.
+- Generic application is a separate local-control request bound to the exact
+  result digest and checked file IDs. It revalidates source size and timestamp,
+  preflights every destination before changing any name, refuses an existing
+  destination, and never overwrites. No live Jellyfin media was read or renamed
+  while implementing this channel; tests used placeholder files plus fake ASR
+  and subtitle providers.
+- The new focused synthetic suite has eight passing tests covering recursive
+  discovery, affected-disc provenance filtering, claimed-episode-only scoring,
+  private path redaction, exact generic rename, and whole-selection collision
+  preflight, interrupted-worker restart reconciliation, confirmation guards,
+  and non-blocking worker dispatch. Frontend lint and the production
+  TypeScript/Vite build also pass.
+  The automatic matching correction above is now implemented. This repair
+  channel remains necessary for files that were organized before policy version
+  3 could stop a sequence-only assignment.
+- The repository-wide suite now passes all 892 tests. Focused Ruff lint and
+  format checks pass for the new/modified repair and automatic-matching modules.
+  Frontend lint, TypeScript, and the production Vite build pass. The
+  repository-wide Ruff checks still report the known legacy baseline (69 lint
+  findings and 39 files outside this work that would be reformatted); those
+  unrelated files were not mechanically rewritten.
+
+## Complete per-disc identification audit (2026-08-12)
+
+- The prior queue display retained only the newest 12 of at most 20 concise
+  identification attempts. It showed the best OpenSubtitles candidate and
+  runner-up but could not reconstruct every candidate rejection after a retry.
+- Identification now writes a separate append-only, restart-safe JSONL audit
+  for each recovery ID. A fresh opaque analysis-run ID ties together catalogue
+  resolution, evidence availability, advisory sequence output, local/provider
+  attempts, every candidate decision, and the final matched or held result.
+- OpenSubtitles audit entries cover every aired candidate in the attempted
+  season scope: scored candidates retain score, rank, qualifying-window count,
+  runtime result, disposition, and exact rejection rule; candidates without a
+  usable reference record `subtitle_reference_unavailable`, and eliminated
+  candidates retain the already-assigned or residual-margin reason.
+- Both Gemini passes retain the complete bounded candidate set supplied to the
+  provider, its returned selection, confidence, agreement between passes,
+  runtime check, and the exact pipeline acceptance/rejection rule. The audit
+  does not invent hidden Gemini reasoning or expose Gemini evidence text.
+- `GET /rip/pipeline/discs/{disc_fingerprint}/identification-audit` composes the
+  detailed title audits with durable rip-job events, pipeline events, title
+  history, and timing runs into one path- and dialogue-redacted on-demand disc
+  report. The normal
+  three-second dashboard response remains concise so exhaustive logging does
+  not enlarge routine UI polling.
+- Audit persistence is best-effort and never controls the match. A storage
+  error is logged safely without changing the identification decision. Tests
+  use synthetic files/providers only; no optical drive, media, MakeMKV process,
+  or live external provider was accessed while implementing this audit. The
+  repository-wide suite passes all 895 tests, and focused Ruff format/lint
+  checks pass for the modified audit modules.
+
+## Evidence-anchored disc episode range fence (2026-08-12)
+
+- Ambiguous residual and Gemini candidates are now bounded by independent
+  matches from the same disc. At least two anchors must belong to one season
+  and fit within the disc's known title count. The fence retains every
+  contiguous window that can contain those anchors; it does not use MakeMKV
+  title order and never names an episode by sequence.
+- In the synthetic regression modeled on The Office S4 D2, six independent
+  subtitle matches establish E07 through E12 on a seven-title disc. The
+  conservative fence is E06 through E13: E13 remains available, while E04 and
+  E14 cannot be supplied to Gemini. A two-pass Gemini result is still required
+  for an automatic Gemini assignment; the fence itself is not evidence of a
+  title's identity.
+- Strong two-window OpenSubtitles assignments establish current-run anchors.
+  Residual matches outside the resulting fence are returned to review before
+  Gemini. Restart-safe disc history now retains the assignment evidence source
+  and policy version; only current-policy OpenSubtitles outcomes or explicitly
+  reviewed/deterministic outcomes may become historical anchors. Gemini and
+  legacy sequence results cannot reinforce their own range.
+- The private audit records the applied range, anchor/title counts, candidate
+  counts before and after filtering, and every out-of-range rejection. Policy
+  version 4 distinguishes these contracts from earlier automatic assignments.
+  Synthetic tests only were used; no optical drive, media file, MakeMKV,
+  HandBrake, or live provider was accessed. The repository-wide suite passes
+  all 900 tests, and focused Ruff lint/format plus diff checks pass.
+
+## Held wrong-episode correction boundary (2026-08-12)
+
+- An organize-stage library collision caused by a wrong episode identity can
+  now be corrected without reripping, retranscoding, renaming, moving, or
+  deleting media. The boundary permits only an OpenSubtitles candidate already
+  displayed for that title when two or more independently matched siblings
+  establish its disc range and the candidate is the sole unassigned episode
+  remaining inside that range.
+- The corrected immutable transcode contract must retain every verified-media
+  field exactly. Only episode metadata, destination metadata, policy
+  provenance, and the reviewed display title may change. The disc-title
+  history and append-only event log are updated atomically.
+- A correction remains held as `corrected_identification_ready`. The UI states
+  that no media has moved and requires a separate explicit confirmation before
+  the existing verified encode may be placed in Jellyfin. Synthetic tests
+  verify both elimination and byte preservation.

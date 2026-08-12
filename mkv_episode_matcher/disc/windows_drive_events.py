@@ -190,12 +190,19 @@ class DriveRefreshCoordinator:
         refresh: Callable[[], None],
         rip_is_active: Callable[[], bool],
         *,
+        invalidate_bindings: Callable[[], None] | None = None,
+        periodic_refresh: Callable[[], None] | None = None,
         debounce_seconds: float = 1.5,
+        poll_seconds: float | None = None,
     ):
         self.refresh = refresh
         self.rip_is_active = rip_is_active
+        self.invalidate_bindings = invalidate_bindings
+        self.periodic_refresh = periodic_refresh
         self.debounce_seconds = debounce_seconds
+        self.poll_seconds = poll_seconds
         self._pending = threading.Event()
+        self._media_changed = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -207,6 +214,7 @@ class DriveRefreshCoordinator:
             self._thread.start()
 
     def notify_change(self) -> None:
+        self._media_changed.set()
         self._pending.set()
 
     def stop(self) -> None:
@@ -218,18 +226,38 @@ class DriveRefreshCoordinator:
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            self._pending.wait()
+            notified = self._pending.wait(self.poll_seconds)
             if self._stop.is_set():
                 return
+            if not notified and self.poll_seconds is None:
+                continue
+            # A periodic turn reconciles Windows' cached volume state without
+            # invoking MakeMKV. Full discovery is reserved for startup and
+            # actual media-change notifications.
+            periodic = not notified
+            self._pending.set()
             self._stop.wait(self.debounce_seconds)
             if self._stop.is_set():
                 return
             if self.rip_is_active():
                 self._stop.wait(1)
                 continue
+            media_changed = self._media_changed.is_set()
             self._pending.clear()
             try:
+                if periodic and self.periodic_refresh is not None:
+                    self.periodic_refresh()
+                    self._pending.clear()
+                    continue
+                if media_changed and self.invalidate_bindings is not None:
+                    self.invalidate_bindings()
                 self.refresh()
+                if media_changed:
+                    self._media_changed.clear()
             except Exception:
                 # The DriveWatcher retains typed error state for the UI.
+                # Keep the request armed so a settling drive or interrupted
+                # MakeMKV process cannot make automation depend on a browser
+                # refresh or a second Windows volume event.
+                self._pending.set()
                 continue

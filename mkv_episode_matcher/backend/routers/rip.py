@@ -54,6 +54,9 @@ from mkv_episode_matcher.backend.unmatched_disc_analysis import (
 from mkv_episode_matcher.core.config_manager import get_config_manager
 from mkv_episode_matcher.core.credentials import store_credential
 from mkv_episode_matcher.core.environment import load_environment_settings
+from mkv_episode_matcher.core.tv_identification_policy import (
+    AUTOMATIC_TV_IDENTIFICATION_POLICY_VERSION,
+)
 from mkv_episode_matcher.disc.catalogue_contributions import (
     CatalogueContributionError,
     snapshot_from_inventory,
@@ -358,6 +361,7 @@ class DriveStatusResponse(BaseModel):
     error_type: str | None
     error_code: str | None = None
     refresh_in_progress: bool = False
+    busy_drive_indexes: list[int] = Field(default_factory=list)
     mapping_plan_sha256: str | None = None
     mapping_summary: dict[str, int] = Field(default_factory=dict)
     retired_mapping_count: int = 0
@@ -565,7 +569,13 @@ def set_default_handbrake_profile(
 
 
 def _drive_status_response(watcher: DriveWatcher) -> dict[str, object]:
+    from mkv_episode_matcher.backend.automatic_rip import automatic_rip_coordinator
+
     snapshot = watcher.snapshot()
+    busy_drive_indexes = sorted(
+        set(automatic_rip_coordinator.active_drive_indexes())
+        | set(get_rip_execution_registry().active_drive_indexes())
+    )
     summary = {
         status: sum(drive.mapping_status == status for drive in snapshot.drives)
         for status in ("trusted", "ignored", "unmapped")
@@ -578,6 +588,7 @@ def _drive_status_response(watcher: DriveWatcher) -> dict[str, object]:
         "error_type": snapshot.error_type,
         "error_code": snapshot.error_code,
         "refresh_in_progress": watcher.refresh_in_progress(),
+        "busy_drive_indexes": busy_drive_indexes,
         "mapping_plan_sha256": watcher.mapping_plan_sha256(),
         "mapping_summary": summary,
         "drives": [asdict(drive) for drive in snapshot.drives],
@@ -1967,6 +1978,7 @@ class PipelineItemResponse(BaseModel):
     staged_source_available: bool = False
     provisional_match: bool = False
     gemini_confidence: float | None = None
+    gemini_series_proposal: dict[str, object] | None = None
     retained_source_ttl_days: int = 30
     state: str
     stage: str
@@ -2049,6 +2061,9 @@ class UnmatchedDiscAnalysisRequest(BaseModel):
     confirm_media_read: bool = False
     confirm_provider_lookup: bool = False
     confirm_external_fallback: bool = False
+    reviewer_scene_descriptions: dict[
+        str, Annotated[str, Field(min_length=3, max_length=1200)]
+    ] = Field(default_factory=dict, max_length=20)
 
 
 class UnmatchedDiscClassificationRequest(BaseModel):
@@ -2146,9 +2161,16 @@ class ManualEpisodeIdentificationRequest(BaseModel):
     new_name: str = Field(min_length=1, max_length=160)
     content_type: str = Field(default="episode", pattern=r"^(episode|bonus)$")
     evidence_source: str = Field(
-        default="manual_playback", pattern=r"^(manual_playback|catalogue_candidate)$"
+        default="manual_playback",
+        pattern=r"^(manual_playback|catalogue_candidate|provider_candidate)$",
     )
     confirm_identification: bool = False
+
+
+class CorrectEpisodeIdentificationRequest(BaseModel):
+    candidate_episode_id: str = Field(pattern=r"^S\d{2}E\d{2,3}$")
+    expected_artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    confirm_correction: bool = False
 
 
 class ResolveLibraryCollisionRequest(BaseModel):
@@ -2404,6 +2426,7 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
     staged_source_available = False
     provisional_match = False
     gemini_confidence = None
+    gemini_series_proposal = None
     disc_fingerprint = None
     title_index = None
     try:
@@ -2419,6 +2442,41 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
         if isinstance(rip_title_index, int) and not isinstance(rip_title_index, bool):
             title_index = rip_title_index
     except (OSError, json.JSONDecodeError):
+        pass
+    try:
+        proposal_event = next(
+            (
+                event
+                for event in reversed(
+                    get_pipeline_queue_store().list_events(item.media_id)
+                )
+                if event.event_type == "gemini_series_resolution_proposed"
+            ),
+            None,
+        )
+        if proposal_event is not None:
+            details = proposal_event.details
+            name = details.get("proposed_series_name")
+            confidence = details.get("confidence")
+            tmdb_id = details.get("proposed_tmdb_id")
+            ranked_names = details.get("proposed_series_names")
+            if (
+                isinstance(name, str)
+                and isinstance(confidence, int | float)
+                and not isinstance(confidence, bool)
+            ):
+                gemini_series_proposal = {
+                    "series_name": name,
+                    "series_names": (
+                        ranked_names
+                        if isinstance(ranked_names, list)
+                        and all(isinstance(value, str) for value in ranked_names)
+                        else [name]
+                    ),
+                    "confidence": float(confidence),
+                    "tmdb_id": tmdb_id if isinstance(tmdb_id, int) else None,
+                }
+    except PipelineQueueError:
         pass
     try:
         payload = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
@@ -2454,7 +2512,7 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
             retained_size=retained_size if isinstance(retained_size, int) else None,
             retained_at=retained_at if isinstance(retained_at, str) else None,
             contract_path=item.artifact.contract_path,
-            ttl_days=config.retained_source_ttl_days,
+            ttl_days=getattr(config, "retained_source_ttl_days", 30),
         )
         if retained_status == "active":
             retained_source_available = True
@@ -2516,7 +2574,8 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
         "staged_source_available": staged_source_available,
         "provisional_match": provisional_match,
         "gemini_confidence": gemini_confidence,
-        "retained_source_ttl_days": config.retained_source_ttl_days,
+        "gemini_series_proposal": gemini_series_proposal,
+        "retained_source_ttl_days": getattr(config, "retained_source_ttl_days", 30),
         "state": item.state,
         "stage": item.stage,
         "created_at": item.created_at,
@@ -3435,7 +3494,14 @@ def execute_rip_job(
                 job_id, kind, message
             ),
         )
-        registry.attach(job_id, run_directory)
+        drive_indexes = frozenset(
+            int(drive["drive_index"])
+            for drive in job.preview.get("drives", [])
+            if isinstance(drive, dict)
+            and isinstance(drive.get("drive_index"), int)
+            and not isinstance(drive.get("drive_index"), bool)
+        )
+        registry.attach(job_id, run_directory, drive_indexes)
         try:
             completed = RipDispatcher(store, private_store).dispatch(
                 job_id,
@@ -3565,6 +3631,89 @@ def get_pipeline_items(
             _pipeline_item_response(item, dossier, visual_reviews.get(item.media_id))
             for item in store.list_items()
         ],
+    }
+
+
+@router.get("/pipeline/discs/{disc_fingerprint}/identification-audit")
+def get_disc_identification_audit(
+    disc_fingerprint: str,
+    store: Annotated[PipelineQueueStore, Depends(get_pipeline_queue_store)],
+    orchestration_store: Annotated[
+        OrchestrationStore, Depends(get_orchestration_store)
+    ],
+) -> dict[str, object]:
+    """Return an explicit, complete, path- and dialogue-redacted disc trace."""
+
+    if re.fullmatch(r"[0-9a-f]{16}", disc_fingerprint) is None:
+        raise HTTPException(status_code=422, detail="Disc fingerprint is invalid")
+    dossier = IdentificationDossierStore(
+        get_pipeline_contract_root().parent / "identification-evidence"
+    )
+    titles = []
+    for item in store.list_items():
+        snapshot = _pipeline_item_response(item)
+        if snapshot.get("disc_fingerprint") != disc_fingerprint:
+            continue
+        try:
+            audit_events = list(dossier.audit_events(item.media_id))
+        except PipelineQueueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        titles.append({
+            "media_id": item.media_id,
+            "title_index": snapshot.get("title_index"),
+            "display_name": snapshot.get("display_name"),
+            "match_summary": snapshot.get("match_summary"),
+            "stage": item.stage,
+            "state": item.state,
+            "review_code": item.review_code,
+            "error_type": item.error_type,
+            "pipeline_events": [
+                asdict(event) for event in store.list_events(item.media_id)
+            ],
+            "identification_audit": audit_events,
+        })
+    titles.sort(
+        key=lambda value: (
+            value["title_index"] is None,
+            value["title_index"] if value["title_index"] is not None else 0,
+            str(value["media_id"]),
+        )
+    )
+    matching_runs = [
+        run
+        for run in store.matching_performance(limit=200)
+        if run.get("disc_fingerprint") == disc_fingerprint
+    ]
+    title_history = {
+        title_index: {
+            "outcome_name": outcome.get("outcome_name"),
+            "episode_id": outcome.get("episode_id"),
+        }
+        for title_index, outcome in store.title_history(disc_fingerprint).items()
+    }
+    rip_jobs = [
+        {
+            "job_id": job.job_id,
+            "state": job.state,
+            "plan_sha256": job.plan_sha256,
+            "created_at": job.created_at,
+            "updated_at": job.updated_at,
+            "executor_attached": job.executor_attached,
+            "events": [
+                asdict(event) for event in orchestration_store.list_events(job.job_id)
+            ],
+        }
+        for job in orchestration_store.jobs_for_disc(disc_fingerprint)
+    ]
+    return {
+        "disc_fingerprint": disc_fingerprint,
+        "rip_jobs": rip_jobs,
+        "titles": titles,
+        "title_history": title_history,
+        "matching_runs": matching_runs,
+        "path_redacted": True,
+        "dialogue_redacted": True,
+        "complete_candidate_audit_is_on_demand": True,
     }
 
 
@@ -3817,6 +3966,11 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
             status_code=400,
             detail="Media-read and episode-catalogue lookup confirmations are required",
         )
+    if request.reviewer_scene_descriptions and not request.confirm_external_fallback:
+        raise HTTPException(
+            status_code=400,
+            detail="Reviewer scene descriptions require explicit Gemini transmission approval",
+        )
     requested_series_name = " ".join(request.series_name.split())
     selected_by_title = {}
     for item in store.list_items():
@@ -3844,6 +3998,7 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
                 "all_season_evidence_failed",
                 "all_season_catalog_unavailable",
                 "all_season_sequence_review_required",
+                "independent_episode_evidence_required",
                 "gemini_descriptive_review_required",
                 "gemini_analysis_failed",
                 "gemini_audio_evidence_insufficient",
@@ -3869,6 +4024,18 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
         raise HTTPException(
             status_code=409, detail="No unmatched disc titles are ready"
         )
+    unknown_scene_description_ids = set(request.reviewer_scene_descriptions) - set(
+        selected
+    )
+    if unknown_scene_description_ids:
+        raise HTTPException(
+            status_code=409,
+            detail="A reviewer scene description no longer matches a held disc title",
+        )
+    reviewer_scene_descriptions = {
+        media_id: " ".join(description.split())
+        for media_id, description in request.reviewer_scene_descriptions.items()
+    }
     # This endpoint is an explicit reviewed recovery boundary.  The submitted
     # canonical name must therefore win over an old packaging label retained in
     # the rip contract (for example, "The Office Superfan Episodes S1").
@@ -3890,9 +4057,11 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
                 contract_root,
                 season=request.season,
                 allow_gemini=request.confirm_external_fallback,
-                # Once episode matching resolves the disc majority, let the
-                # remaining TV titles continue into the bonus-content route.
-                allow_content_fallback=True,
+                # An ordinary disc pass may route true leftovers to bonus
+                # analysis. An explicit scene-guided episode review must stay
+                # within the episode candidates the user asked Gemini to assess.
+                allow_content_fallback=not reviewer_scene_descriptions,
+                reviewer_scene_descriptions=reviewer_scene_descriptions,
             )
         except Exception as exc:
             if isinstance(exc, GeminiAnalysisError):
@@ -3922,8 +4091,8 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
                     ),
                 }.get(
                     str(exc),
-                    "all_season_sequence_review_required"
-                    if str(exc) == "All-season sequence result requires review"
+                    "independent_episode_evidence_required"
+                    if str(exc) == "Independent episode evidence requires review"
                     else "all_season_analysis_failed",
                 )
             for media_id in selected:
@@ -3938,6 +4107,7 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
         "started": True,
         "item_count": len(selected),
         "series_name": series_name,
+        "reviewer_scene_description_count": len(reviewer_scene_descriptions),
     }
 
 
@@ -3966,6 +4136,7 @@ def classify_unmatched_disc(
                 "unmatched_disc_analysis_required",
                 "all_season_analysis_failed",
                 "all_season_sequence_review_required",
+                "independent_episode_evidence_required",
             }
         ):
             continue
@@ -4206,6 +4377,7 @@ def apply_manual_episode_identification(  # noqa: C901 - guarded review boundary
                 "unmatched_disc_analysis_required",
                 "all_season_analysis_failed",
                 "all_season_sequence_review_required",
+                "independent_episode_evidence_required",
                 "special_feature_manual_assignment_required",
                 "gemini_descriptive_review_required",
                 "catalogue_candidate_help_available",
@@ -4237,6 +4409,35 @@ def apply_manual_episode_identification(  # noqa: C901 - guarded review boundary
             if cleaned.casefold() != expected_name.casefold():
                 raise PipelineQueueError(
                     "The reviewed name does not match the displayed catalogue candidate"
+                )
+        if request.evidence_source == "provider_candidate":
+            dossier = IdentificationDossierStore(
+                contract_root.parent / "identification-evidence"
+            )
+            displayed = {
+                f"{summary.get('candidate_series_name')} - "
+                f"{summary.get('candidate_episode_id')} - "
+                f"{summary.get('candidate_episode_title')}"
+                for attempt in dossier.safe_attempts(media_id)
+                if attempt.get("branch")
+                in {"tv-local", "tv-opensubtitles", "tv-gemini"}
+                and isinstance((summary := attempt.get("summary")), dict)
+                and all(
+                    isinstance(summary.get(key), str) and summary.get(key)
+                    for key in (
+                        "candidate_series_name",
+                        "candidate_episode_id",
+                        "candidate_episode_title",
+                    )
+                )
+            }
+            if (
+                item.review_code != "gemini_descriptive_review_required"
+                or request.content_type != "episode"
+                or cleaned.casefold() not in {name.casefold() for name in displayed}
+            ):
+                raise PipelineQueueError(
+                    "The reviewed name does not match a displayed provider candidate"
                 )
         revised = dict(payload)
         context = dict(revised.get("media_context", {}))
@@ -4293,6 +4494,8 @@ def apply_manual_episode_identification(  # noqa: C901 - guarded review boundary
                 episode_assignment_source=(
                     "ripweaver-catalogue-help-reviewed"
                     if request.evidence_source == "catalogue_candidate"
+                    else "provider-candidate-reviewed"
+                    if request.evidence_source == "provider_candidate"
                     else "manual-playback-review"
                 ),
                 identification_policy_version=2,
@@ -4310,6 +4513,202 @@ def apply_manual_episode_identification(  # noqa: C901 - guarded review boundary
             media_id, build_artifact("rip", path)
         )
         store.set_paused(False)
+    except (OSError, json.JSONDecodeError, PipelineQueueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _pipeline_item_response(updated)
+
+
+_PIPELINE_DISC_TITLE_ID = re.compile(
+    r"--disc-\d+-([0-9a-f]{16})-title-(\d{3})(?:-|$)", re.IGNORECASE
+)
+
+
+def _disc_range_elimination_candidate(  # noqa: C901 - explicit safety checks
+    media_id: str,
+    candidate_episode_id: str,
+    store: PipelineQueueStore,
+    dossier: IdentificationDossierStore,
+) -> tuple[str, int, int, str]:
+    """Validate one provider candidate as the sole range-compatible episode."""
+
+    identity = _PIPELINE_DISC_TITLE_ID.search(media_id)
+    candidate_id = re.fullmatch(r"S(\d{2})E(\d{2,3})", candidate_episode_id)
+    if identity is None or candidate_id is None:
+        raise PipelineQueueError("Disc episode identity is unavailable")
+    fingerprint = identity.group(1).casefold()
+    current_title_index = int(identity.group(2))
+    season = int(candidate_id.group(1))
+    episode = int(candidate_id.group(2))
+
+    provider_candidates = []
+    for attempt in dossier.safe_attempts(media_id):
+        summary = attempt.get("summary")
+        if (
+            attempt.get("branch") == "tv-opensubtitles"
+            and isinstance(summary, dict)
+            and summary.get("candidate_episode_id") == candidate_episode_id
+            and isinstance(summary.get("candidate_series_name"), str)
+            and isinstance(summary.get("candidate_episode_title"), str)
+        ):
+            provider_candidates.append(summary)
+    if not provider_candidates:
+        raise PipelineQueueError(
+            "The correction is not a displayed subtitle-evidence candidate"
+        )
+    provider = provider_candidates[-1]
+    series_name = str(provider["candidate_series_name"]).strip()
+    episode_title = str(provider["candidate_episode_title"]).strip()
+    if not series_name or not episode_title:
+        raise PipelineQueueError("The correction candidate metadata is incomplete")
+
+    history = store.catalogue_title_history(fingerprint)
+    observed_title_indexes: set[int] = set()
+    independent_anchors: set[tuple[int, int]] = set()
+    for sibling in store.list_items():
+        sibling_identity = _PIPELINE_DISC_TITLE_ID.search(sibling.media_id)
+        if (
+            sibling_identity is None
+            or sibling_identity.group(1).casefold() != fingerprint
+        ):
+            continue
+        sibling_title_index = int(sibling_identity.group(2))
+        observed_title_indexes.add(sibling_title_index)
+        if sibling_title_index == current_title_index:
+            continue
+        outcome = history.get(sibling_title_index, {})
+        anchor_episode_id = outcome.get("episode_id")
+        if (
+            not isinstance(anchor_episode_id, str)
+            or outcome.get("series_name", "").casefold() != series_name.casefold()
+        ):
+            continue
+        anchor_match = re.fullmatch(r"S(\d{2})E(\d{2,3})", anchor_episode_id)
+        if anchor_match is None:
+            continue
+        independently_matched = any(
+            attempt.get("branch") == "tv-opensubtitles"
+            and attempt.get("disposition") == "matched"
+            and isinstance((summary := attempt.get("summary")), dict)
+            and summary.get("candidate_episode_id") == anchor_episode_id
+            and isinstance(summary.get("best_score"), int | float)
+            and not isinstance(summary.get("best_score"), bool)
+            and float(summary["best_score"]) >= 0.70
+            for attempt in dossier.safe_attempts(sibling.media_id)
+        )
+        if independently_matched:
+            independent_anchors.add((
+                int(anchor_match.group(1)),
+                int(anchor_match.group(2)),
+            ))
+
+    expected_indexes = store.expected_title_indexes_for_disc(fingerprint)
+    disc_title_count = len(expected_indexes or tuple(sorted(observed_title_indexes)))
+    anchor_episodes = sorted(
+        anchor_episode
+        for anchor_season, anchor_episode in independent_anchors
+        if anchor_season == season
+    )
+    if len(anchor_episodes) < 2 or disc_title_count < len(anchor_episodes):
+        raise PipelineQueueError("Independent same-disc range evidence is incomplete")
+    anchor_minimum = min(anchor_episodes)
+    anchor_maximum = max(anchor_episodes)
+    if anchor_maximum - anchor_minimum + 1 > disc_title_count:
+        raise PipelineQueueError("Independent same-disc matches do not form one range")
+    minimum_episode = max(1, anchor_maximum - disc_title_count + 1)
+    maximum_episode = anchor_minimum + disc_title_count - 1
+    if not minimum_episode <= episode <= maximum_episode:
+        raise PipelineQueueError("The correction candidate is outside the disc range")
+    assigned = store.assigned_series_episodes(series_name)
+    remaining = tuple(
+        value
+        for value in range(minimum_episode, maximum_episode + 1)
+        if (season, value) not in assigned
+    )
+    if remaining != (episode,):
+        raise PipelineQueueError(
+            "The correction candidate is not the sole remaining episode in range"
+        )
+    return series_name, season, episode, episode_title
+
+
+@router.post(
+    "/pipeline/items/{media_id}/correct-episode-identification",
+    response_model=PipelineItemResponse,
+)
+def correct_pipeline_episode_identification(
+    media_id: str,
+    request: CorrectEpisodeIdentificationRequest,
+    store: Annotated[PipelineQueueStore, Depends(get_pipeline_queue_store)],
+    contract_root: Annotated[Path, Depends(get_pipeline_contract_root)],
+) -> dict[str, object]:
+    """Correct one held wrong match without reading or changing encoded media."""
+
+    if request.confirm_correction is not True:
+        raise HTTPException(
+            status_code=400, detail="Exact episode correction confirmation is required"
+        )
+    try:
+        item = store.get(media_id)
+        if (
+            item.state != "review_required"
+            or item.stage != "organize"
+            or item.review_code != "library_collision"
+            or item.artifact.contract_sha256 != request.expected_artifact_sha256
+        ):
+            raise PipelineQueueError("Held episode collision changed; review it again")
+        dossier = IdentificationDossierStore(
+            contract_root.parent / "identification-evidence"
+        )
+        series_name, season, episode, title = _disc_range_elimination_candidate(
+            media_id,
+            request.candidate_episode_id,
+            store,
+            dossier,
+        )
+        current = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
+        current_relative = Path(
+            str(current.get("library_relative", "")).replace("/", "\\")
+        )
+        if len(current_relative.parts) < 3 or (
+            current_relative.parts[0].casefold() != series_name.casefold()
+        ):
+            raise PipelineQueueError("Correction candidate belongs to another series")
+        cleaned_series = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", series_name)
+        cleaned_title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", title)
+        cleaned_series = re.sub(r"\s+", " ", cleaned_series).strip(" .")
+        cleaned_title = re.sub(r"\s+", " ", cleaned_title).strip(" .")
+        if not cleaned_series or not cleaned_title:
+            raise PipelineQueueError("Correction candidate filename is invalid")
+        display_title = (
+            f"{cleaned_series} - S{season:02d}E{episode:02d} - {cleaned_title}"
+        )
+        revised = dict(current)
+        revised.update(
+            episode_id=f"S{season:02d}E{episode:02d}",
+            display_title=display_title,
+            library_relative=PurePosixPath(
+                cleaned_series,
+                f"Season {season:02d}",
+                f"{display_title}.mkv",
+            ).as_posix(),
+            identification_order=["disc-range-elimination-reviewed"],
+            assignment_evidence_source="disc_range_elimination",
+            identification_policy_version=(AUTOMATIC_TV_IDENTIFICATION_POLICY_VERSION),
+            user_reviewed_name=True,
+        )
+        if not contract_root.is_dir():
+            raise PipelineQueueError("Pipeline contract root is unavailable")
+        contract = contract_root / (
+            f"{media_id}.transcode.episode-correction-{uuid4().hex[:12]}.json"
+        )
+        contract.write_text(
+            json.dumps(revised, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        updated = store.correct_held_episode_identification(
+            media_id,
+            build_artifact("transcode", contract),
+            expected_artifact_sha256=request.expected_artifact_sha256,
+        )
     except (OSError, json.JSONDecodeError, PipelineQueueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _pipeline_item_response(updated)

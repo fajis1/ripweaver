@@ -31,6 +31,7 @@ _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$")
 _BRANCHES = {
     "tv-local",
     "tv-opensubtitles",
+    "tv-disc-range",
     "tv-gemini",
     "tv-play-all",
     "tv-movie",
@@ -40,7 +41,12 @@ _BRANCHES = {
     "visual-ocr",
 }
 _DISPOSITIONS = {"started", "matched", "review", "failed", "skipped"}
+_AUDIT_DISPOSITIONS = _DISPOSITIONS | {"completed", "selected", "rejected"}
+_AUDIT_EVENT_KINDS = {"workflow", "attempt", "candidate"}
+_AUDIT_PHASE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+_ANALYSIS_RUN_ID = re.compile(r"^[0-9a-f]{32}$")
 SCHEMA_VERSION = 1
+AUDIT_SCHEMA_VERSION = 1
 SAMPLING_VERSION = "six-window-v2"
 
 
@@ -106,6 +112,49 @@ class IdentificationDossierStore:
 
     def _path(self, media_id: str) -> Path:
         return self.root / f"{self._check_id(media_id)}.private.json"
+
+    def _audit_path(self, media_id: str) -> Path:
+        return self.root / f"{self._check_id(media_id)}.identification-audit.jsonl"
+
+    @staticmethod
+    def _validate_safe_summary(
+        summary: dict[str, str | int | float | bool | None | list[str]],
+    ) -> None:
+        if any(
+            not isinstance(key, str)
+            or len(key) > 64
+            or isinstance(value, dict | tuple)
+            or (
+                isinstance(value, list)
+                and (
+                    len(value) > 12
+                    or any(
+                        not isinstance(item, str) or _SAFE_ID.fullmatch(item) is None
+                        for item in value
+                    )
+                )
+            )
+            or (isinstance(value, str) and len(value) > 240)
+            for key, value in summary.items()
+        ):
+            raise PipelineQueueError("Identification attempt details are unsafe")
+
+    def _append_audit_events(
+        self, media_id: str, events: tuple[dict[str, object], ...]
+    ) -> None:
+        """Append safe audit records without expanding the polled queue response."""
+
+        if not events:
+            return
+        self.root.mkdir(parents=True, exist_ok=True)
+        path = self._audit_path(media_id)
+        with path.open("a", encoding="utf-8", newline="\n") as stream:
+            for event in events:
+                stream.write(
+                    json.dumps(event, ensure_ascii=True, sort_keys=True) + "\n"
+                )
+            stream.flush()
+            os.fsync(stream.fileno())
 
     def _load(self, media_id: str) -> dict | None:
         path = self._path(media_id)
@@ -212,42 +261,145 @@ class IdentificationDossierStore:
         branch: str,
         disposition: str,
         summary: dict[str, str | int | float | bool | None | list[str]],
+        analysis_run_id: str | None = None,
     ) -> None:
         if branch not in _BRANCHES or disposition not in _DISPOSITIONS:
             raise PipelineQueueError("Identification attempt summary is invalid")
-        if any(
-            not isinstance(key, str)
-            or len(key) > 64
-            or isinstance(value, dict | tuple)
-            or (
-                isinstance(value, list)
-                and (
-                    len(value) > 12
-                    or any(
-                        not isinstance(item, str) or _SAFE_ID.fullmatch(item) is None
-                        for item in value
-                    )
-                )
-            )
-            or (isinstance(value, str) and len(value) > 240)
-            for key, value in summary.items()
+        self._validate_safe_summary(summary)
+        if (
+            analysis_run_id is not None
+            and _ANALYSIS_RUN_ID.fullmatch(analysis_run_id) is None
         ):
-            raise PipelineQueueError("Identification attempt details are unsafe")
+            raise PipelineQueueError("Identification analysis run ID is invalid")
         now = datetime.now(UTC).isoformat()
         for media_id in media_ids:
             payload = self._load(media_id)
             if payload is None:
                 continue
             attempts = payload.setdefault("attempts", [])
-            attempts.append({
+            attempt = {
                 "branch": branch,
                 "disposition": disposition,
                 "summary": summary,
                 "created_at": now,
-            })
+            }
+            if analysis_run_id is not None:
+                attempt["analysis_run_id"] = analysis_run_id
+            attempts.append(attempt)
             payload["attempts"] = attempts[-20:]
             payload["updated_at"] = now
             self._write(media_id, payload)
+            self._append_audit_events(
+                media_id,
+                (
+                    {
+                        "schema_version": AUDIT_SCHEMA_VERSION,
+                        "event_kind": "attempt",
+                        "analysis_run_id": analysis_run_id,
+                        "branch": branch,
+                        "disposition": disposition,
+                        "summary": summary,
+                        "created_at": now,
+                    },
+                ),
+            )
+
+    def record_workflow_event(
+        self,
+        media_ids: tuple[str, ...],
+        *,
+        analysis_run_id: str,
+        phase: str,
+        disposition: str,
+        summary: dict[str, str | int | float | bool | None | list[str]],
+    ) -> None:
+        """Record a path- and dialogue-free workflow boundary for a disc run."""
+
+        if (
+            _ANALYSIS_RUN_ID.fullmatch(analysis_run_id) is None
+            or _AUDIT_PHASE.fullmatch(phase) is None
+            or disposition not in _AUDIT_DISPOSITIONS
+        ):
+            raise PipelineQueueError("Identification workflow audit is invalid")
+        self._validate_safe_summary(summary)
+        now = datetime.now(UTC).isoformat()
+        for media_id in media_ids:
+            self._append_audit_events(
+                media_id,
+                (
+                    {
+                        "schema_version": AUDIT_SCHEMA_VERSION,
+                        "event_kind": "workflow",
+                        "analysis_run_id": analysis_run_id,
+                        "phase": phase,
+                        "disposition": disposition,
+                        "summary": summary,
+                        "created_at": now,
+                    },
+                ),
+            )
+
+    def record_candidate_evaluations(
+        self,
+        media_id: str,
+        *,
+        analysis_run_id: str,
+        branch: str,
+        evaluations: tuple[dict[str, str | int | float | bool | None | list[str]], ...],
+    ) -> None:
+        """Persist every safe candidate decision outside routine dashboard polling."""
+
+        if (
+            _ANALYSIS_RUN_ID.fullmatch(analysis_run_id) is None
+            or branch not in _BRANCHES
+        ):
+            raise PipelineQueueError("Identification candidate audit is invalid")
+        now = datetime.now(UTC).isoformat()
+        records = []
+        for evaluation in evaluations:
+            self._validate_safe_summary(evaluation)
+            disposition = evaluation.get("disposition")
+            if disposition not in _AUDIT_DISPOSITIONS:
+                raise PipelineQueueError("Candidate audit disposition is invalid")
+            records.append({
+                "schema_version": AUDIT_SCHEMA_VERSION,
+                "event_kind": "candidate",
+                "analysis_run_id": analysis_run_id,
+                "branch": branch,
+                "disposition": disposition,
+                "summary": evaluation,
+                "created_at": now,
+            })
+        self._append_audit_events(media_id, tuple(records))
+
+    def audit_events(self, media_id: str) -> tuple[dict[str, object], ...]:
+        """Return the complete safe audit, ignoring only an interrupted tail line."""
+
+        path = self._audit_path(media_id)
+        if not path.is_file():
+            return ()
+        events = []
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            raise PipelineQueueError("Identification audit is unreadable") from exc
+        for index, line in enumerate(lines):
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError as exc:
+                if index == len(lines) - 1:
+                    continue
+                raise PipelineQueueError("Identification audit is unreadable") from exc
+            if (
+                not isinstance(event, dict)
+                or event.get("schema_version") != AUDIT_SCHEMA_VERSION
+                or event.get("event_kind") not in _AUDIT_EVENT_KINDS
+                or event.get("disposition") not in _AUDIT_DISPOSITIONS
+                or not isinstance(event.get("summary"), dict)
+            ):
+                raise PipelineQueueError("Identification audit is unreadable")
+            events.append(event)
+        return tuple(events)
 
     def safe_attempts(self, media_id: str) -> tuple[dict[str, object], ...]:
         payload = self._load(media_id)
@@ -276,6 +428,7 @@ def collect_dossier_evidence(  # noqa: C901 - linear cache/probe/audio guards
     contract_root: Path,
     include_visual_text: bool = False,
     visual_review_recorder: Callable[[str, str], None] | None = None,
+    analysis_run_id: str | None = None,
 ) -> tuple[tuple[UnmatchedFileEvidence, ...], IdentificationDossierStore]:
     """Reuse exact-source evidence and collect only cache misses.
 
@@ -367,6 +520,7 @@ def collect_dossier_evidence(  # noqa: C901 - linear cache/probe/audio guards
             tuple(ordered_ids),
             branch="visual-ocr",
             disposition="failed",
+            analysis_run_id=analysis_run_id,
             summary={"reason": "visual_tools_unavailable"},
         )
         return ordered, dossier
@@ -403,6 +557,7 @@ def collect_dossier_evidence(  # noqa: C901 - linear cache/probe/audio guards
                     if visual.category in {"likely_warning_screen", "likely_disc_menu"}
                     else "review"
                 ),
+                analysis_run_id=analysis_run_id,
                 summary={
                     "category": visual.category,
                     "ocr_text_characters": visual.ocr_text_characters,
@@ -419,6 +574,7 @@ def collect_dossier_evidence(  # noqa: C901 - linear cache/probe/audio guards
                 (evidence.file_id,),
                 branch="visual-ocr",
                 disposition="failed",
+                analysis_run_id=analysis_run_id,
                 summary={"reason": type(exc).__name__},
             )
         augmented.append(

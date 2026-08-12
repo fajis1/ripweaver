@@ -402,6 +402,10 @@ def run_single_open_batch(  # noqa: C901
             "Batch rip was interrupted; partial files were preserved"
         ) from exc
     finally:
+        # Keep the physical-drive claim meaningful: no unexpected callback or
+        # stream exception may return while this MakeMKV child is still alive.
+        if process.poll() is None:
+            _stop_process(process)
         reader.join(timeout=2)
         process.stdout.close()
 

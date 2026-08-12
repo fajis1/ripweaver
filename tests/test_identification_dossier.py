@@ -268,6 +268,71 @@ def test_attempt_history_is_bounded_and_rejects_nested_private_data(tmp_path):
         )
 
 
+def test_complete_identification_audit_survives_restart_outside_polled_summary(
+    tmp_path,
+):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    identity = source_identity(_payload(source), source, "small")
+    root = tmp_path / "private"
+    store = IdentificationDossierStore(root)
+    store.save_evidence(
+        identity,
+        UnmatchedFileEvidence("media-1", 1200, ("private dialogue",)),
+    )
+    run_id = "a" * 32
+    store.record_workflow_event(
+        ("media-1",),
+        analysis_run_id=run_id,
+        phase="analysis-started",
+        disposition="started",
+        summary={"title_count": 1},
+    )
+    for index in range(25):
+        store.record_attempt(
+            ("media-1",),
+            branch="tv-local",
+            disposition="review",
+            analysis_run_id=run_id,
+            summary={"score": index / 100},
+        )
+    store.record_candidate_evaluations(
+        "media-1",
+        analysis_run_id=run_id,
+        branch="tv-opensubtitles",
+        evaluations=(
+            {
+                "candidate_episode_id": "S01E01",
+                "candidate_episode_title": "First",
+                "score": 0.62,
+                "disposition": "rejected",
+                "reason": "below_confidence_threshold",
+            },
+            {
+                "candidate_episode_id": "S01E02",
+                "candidate_episode_title": "Second",
+                "score": 0.91,
+                "disposition": "selected",
+                "reason": "accepted",
+            },
+        ),
+    )
+
+    restored = IdentificationDossierStore(root)
+    audit = restored.audit_events("media-1")
+
+    assert len(restored.safe_attempts("media-1")) == 12
+    assert len([event for event in audit if event["event_kind"] == "attempt"]) == 25
+    assert [
+        event["summary"]["reason"]
+        for event in audit
+        if event["event_kind"] == "candidate"
+    ] == ["below_confidence_threshold", "accepted"]
+    assert all(event["analysis_run_id"] == run_id for event in audit)
+    assert "private dialogue" not in str(audit)
+    assert str(source) not in str(audit)
+
+
 def test_play_all_attempt_retains_bounded_component_episode_ids(tmp_path):
     source = tmp_path / "source.mkv"
     source.write_bytes(b"synthetic")

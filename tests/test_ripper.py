@@ -382,6 +382,27 @@ def test_cancel_file_stops_before_media_output(tmp_path):
     assert "job_cancel_requested" in log_path.read_text(encoding="utf-8")
 
 
+def test_unexpected_progress_callback_failure_settles_process(tmp_path):
+    executable, output_root, log_path = _paths(tmp_path)
+    process = FakeProcess("PRGV:65536,65536,65536\n", running=True)
+
+    def fail_progress(_kind: str, _message: str) -> None:
+        raise RuntimeError("synthetic progress persistence failure")
+
+    with JsonlRipLog(log_path) as event_log:
+        with pytest.raises(RuntimeError, match="progress persistence"):
+            run_rip_job(
+                executable,
+                output_root,
+                _job(),
+                event_log,
+                popen_factory=lambda *_args, **_kwargs: process,
+                on_event=fail_progress,
+            )
+
+    assert process.terminated is True
+
+
 def test_parallel_queue_runs_drives_concurrently_but_titles_in_order(
     tmp_path, monkeypatch
 ):

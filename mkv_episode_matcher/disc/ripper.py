@@ -445,6 +445,11 @@ def run_rip_job(  # noqa: C901 - guarded external-process state machine
         _stop_process(process)
         raise RipError("Rip was interrupted; partial files were preserved") from exc
     finally:
+        # Any exception raised by throughput sampling, progress persistence, or
+        # stream handling must not abandon a live MakeMKV process after the
+        # orchestration job has already failed and released its drive claim.
+        if process.poll() is None:
+            _stop_process(process)
         reader.join(timeout=2)
         process.stdout.close()
 

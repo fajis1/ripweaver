@@ -558,12 +558,106 @@ def test_identify_adapter_rechecks_pre_policy_all_season_assignment(tmp_path):
             "media_context": {
                 "series_name": "Faerie Tale Theatre",
                 "season": None,
+                "identification_policy_version": 2,
                 "episode_assignments": [
                     {
                         "title_index": 0,
                         "season": 3,
                         "episode": 1,
                         "title": "Goldilocks and the Three Bears",
+                        "evidence_source": "sequence-advisory",
+                    }
+                ],
+            },
+        }),
+        encoding="utf-8",
+    )
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    store.enqueue_verified_rip("media-1", build_artifact("rip", contract))
+    item = store.claim_next()
+
+    with pytest.raises(
+        PipelineReviewRequiredError, match="unmatched_disc_analysis_required"
+    ):
+        IdentifyStageAdapter(SimpleNamespace(), contracts)(item)
+
+
+@pytest.mark.parametrize(
+    ("evidence_source", "expected_order"),
+    [
+        ("opensubtitles-two-window", "tv-opensubtitles-two-window"),
+        (
+            "opensubtitles-residual-elimination",
+            "tv-opensubtitles-residual-elimination",
+        ),
+        ("gemini-two-pass", "tv-gemini-two-pass"),
+    ],
+)
+def test_identify_adapter_accepts_only_new_independent_all_season_policy(
+    tmp_path, evidence_source, expected_order
+):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    contract = tmp_path / "media-1.all-season-new.json"
+    contract.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "title_index": 0,
+            "media_context": {
+                "series_name": "Faerie Tale Theatre",
+                "season": None,
+                "identification_policy_version": 4,
+                "episode_assignments": [
+                    {
+                        "title_index": 0,
+                        "season": 3,
+                        "episode": 1,
+                        "title": "Goldilocks and the Three Bears",
+                        "evidence_source": evidence_source,
+                    }
+                ],
+            },
+        }),
+        encoding="utf-8",
+    )
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    store.enqueue_verified_rip("media-1", build_artifact("rip", contract))
+    item = store.claim_next()
+
+    artifact = IdentifyStageAdapter(SimpleNamespace(), contracts)(item)
+    payload = json.loads(artifact.contract_path.read_text(encoding="utf-8"))
+
+    assert payload["identification_order"] == [expected_order]
+    assert payload["identification_policy_version"] == 4
+    assert payload["assignment_evidence_source"] == evidence_source
+
+
+def test_identify_adapter_rejects_sequence_as_v4_assignment_evidence(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    contract = tmp_path / "media-1.all-season-new.json"
+    contract.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "title_index": 0,
+            "media_context": {
+                "series_name": "Faerie Tale Theatre",
+                "identification_policy_version": 4,
+                "episode_assignments": [
+                    {
+                        "title_index": 0,
+                        "season": 3,
+                        "episode": 1,
+                        "title": "Goldilocks and the Three Bears",
+                        "evidence_source": "sequence-advisory",
                     }
                 ],
             },

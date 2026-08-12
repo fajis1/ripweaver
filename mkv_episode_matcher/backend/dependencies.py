@@ -1,6 +1,9 @@
 import threading
 from pathlib import Path
 
+from mkv_episode_matcher.backend.library_episode_repair import (
+    LibraryEpisodeRepairStore,
+)
 from mkv_episode_matcher.backend.rip_runtime import RipExecutionRegistry
 from mkv_episode_matcher.core.config_manager import ConfigManager
 from mkv_episode_matcher.core.engine import MatchEngineV2
@@ -39,6 +42,7 @@ _drive_watcher: DriveWatcher | None = None
 _handbrake_profile_store: HandBrakeProfileStore | None = None
 _drive_refresh_coordinator: DriveRefreshCoordinator | None = None
 _windows_volume_listener: WindowsVolumeEventListener | None = None
+_library_episode_repair_store: LibraryEpisodeRepairStore | None = None
 
 
 def get_config_manager():
@@ -167,6 +171,18 @@ def get_pipeline_contract_root() -> Path:
     return config.cache_dir.parent / "orchestration" / "pipeline-contracts"
 
 
+def get_library_episode_repair_store() -> LibraryEpisodeRepairStore:
+    """Return the private restart-safe Jellyfin episode-repair store."""
+
+    global _library_episode_repair_store
+    with _orchestration_lock:
+        if _library_episode_repair_store is None:
+            config = get_config_manager().load()
+            root = config.cache_dir.parent / "orchestration" / "library-repairs"
+            _library_episode_repair_store = LibraryEpisodeRepairStore(root)
+    return _library_episode_repair_store
+
+
 def get_drive_watcher() -> DriveWatcher:
     """Return the read-only process-local drive status cache."""
 
@@ -207,9 +223,6 @@ def start_windows_drive_events() -> bool:
         if _rip_execution_registry.has_active_executor():
             snapshot = watcher.refresh_native_media()
         else:
-            # A volume event means the media occupying a tray may have changed.
-            # Clear process-local attachments before a full MakeMKV refresh.
-            watcher.invalidate_current_disc_bindings()
             executable = resolve_makemkv_path(config.makemkv_path)
             snapshot = watcher.refresh(executable, timeout_seconds=120)
         from mkv_episode_matcher.backend.automatic_rip import automatic_rip_coordinator
@@ -218,7 +231,23 @@ def start_windows_drive_events() -> bool:
             snapshot, enabled=config.automatic_processing_enabled
         )
 
-    coordinator = DriveRefreshCoordinator(refresh, lambda: False)
+    def periodic_refresh() -> None:
+        config = get_config_manager().load()
+        watcher = get_drive_watcher()
+        snapshot = watcher.refresh_native_media()
+        from mkv_episode_matcher.backend.automatic_rip import automatic_rip_coordinator
+
+        automatic_rip_coordinator.observe(
+            snapshot, enabled=config.automatic_processing_enabled
+        )
+
+    coordinator = DriveRefreshCoordinator(
+        refresh,
+        _rip_execution_registry.has_active_executor,
+        invalidate_bindings=get_drive_watcher().invalidate_current_disc_bindings,
+        periodic_refresh=periodic_refresh,
+        poll_seconds=15.0,
+    )
     listener = WindowsVolumeEventListener(coordinator.notify_change)
     coordinator.start()
     try:

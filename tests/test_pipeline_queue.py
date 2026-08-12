@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -9,6 +10,7 @@ from mkv_episode_matcher.backend.routers.rip import (
     ManualEpisodeIdentificationRequest,
     PipelineControlRequest,
     _delete_exact_queued_rip,
+    _disc_range_elimination_candidate,
     _exact_queued_rip_source,
     apply_manual_episode_identification,
     restart_placeholder_identification,
@@ -68,6 +70,9 @@ def test_identification_outcome_is_remembered_by_disc_title(tmp_path):
             "mode": "identified-episode-contract",
             "episode_id": "S01E03",
             "library_relative": "Dragons/Season 01/Dragons - S01E03 - Animal House.mkv",
+            "identification_order": ["tv-opensubtitles-two-window"],
+            "assignment_evidence_source": "opensubtitles-two-window",
+            "identification_policy_version": 4,
         }),
         encoding="utf-8",
     )
@@ -83,6 +88,11 @@ def test_identification_outcome_is_remembered_by_disc_title(tmp_path):
     }
     assert store.assigned_series_episodes("Dragons") == frozenset({(1, 3)})
     assert store.assigned_series_episodes("Another Series") == frozenset()
+    catalogue_history = store.catalogue_title_history("0123456789abcdef")[2]
+    assert catalogue_history["assignment_evidence_source"] == (
+        "opensubtitles-two-window"
+    )
+    assert catalogue_history["identification_policy_version"] == 4
     coverage = PipelineQueueStore(store.database_path).learned_series_coverage(
         "Dragons"
     )
@@ -799,6 +809,142 @@ def test_encoded_placeholder_can_restart_from_verified_rip(tmp_path):
     assert response["state"] == "queued"
     assert restarted.stage == "identify"
     assert restarted.artifact.contract_path == rip.resolve()
+
+
+def test_disc_range_elimination_accepts_only_remaining_provider_candidate():
+    fingerprint = "0123456789abcdef"
+    media_ids = {
+        title_index: (
+            f"The-Office-S4-D2--disc-01-{fingerprint}-title-{title_index:03d}"
+        )
+        for title_index in range(1, 8)
+    }
+    history = {
+        title_index: {
+            "episode_id": f"S04E{title_index + 6:02d}",
+            "series_name": "The Office",
+        }
+        for title_index in range(1, 7)
+    }
+    attempts = {
+        media_ids[title_index]: (
+            {
+                "branch": "tv-opensubtitles",
+                "disposition": "matched",
+                "summary": {
+                    "candidate_episode_id": f"S04E{title_index + 6:02d}",
+                    "best_score": 0.82,
+                },
+            },
+        )
+        for title_index in range(1, 7)
+    }
+    attempts[media_ids[7]] = (
+        {
+            "branch": "tv-opensubtitles",
+            "disposition": "review",
+            "summary": {
+                "candidate_episode_id": "S04E13",
+                "candidate_episode_title": "Job Fair",
+                "candidate_series_name": "The Office",
+                "best_score": 0.55,
+            },
+        },
+    )
+    store = SimpleNamespace(
+        catalogue_title_history=lambda _fingerprint: history,
+        list_items=lambda: tuple(
+            SimpleNamespace(media_id=media_id) for media_id in media_ids.values()
+        ),
+        expected_title_indexes_for_disc=lambda _fingerprint: tuple(range(1, 8)),
+        assigned_series_episodes=lambda _series: frozenset(
+            (4, episode) for episode in range(1, 13)
+        ),
+    )
+    dossier = SimpleNamespace(safe_attempts=lambda media_id: attempts[media_id])
+
+    assert _disc_range_elimination_candidate(
+        media_ids[7], "S04E13", store, dossier
+    ) == ("The Office", 4, 13, "Job Fair")
+
+
+def test_episode_correction_preserves_encode_and_updates_history(tmp_path):
+    store = _store(tmp_path)
+    media_id = "The-Office-S4-D2--disc-01-0123456789abcdef-title-007"
+    rip = tmp_path / "rip.json"
+    rip.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "disc_fingerprint": "0123456789abcdef",
+            "title_index": 7,
+        }),
+        encoding="utf-8",
+    )
+    identify = tmp_path / "identify.json"
+    identify.write_text(
+        json.dumps({
+            "mode": "identified-episode-contract",
+            "episode_id": "S04E04",
+            "library_relative": (
+                "The Office/Season 04/The Office - S04E04 - Money.mkv"
+            ),
+            "identification_order": ["tv-gemini"],
+        }),
+        encoding="utf-8",
+    )
+    encoded = tmp_path / "encoded.mkv"
+    encoded.write_bytes(b"verified-encode")
+    transcode_payload = {
+        "mode": "verified-transcode-contract",
+        "media_id": media_id,
+        "encoded_path": str(encoded),
+        "encoded_size_bytes": encoded.stat().st_size,
+        "encoded_height": 1080,
+        "encoded_width": 1920,
+        "episode_id": "S04E04",
+        "library_relative": "The Office/Season 04/The Office - S04E04 - Money.mkv",
+    }
+    transcode = tmp_path / "transcode.json"
+    transcode.write_text(json.dumps(transcode_payload), encoding="utf-8")
+    store.enqueue_verified_rip(media_id, build_artifact("rip", rip))
+    store.claim_next()
+    store.complete_stage(media_id, "identify", build_artifact("identify", identify))
+    store.claim_next()
+    store.complete_stage(media_id, "transcode", build_artifact("transcode", transcode))
+    store.claim_next()
+    store.require_review(media_id, "library_collision")
+    held = store.get(media_id)
+
+    corrected_payload = dict(transcode_payload)
+    corrected_payload.update(
+        episode_id="S04E13",
+        display_title="The Office - S04E13 - Job Fair",
+        library_relative=("The Office/Season 04/The Office - S04E13 - Job Fair.mkv"),
+        identification_order=["disc-range-elimination-reviewed"],
+        assignment_evidence_source="disc_range_elimination",
+        identification_policy_version=4,
+        user_reviewed_name=True,
+    )
+    corrected = tmp_path / "corrected.json"
+    corrected.write_text(json.dumps(corrected_payload), encoding="utf-8")
+
+    updated = store.correct_held_episode_identification(
+        media_id,
+        build_artifact("transcode", corrected),
+        expected_artifact_sha256=held.artifact.contract_sha256,
+    )
+
+    assert updated.state == "review_required"
+    assert updated.stage == "organize"
+    assert updated.review_code == "corrected_identification_ready"
+    assert encoded.read_bytes() == b"verified-encode"
+    history = store.catalogue_title_history("0123456789abcdef")[7]
+    assert history["episode_id"] == "S04E13"
+    assert history["assignment_evidence_source"] == "disc_range_elimination"
+    assert history["identification_policy_version"] == 4
+    assert store.list_events(media_id)[-1].event_type == (
+        "episode_identification_corrected"
+    )
 
 
 def test_manual_playback_review_teaches_disc_title_history(tmp_path):

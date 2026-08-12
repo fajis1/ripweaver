@@ -21,6 +21,7 @@ _AUTOMATIC_UNMATCHED_CODES = frozenset({
     "missing_season_context",
     "unmatched_disc_analysis_required",
     "all_season_sequence_review_required",
+    "independent_episode_evidence_required",
 })
 
 
@@ -44,23 +45,106 @@ def _preview_fingerprints(preview: dict[str, object]) -> frozenset[str]:
 
 
 def _has_prior_disc_work(store, prepared_job) -> bool:
-    """Refuse automatic rerips when this exact inventory is already durable."""
+    """Refuse duplicates only when this inventory reached actionable work."""
 
     fingerprints = _preview_fingerprints(prepared_job.preview)
     if not fingerprints:
         return False
-    return any(
-        job.job_id != prepared_job.job_id
-        and bool(fingerprints & _preview_fingerprints(job.preview))
-        and job.state != "cancelled"
-        for job in store.list_jobs(limit=200)
+    for job in store.list_jobs(limit=200):
+        if (
+            job.job_id == prepared_job.job_id
+            or not fingerprints & _preview_fingerprints(job.preview)
+        ):
+            continue
+        if job.state in {
+            "authorized",
+            "queued",
+            "running",
+            "pause_requested",
+            "paused",
+            "completed",
+        }:
+            return True
+        if job.state == "failed" and hasattr(store, "list_events"):
+            if any(
+                event.event_type in {"rip_title_completed", "rip_title_output_closed"}
+                for event in store.list_events(job.job_id)
+            ):
+                return True
+    return False
+
+
+def _recover_bound_automatic_job(drive_index: int, watcher, store):
+    """Recover a clean job durably bound before preparation returned."""
+
+    drive = next(
+        (item for item in watcher.snapshot().drives if item.drive_index == drive_index),
+        None,
     )
+    if drive is None or not drive.current_job_id:
+        return None
+    try:
+        job = store.get_job(drive.current_job_id)
+    except RipError:
+        return None
+    if job.state not in {
+        "awaiting_review",
+        "authorized",
+        "queued",
+        "running",
+        "completed",
+    }:
+        return None
+    if job.preview.get("requires_review") is not False:
+        return None
+    fingerprint = drive.current_disc_fingerprint
+    if fingerprint and fingerprint not in _preview_fingerprints(job.preview):
+        return None
+    return job
+
+
+def _prepare_or_recover_automatic_job(
+    drive_index: int, prepare: Callable[[], dict[str, object]], watcher, store
+):
+    """Return the clean persisted job even if its response construction failed."""
+
+    try:
+        prepared = prepare()
+        return store.get_job(str(prepared["job_id"]))
+    except (HTTPException, RipError, OSError, ValueError) as exc:
+        job = _recover_bound_automatic_job(drive_index, watcher, store)
+        if job is None:
+            raise
+        logger.warning(
+            "Automatic rip recovered a clean bound job after preparation failed: {}",
+            type(exc).__name__,
+        )
+        return job
+
+
+def _automatic_job_can_advance(job, store) -> bool:
+    """Return whether one persisted job is safe for unattended advancement."""
+
+    if job.state in {"completed", "running"}:
+        return False
+    if job.state not in {"awaiting_review", "authorized", "queued"}:
+        logger.info("Automatic rip held a job whose state requires review")
+        return False
+    if job.state == "awaiting_review" and _has_prior_disc_work(store, job):
+        logger.info(
+            "Automatic rip held a previously known disc for existing-work review"
+        )
+        return False
+    if job.preview.get("requires_review") is not False:
+        logger.info("Automatic rip held one disc for an explicit review choice")
+        return False
+    return True
 
 
 class AutomaticRipCoordinator:
     """Launch one worker per newly loaded drive and suppress refresh duplicates."""
 
-    def __init__(self, worker: Callable[[int], None]):
+    def __init__(self, worker: Callable[[int], bool | None]):
         self._worker = worker
         self._lock = threading.Lock()
         self._present: dict[int, tuple[str | None, str | None]] = {}
@@ -99,19 +183,33 @@ class AutomaticRipCoordinator:
                 daemon=True,
             ).start()
 
+    def active_drive_indexes(self) -> tuple[int, ...]:
+        """Return a path-free snapshot of drives being prepared or advanced."""
+
+        with self._lock:
+            return tuple(sorted(self._running))
+
     def _run(self, drive_index: int) -> None:
+        retry = False
         try:
-            self._worker(drive_index)
+            retry = self._worker(drive_index) is False
         except Exception as exc:
+            retry = True
             logger.warning(
                 "Automatic rip preparation stopped safely: {}", type(exc).__name__
             )
         finally:
             with self._lock:
                 self._running.discard(drive_index)
+                if retry:
+                    # The unchanged disc must look newly loaded on the next
+                    # backend reconciliation turn. Otherwise one transient
+                    # preparation failure can only be recovered by a browser
+                    # refresh, tray cycle, or another Windows volume event.
+                    self._present.pop(drive_index, None)
 
 
-def run_automatic_drive(drive_index: int) -> None:
+def run_automatic_drive(drive_index: int) -> bool:
     """Prepare, authorize, queue, and execute one collision-free inserted disc."""
 
     from mkv_episode_matcher.backend.dependencies import (
@@ -134,41 +232,50 @@ def run_automatic_drive(drive_index: int) -> None:
 
     config = get_config_manager().load()
     if not config.automatic_processing_enabled:
-        return
+        return True
     token = uuid4().hex
     public_store = get_orchestration_store()
     private_store = get_private_binding_store()
     pipeline_store = get_pipeline_queue_store()
+    watcher = get_drive_watcher()
+    stage = "preparation"
     try:
-        prepared = prepare_drive_pipeline(
-            PrepareDrivePipelineRequest(
-                drive_index=drive_index,
-                handbrake_profile_id=None,
-                confirm_read=True,
+        job = _prepare_or_recover_automatic_job(
+            drive_index,
+            lambda: prepare_drive_pipeline(
+                PrepareDrivePipelineRequest(
+                    drive_index=drive_index,
+                    handbrake_profile_id=None,
+                    confirm_read=True,
+                ),
+                f"automatic-prepare-{drive_index}-{token}",
+                watcher,
+                public_store,
+                private_store,
+                pipeline_store,
+                get_disc_inventory_runner(),
             ),
-            f"automatic-prepare-{drive_index}-{token}",
-            get_drive_watcher(),
+            watcher,
             public_store,
-            private_store,
-            pipeline_store,
-            get_disc_inventory_runner(),
         )
-        job_id = str(prepared["job_id"])
-        job = public_store.get_job(job_id)
-        if _has_prior_disc_work(public_store, job):
-            logger.info(
-                "Automatic rip held a previously known disc for existing-work review"
+        job_id = job.job_id
+        if not _automatic_job_can_advance(job, public_store):
+            return True
+        if job.state == "awaiting_review":
+            stage = "authorization"
+            public_store.authorize(
+                job_id,
+                expected_plan_sha256=job.plan_sha256,
+                idempotency_key=f"automatic-authorize-{token}",
             )
-            return
-        if job.preview.get("requires_review") is not False:
-            logger.info("Automatic rip held one disc for an explicit review choice")
-            return
-        public_store.authorize(
-            job_id,
-            expected_plan_sha256=job.plan_sha256,
-            idempotency_key=f"automatic-authorize-{token}",
-        )
-        public_store.queue(job_id, idempotency_key=f"automatic-queue-{token}")
+            job = public_store.get_job(job_id)
+        if job.state == "authorized":
+            stage = "queueing"
+            public_store.queue(job_id, idempotency_key=f"automatic-queue-{token}")
+            job = public_store.get_job(job_id)
+        if job.state != "queued":
+            return job.state in {"running", "completed"}
+        stage = "execution"
         completed = execute_rip_job(
             job_id,
             ExecuteJobRequest(
@@ -198,8 +305,12 @@ def run_automatic_drive(drive_index: int) -> None:
                 media_ids,
                 profile_id=settings["handbrake_profile_id"],
             )
+        return True
     except (HTTPException, RipError, OSError, ValueError) as exc:
-        logger.warning("Automatic rip stopped safely: {}", type(exc).__name__)
+        logger.warning(
+            "Automatic rip stopped safely during {}: {}", stage, type(exc).__name__
+        )
+        return False
 
 
 def _wait_for_stage_to_settle(
@@ -350,6 +461,20 @@ def _resolve_automatic_unmatched_disc(  # noqa: C901
         )
     except Exception as exc:
         if isinstance(exc, GeminiAnalysisError):
+            if (
+                exc.proposed_series_name is not None
+                and exc.proposed_confidence is not None
+            ):
+                try:
+                    store.record_series_resolution_diagnostic(
+                        tuple(item.media_id for item in held),
+                        proposed_series_name=exc.proposed_series_name,
+                        proposed_series_names=exc.proposed_series_names,
+                        confidence=exc.proposed_confidence,
+                        proposed_tmdb_id=exc.proposed_tmdb_id,
+                    )
+                except PipelineQueueError:
+                    pass
             logger.warning(
                 "Automatic Gemini analysis stopped safely: {}", exc.diagnostic
             )
@@ -363,8 +488,8 @@ def _resolve_automatic_unmatched_disc(  # noqa: C901
                 "all_season_catalog_unavailable"
                 if str(exc) == "Episode catalogue is unavailable for the reviewed scope"
                 else (
-                    "all_season_sequence_review_required"
-                    if str(exc) == "All-season sequence result requires review"
+                    "independent_episode_evidence_required"
+                    if str(exc) == "Independent episode evidence requires review"
                     else "all_season_analysis_failed"
                 )
             )

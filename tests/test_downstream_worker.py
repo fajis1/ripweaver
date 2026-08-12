@@ -4,6 +4,89 @@ from types import SimpleNamespace
 from mkv_episode_matcher.backend.downstream_worker import DownstreamWorker
 
 
+def test_worker_quarantines_legacy_sequence_only_downstream_assignments(
+    tmp_path, monkeypatch
+):
+    fingerprint = "0123456789abcdef"
+    sequence_transcode = f"show--disc-01-{fingerprint}-title-001"
+    confirmed_transcode = f"show--disc-01-{fingerprint}-title-002"
+    sequence_organize = f"show--disc-01-{fingerprint}-title-003"
+    items = []
+    for media_id, stage in (
+        (sequence_transcode, "transcode"),
+        (confirmed_transcode, "transcode"),
+        (sequence_organize, "organize"),
+    ):
+        contract = tmp_path / f"{media_id}.json"
+        contract.write_text(
+            json.dumps({
+                "mode": "identified-episode-contract",
+                "identification_order": ["reviewed-release-catalogue"],
+            }),
+            encoding="utf-8",
+        )
+        items.append(
+            SimpleNamespace(
+                media_id=media_id,
+                stage=stage,
+                state="queued",
+                artifact=SimpleNamespace(contract_path=contract),
+            )
+        )
+
+    restarted = []
+    held = []
+    store = SimpleNamespace(
+        list_items=lambda: items,
+        restart_identification=lambda media_id, **kwargs: restarted.append((
+            media_id,
+            kwargs,
+        )),
+        hold_for_review=lambda media_id, code: held.append((media_id, code)),
+    )
+    attempts = {
+        sequence_transcode: ({"branch": "tv-local", "disposition": "matched"},),
+        confirmed_transcode: (
+            {"branch": "tv-local", "disposition": "matched"},
+            {"branch": "tv-opensubtitles", "disposition": "matched"},
+        ),
+        sequence_organize: ({"branch": "tv-local", "disposition": "matched"},),
+    }
+
+    class FakeDossier:
+        def __init__(self, _root):
+            pass
+
+        @staticmethod
+        def safe_attempts(media_id):
+            return attempts[media_id]
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root",
+        lambda: tmp_path / "contracts",
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.identification_dossier.IdentificationDossierStore",
+        FakeDossier,
+    )
+    worker = DownstreamWorker(
+        SimpleNamespace(store=store), allowed_stages=("identify", "transcode")
+    )
+
+    assert worker._reconcile_legacy_sequence_assignments() is True
+    assert worker._reconcile_legacy_sequence_assignments() is False
+    assert restarted == [
+        (
+            sequence_transcode,
+            {
+                "expected_disc_fingerprint": fingerprint,
+                "expected_title_index": 1,
+            },
+        )
+    ]
+    assert held == [(sequence_organize, "legacy_sequence_assignment_review_required")]
+
+
 def test_automatic_analysis_rechecks_complete_disc_when_one_old_item_failed(
     tmp_path, monkeypatch
 ):

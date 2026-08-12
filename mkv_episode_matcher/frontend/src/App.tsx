@@ -10,6 +10,7 @@ import LogsView from './components/LogsView';
 import SystemCleanupView from './components/SystemCleanupView';
 import JellyfinCleanupPanel from './components/JellyfinCleanupPanel';
 import ExpiredSourceCleanupModal from './components/ExpiredSourceCleanupModal';
+import LibraryEpisodeRepairView from './components/LibraryEpisodeRepairView';
 
 interface ScannedFile {
   path: string;
@@ -55,6 +56,7 @@ function App() {
   const [systemStatus, setSystemStatus] = useState({ status: 'loading', model_loaded: false, version: '...' });
   const [activityLog, setActivityLog] = useState<{ time: string, message: string, type: 'info' | 'success' | 'warning' }[]>([]);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [libraryMode, setLibraryMode] = useState<'standard' | 'repair'>('standard');
 
   // Check if onboarding is needed
   useEffect(() => {
@@ -371,6 +373,10 @@ function App() {
       );
     }
 
+    if (currentView === 'dashboard' && libraryMode === 'repair') {
+      return <LibraryEpisodeRepairView onBackToStandard={() => setLibraryMode('standard')} />;
+    }
+
     // DASHBOARD VIEW
     return (
       <div className="h-full flex flex-col gap-6">
@@ -393,6 +399,11 @@ function App() {
           </div>
 
           <div className="flex gap-3">
+            {workflowState === 'IDLE' && (
+              <button className="btn btn-secondary" onClick={() => setLibraryMode('repair')}>
+                Verify existing episode names
+              </button>
+            )}
             {workflowState === 'REVIEW' && (
               <>
                 <button className="btn btn-secondary" onClick={resetWorkflow}>Cancel</button>

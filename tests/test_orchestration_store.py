@@ -1,3 +1,4 @@
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
@@ -67,6 +68,15 @@ def _preview(tmp_path):
         output_root=output_root,
     )
     return preview, report, output_root
+
+
+def test_control_store_uses_wal_for_concurrent_progress_and_dashboard_reads(tmp_path):
+    database = tmp_path / "state" / "jobs.sqlite3"
+
+    OrchestrationStore(database)
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
 
 
 def test_create_is_idempotent_and_database_is_path_redacted(tmp_path):

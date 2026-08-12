@@ -66,7 +66,15 @@ _SAFE_DIAGNOSTIC_CODE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,95}")
 
 def _catalogue_history_metadata(
     identified: dict[str, object],
-) -> tuple[str, str, str | None, str | None, int | None]:
+) -> tuple[
+    str,
+    str,
+    str | None,
+    str | None,
+    int | None,
+    str | None,
+    int | None,
+]:
     order = identified.get("identification_order")
     branches = (
         tuple(value.casefold() for value in order if isinstance(value, str))
@@ -128,6 +136,21 @@ def _catalogue_history_metadata(
             if any("descriptive-movie" in branch for branch in branches)
             else "extra"
         )
+    evidence_source = identified.get("assignment_evidence_source")
+    evidence_source = (
+        evidence_source
+        if isinstance(evidence_source, str)
+        and _SAFE_DIAGNOSTIC_CODE.fullmatch(evidence_source)
+        else None
+    )
+    policy_version = identified.get("identification_policy_version")
+    policy_version = (
+        policy_version
+        if isinstance(policy_version, int)
+        and not isinstance(policy_version, bool)
+        and 1 <= policy_version <= 999
+        else None
+    )
     return (
         str(classification),
         match_source,
@@ -138,6 +161,8 @@ def _catalogue_history_metadata(
         if isinstance(series_name, str) and series_name.strip()
         else None,
         movie_year,
+        evidence_source,
+        policy_version,
     )
 
 
@@ -442,6 +467,8 @@ class PipelineQueueStore:
                     display_title TEXT,
                     series_name TEXT,
                     movie_year INTEGER,
+                    assignment_evidence_source TEXT,
+                    identification_policy_version INTEGER,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (disc_fingerprint, title_index)
                 );
@@ -507,6 +534,8 @@ class PipelineQueueStore:
                 "display_title": "TEXT",
                 "series_name": "TEXT",
                 "movie_year": "INTEGER",
+                "assignment_evidence_source": "TEXT",
+                "identification_policy_version": "INTEGER",
             }
             for column, declaration in history_migrations.items():
                 if column not in history_columns:
@@ -824,6 +853,8 @@ class PipelineQueueStore:
                 "display_title": row["display_title"],
                 "series_name": row["series_name"],
                 "movie_year": row["movie_year"],
+                "assignment_evidence_source": row["assignment_evidence_source"],
+                "identification_policy_version": row["identification_policy_version"],
             }
             for row in rows
         }
@@ -1459,6 +1490,74 @@ class PipelineQueueStore:
                 )
             connection.commit()
 
+    def record_series_resolution_diagnostic(
+        self,
+        media_ids: tuple[str, ...],
+        *,
+        proposed_series_name: str,
+        confidence: float,
+        proposed_tmdb_id: int | None,
+        proposed_series_names: tuple[str, ...] = (),
+    ) -> None:
+        """Retain one bounded, path-free Gemini proposal for a held disc."""
+
+        checked_ids = tuple(self._check_media_id(value) for value in media_ids)
+        clean_name = " ".join(proposed_series_name.split()).strip(" .")
+        ranked_names = tuple(
+            dict.fromkeys(
+                " ".join(value.split()).strip(" .")
+                for value in (proposed_series_names or (clean_name,))
+            )
+        )
+        if (
+            not checked_ids
+            or len(set(checked_ids)) != len(checked_ids)
+            or not clean_name
+            or len(clean_name) > 160
+            or not 1 <= len(ranked_names) <= 5
+            or ranked_names[0] != clean_name
+            or any(not value or len(value) > 160 for value in ranked_names)
+            or not isinstance(confidence, int | float)
+            or isinstance(confidence, bool)
+            or not 0 <= float(confidence) <= 1
+            or (
+                proposed_tmdb_id is not None
+                and (
+                    not isinstance(proposed_tmdb_id, int)
+                    or isinstance(proposed_tmdb_id, bool)
+                    or proposed_tmdb_id <= 0
+                )
+            )
+        ):
+            raise PipelineQueueError("Series-resolution diagnostic is invalid")
+        details = {
+            "proposed_series_name": clean_name,
+            "proposed_series_names": list(ranked_names),
+            "confidence": round(float(confidence), 6),
+            "proposed_tmdb_id": proposed_tmdb_id,
+        }
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for media_id in checked_ids:
+                row = connection.execute(
+                    "SELECT stage, state FROM pipeline_items WHERE media_id = ?",
+                    (media_id,),
+                ).fetchone()
+                if row is None or row["stage"] != "identify":
+                    connection.rollback()
+                    raise PipelineQueueError(
+                        "Series-resolution item is unavailable for identification"
+                    )
+                self._append_event(
+                    connection,
+                    media_id=media_id,
+                    event_type="gemini_series_resolution_proposed",
+                    stage="identify",
+                    state=row["state"],
+                    details=details,
+                )
+            connection.commit()
+
     def claim_next(
         self,
         *,
@@ -1551,6 +1650,8 @@ class PipelineQueueStore:
                 str,
                 str,
                 str | None,
+                str | None,
+                int | None,
                 str | None,
                 int | None,
             ]
@@ -1650,8 +1751,10 @@ class PipelineQueueStore:
                     INSERT INTO disc_title_history (
                         disc_fingerprint, title_index, outcome_name,
                         library_relative, episode_id, classification, match_source,
-                        display_title, series_name, movie_year, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        display_title, series_name, movie_year,
+                        assignment_evidence_source, identification_policy_version,
+                        updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(disc_fingerprint, title_index) DO UPDATE SET
                         outcome_name = excluded.outcome_name,
                         library_relative = excluded.library_relative,
@@ -1661,6 +1764,8 @@ class PipelineQueueStore:
                         display_title = excluded.display_title,
                         series_name = excluded.series_name,
                         movie_year = excluded.movie_year,
+                        assignment_evidence_source = excluded.assignment_evidence_source,
+                        identification_policy_version = excluded.identification_policy_version,
                         updated_at = excluded.updated_at
                     """,
                     (*history, self._now()),
@@ -2085,6 +2190,158 @@ class PipelineQueueStore:
             connection.commit()
         return self.get(media_id)
 
+    def correct_held_episode_identification(
+        self,
+        media_id: str,
+        artifact: PipelineArtifact,
+        *,
+        expected_artifact_sha256: str,
+    ) -> QueuedPipelineItem:
+        """Correct only episode metadata while preserving a held verified encode."""
+
+        _validate_artifact(artifact, "transcode")
+        if re.fullmatch(r"[0-9a-f]{64}", expected_artifact_sha256) is None:
+            raise PipelineQueueError("Expected pipeline artifact digest is invalid")
+        try:
+            corrected = json.loads(artifact.contract_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise PipelineQueueError("Corrected episode contract is invalid") from exc
+        episode_id = corrected.get("episode_id")
+        relative = corrected.get("library_relative")
+        if (
+            corrected.get("mode") != "verified-transcode-contract"
+            or not isinstance(episode_id, str)
+            or re.fullmatch(r"S\d{2}E\d{2,3}", episode_id) is None
+            or not isinstance(relative, str)
+            or not relative
+        ):
+            raise PipelineQueueError("Corrected episode identity is invalid")
+        relative_path = Path(relative.replace("/", "\\"))
+        if (
+            relative_path.is_absolute()
+            or ".." in relative_path.parts
+            or len(relative_path.parts) < 3
+            or relative_path.suffix.casefold() != ".mkv"
+        ):
+            raise PipelineQueueError("Corrected episode destination is unsafe")
+
+        checked_id = self._check_media_id(media_id)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM pipeline_items WHERE media_id = ?", (checked_id,)
+            ).fetchone()
+            if (
+                row is None
+                or row["state"] != "review_required"
+                or row["stage"] != "organize"
+                or row["review_code"] != "library_collision"
+                or row["artifact_sha256"] != expected_artifact_sha256
+            ):
+                connection.rollback()
+                raise PipelineQueueError(
+                    "Held episode collision changed; review it again"
+                )
+            try:
+                current = json.loads(
+                    Path(row["artifact_path"]).read_text(encoding="utf-8")
+                )
+                rip_payload = json.loads(
+                    Path(row["rip_artifact_path"]).read_text(encoding="utf-8")
+                )
+            except (OSError, json.JSONDecodeError) as exc:
+                connection.rollback()
+                raise PipelineQueueError("Held episode contracts are invalid") from exc
+            mutable_fields = {
+                "assignment_evidence_source",
+                "display_title",
+                "episode_id",
+                "identification_order",
+                "identification_policy_version",
+                "library_relative",
+                "user_reviewed_name",
+            }
+            if any(
+                current.get(key) != corrected.get(key)
+                for key in set(current) | set(corrected)
+                if key not in mutable_fields
+            ):
+                connection.rollback()
+                raise PipelineQueueError("Episode correction changed verified media")
+            fingerprint = rip_payload.get("disc_fingerprint")
+            title_index = rip_payload.get("title_index")
+            if (
+                not isinstance(fingerprint, str)
+                or re.fullmatch(r"[0-9a-f]{16}", fingerprint) is None
+                or not isinstance(title_index, int)
+                or isinstance(title_index, bool)
+            ):
+                connection.rollback()
+                raise PipelineQueueError("Verified rip identity is unavailable")
+            metadata = _catalogue_history_metadata(corrected)
+            now = self._now()
+            connection.execute(
+                """
+                UPDATE pipeline_items SET artifact_path = ?, artifact_sha256 = ?,
+                    artifact_count = ?, updated_at = ?, error_type = NULL,
+                    review_code = 'corrected_identification_ready'
+                WHERE media_id = ?
+                """,
+                (
+                    str(artifact.contract_path.resolve()),
+                    artifact.contract_sha256,
+                    artifact.item_count,
+                    now,
+                    checked_id,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO disc_title_history (
+                    disc_fingerprint, title_index, outcome_name,
+                    library_relative, episode_id, classification, match_source,
+                    display_title, series_name, movie_year,
+                    assignment_evidence_source, identification_policy_version,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(disc_fingerprint, title_index) DO UPDATE SET
+                    outcome_name = excluded.outcome_name,
+                    library_relative = excluded.library_relative,
+                    episode_id = excluded.episode_id,
+                    classification = excluded.classification,
+                    match_source = excluded.match_source,
+                    display_title = excluded.display_title,
+                    series_name = excluded.series_name,
+                    movie_year = excluded.movie_year,
+                    assignment_evidence_source = excluded.assignment_evidence_source,
+                    identification_policy_version = excluded.identification_policy_version,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    fingerprint,
+                    title_index,
+                    relative_path.name,
+                    relative.replace("\\", "/"),
+                    episode_id,
+                    *metadata,
+                    now,
+                ),
+            )
+            self._append_event(
+                connection,
+                media_id=checked_id,
+                event_type="episode_identification_corrected",
+                stage="organize",
+                state="review_required",
+                details={
+                    "previous_episode_id": current.get("episode_id"),
+                    "episode_id": episode_id,
+                    "evidence_source": corrected.get("assignment_evidence_source"),
+                },
+            )
+            connection.commit()
+        return self.get(checked_id)
+
     def choose_review_path(self, media_id: str, code: str) -> QueuedPipelineItem:
         """Record an ambiguity-resolution choice without queueing the item."""
 
@@ -2110,6 +2367,7 @@ class PipelineQueueStore:
             "all_season_evidence_failed",
             "all_season_catalog_unavailable",
             "all_season_sequence_review_required",
+            "independent_episode_evidence_required",
             "visual_content_review_required",
             "gemini_series_resolution_uncertain",
             "play_all_aggregate_detected",
@@ -2150,6 +2408,7 @@ class PipelineQueueStore:
                     "all_season_evidence_failed",
                     "all_season_catalog_unavailable",
                     "all_season_sequence_review_required",
+                    "independent_episode_evidence_required",
                     "visual_content_review_required",
                     "gemini_series_resolution_uncertain",
                 }
@@ -2203,6 +2462,7 @@ class PipelineQueueStore:
                     "all_season_evidence_failed",
                     "all_season_catalog_unavailable",
                     "all_season_sequence_review_required",
+                    "independent_episode_evidence_required",
                     "gemini_series_resolution_uncertain",
                     "catalogue_candidate_help_available",
                 }

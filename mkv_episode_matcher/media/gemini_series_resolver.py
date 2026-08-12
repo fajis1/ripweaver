@@ -33,6 +33,7 @@ class GeminiSeriesResolution:
     series_name: str
     confidence: float
     evidence: tuple[str, ...]
+    alternative_series_names: tuple[str, ...] = ()
 
 
 class _SeriesResolutionModel(BaseModel):
@@ -42,6 +43,7 @@ class _SeriesResolutionModel(BaseModel):
     series_name: str = Field(min_length=1, max_length=160)
     confidence: float = Field(ge=0.0, le=1.0)
     evidence: list[str] = Field(min_length=1, max_length=3)
+    alternative_series_names: list[str] = Field(max_length=4)
 
     @field_validator("series_name")
     @classmethod
@@ -49,6 +51,18 @@ class _SeriesResolutionModel(BaseModel):
         cleaned = " ".join(value.split()).strip(" .")
         if not cleaned or _WINDOWS_PATH.search(cleaned):
             raise ValueError("series name is invalid")
+        return cleaned
+
+    @field_validator("alternative_series_names")
+    @classmethod
+    def validate_alternative_names(cls, values: list[str]) -> list[str]:
+        cleaned = []
+        for value in values:
+            name = " ".join(value.split()).strip(" .")
+            if not name or len(name) > 160 or _WINDOWS_PATH.search(name):
+                raise ValueError("alternative series name is invalid")
+            if name.casefold() not in {item.casefold() for item in cleaned}:
+                cleaned.append(name)
         return cleaned
 
 
@@ -70,7 +84,8 @@ def build_series_resolution_request(
             "CSR, DIM, and trailing set numbers. If supplied TMDb candidates "
             "contain the series, return exactly that candidate ID and name. If "
             "the candidate list is empty, propose only the canonical series name "
-            "and return null for tmdb_id. Do not invent a TMDb ID."
+            "and return null for tmdb_id. Rank up to four distinct alternative "
+            "canonical series names after the best answer. Do not invent a TMDb ID."
         ),
         "series_hint": hint,
         "tmdb_candidates": [
@@ -99,8 +114,20 @@ def build_series_resolution_request(
                 "maxItems": 3,
                 "items": {"type": "string", "maxLength": 200},
             },
+            "alternative_series_names": {
+                "type": "array",
+                "minItems": 0,
+                "maxItems": 4,
+                "items": {"type": "string", "minLength": 1, "maxLength": 160},
+            },
         },
-        "required": ["tmdb_id", "series_name", "confidence", "evidence"],
+        "required": [
+            "tmdb_id",
+            "series_name",
+            "confidence",
+            "evidence",
+            "alternative_series_names",
+        ],
         "additionalProperties": False,
     }
     return {
@@ -184,6 +211,11 @@ class GeminiSeriesResolver:
                 parsed.series_name,
                 parsed.confidence,
                 tuple(parsed.evidence),
+                tuple(
+                    name
+                    for name in parsed.alternative_series_names
+                    if name.casefold() != parsed.series_name.casefold()
+                ),
             )
         raise ApiServiceError("Gemini", None, "retry loop ended unexpectedly")
 

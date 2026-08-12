@@ -77,6 +77,12 @@ class OrchestrationStore:
 
     def _initialize(self) -> None:
         with self._schema_lock, self._connect() as connection:
+            # Dashboard readers must not queue behind frequent progress-event
+            # writes from one worker per active optical drive. WAL preserves
+            # the same transactional guarantees while allowing those reads to
+            # observe the latest committed snapshot concurrently.
+            connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute("PRAGMA synchronous = NORMAL")
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS jobs (

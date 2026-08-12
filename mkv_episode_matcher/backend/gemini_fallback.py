@@ -66,6 +66,8 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
     config: Config,
     asr,
     contract_root: Path,
+    *,
+    analysis_run_id: str | None = None,
 ) -> tuple[str, ...]:
     """Read exact held MKVs, send bounded excerpts, then requeue confident matches."""
 
@@ -127,6 +129,9 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
         store.record_silent_video_review(media_id, category)
         visual_categories[media_id] = category
 
+    evidence_options = (
+        {"analysis_run_id": analysis_run_id} if analysis_run_id is not None else {}
+    )
     evidence, dossier = collect_dossier_evidence(
         tuple(zip(held, payloads, strict=True)),
         config,
@@ -134,6 +139,7 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
         contract_root,
         True,
         record_visual_review,
+        **evidence_options,
     )
     visually_held = {
         media_id
@@ -220,6 +226,7 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
                 media_ids,
                 branch="tv-movie",
                 disposition="failed",
+                analysis_run_id=analysis_run_id,
                 summary={"reason": type(exc).__name__},
             )
         else:
@@ -230,6 +237,7 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
                     disposition=(
                         "matched" if media_id in related_matches else "review"
                     ),
+                    analysis_run_id=analysis_run_id,
                     summary=summary,
                 )
 
@@ -243,6 +251,7 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
             comparison_ids,
             branch="tv-bonus" if tv_series_context else "movie-bonus",
             disposition="started",
+            analysis_run_id=analysis_run_id,
             summary={"catalogue_available": catalogue is not None},
         )
     if descriptive and comparison_evidence:
@@ -404,6 +413,7 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
                 if len(comparison_applied) == len(comparison_ids)
                 else "review"
             ),
+            analysis_run_id=analysis_run_id,
             summary={
                 "matched_count": len(comparison_applied),
                 "item_count": len(comparison_ids),
@@ -452,6 +462,7 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
                 unresolved,
                 branch="gemini-synthesis",
                 disposition="failed",
+                analysis_run_id=analysis_run_id,
                 summary={"reason": type(exc).__name__},
             )
     if unresolved:
@@ -459,6 +470,7 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
             unresolved,
             branch="gemini-synthesis",
             disposition="review",
+            analysis_run_id=analysis_run_id,
             summary={"reason": "all_content_routes_exhausted"},
         )
         for media_id in unresolved:

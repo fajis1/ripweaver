@@ -69,6 +69,55 @@ def test_episode_request_accepts_six_bounded_excerpts_but_not_seven():
         )
 
 
+def test_episode_request_includes_explicit_reviewer_scene_description():
+    files = (UnmatchedFileEvidence("title-001", 1200, ("bounded dialogue",)),)
+    catalog = (
+        EpisodeCatalogEntry(
+            "S02E12",
+            2,
+            12,
+            "The Injury",
+            "Michael burns his foot and Dwight rushes to help.",
+            1200,
+        ),
+    )
+
+    request = build_gemini_request(
+        "gemini-test",
+        files,
+        catalog,
+        reviewer_scene_descriptions={
+            "title-001": "Michael burned his foot on a George Foreman grill."
+        },
+    )
+    prompt = json.loads(request["input"])
+
+    assert prompt["files"][0]["reviewer_scene_description"] == (
+        "Michael burned his foot on a George Foreman grill."
+    )
+    assert "strong plot evidence" in prompt["task"]
+
+
+def test_reviewer_scene_description_rejects_unknown_file_or_local_path():
+    files = (UnmatchedFileEvidence("title-001", 1200, ("bounded dialogue",)),)
+    catalog = (EpisodeCatalogEntry("S02E12", 2, 12, "The Injury", "", 1200),)
+
+    with pytest.raises(GeminiMatchError, match="unknown file ID"):
+        build_gemini_request(
+            "gemini-test",
+            files,
+            catalog,
+            reviewer_scene_descriptions={"title-999": "Different title"},
+        )
+    with pytest.raises(GeminiMatchError, match="unsafe"):
+        build_gemini_request(
+            "gemini-test",
+            files,
+            catalog,
+            reviewer_scene_descriptions={"title-001": "Review G:\\private\\clip.mkv"},
+        )
+
+
 def test_descriptive_request_is_path_free_and_classifies_mixed_titles():
     files = (
         UnmatchedFileEvidence("title-000", 7727, ("Two sisters meet at camp.",)),

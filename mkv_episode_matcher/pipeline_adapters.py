@@ -10,6 +10,11 @@ from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
+from mkv_episode_matcher.core.tv_identification_policy import (
+    AUTOMATIC_TV_ASSIGNMENT_SOURCES,
+    AUTOMATIC_TV_IDENTIFICATION_POLICY_VERSION,
+    identification_order_for_assignment,
+)
 from mkv_episode_matcher.disc.content_policy import identification_order
 from mkv_episode_matcher.media.handbrake import (
     HandBrakeError,
@@ -258,9 +263,11 @@ class IdentifyStageAdapter:
             raise PipelineReviewRequiredError("missing_series_context")
         episode_assignments = context.get("episode_assignments")
         if isinstance(episode_assignments, list) and episode_assignments:
+            automatic_all_season = ".all-season-" in item.artifact.contract_path.name
             if (
-                ".all-season-" in item.artifact.contract_path.name
-                and context.get("identification_policy_version") != 2
+                automatic_all_season
+                and context.get("identification_policy_version")
+                != AUTOMATIC_TV_IDENTIFICATION_POLICY_VERSION
             ):
                 raise PipelineReviewRequiredError("unmatched_disc_analysis_required")
             if _placeholder_series(context.get("series_name")):
@@ -277,6 +284,15 @@ class IdentifyStageAdapter:
             )
             if assignment is None:
                 raise PipelineReviewRequiredError("episode_assignment_review")
+            evidence_source = assignment.get("evidence_source")
+            automatic_identification_order = identification_order_for_assignment(
+                evidence_source
+            )
+            if automatic_all_season and (
+                evidence_source not in AUTOMATIC_TV_ASSIGNMENT_SOURCES
+                or automatic_identification_order is None
+            ):
+                raise PipelineReviewRequiredError("unmatched_disc_analysis_required")
             try:
                 season = int(assignment["season"])
                 episode_number = int(assignment["episode"])
@@ -304,7 +320,9 @@ class IdentifyStageAdapter:
                     "library_kind": "tv",
                     "library_relative": relative.as_posix(),
                     "identification_order": [
-                        "ripweaver-catalogue-help-reviewed"
+                        automatic_identification_order
+                        if automatic_all_season
+                        else "ripweaver-catalogue-help-reviewed"
                         if context.get("episode_assignment_source")
                         == "ripweaver-catalogue-help-reviewed"
                         else "manual-playback-review"
@@ -318,6 +336,10 @@ class IdentifyStageAdapter:
                         and context.get("disc_metadata_status") == "matched"
                         else "reviewed-release-catalogue"
                     ],
+                    "identification_policy_version": context.get(
+                        "identification_policy_version"
+                    ),
+                    "assignment_evidence_source": evidence_source,
                     "handbrake_profile_id": context.get("handbrake_profile_id"),
                     "existing_output_policy": context.get(
                         "existing_output_policy", "preserve"
