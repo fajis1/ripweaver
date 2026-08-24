@@ -32,9 +32,9 @@ remote branch remains append-only and does not require a force push.
 
 The public checkpoint intentionally excludes `.env` files, agent-local settings,
 secret-like files, media, logs, coverage output, pytest scratch directories,
-local recovery notes, and ad-hoc repair scripts. It also scans for several
-high-confidence credential signatures and refuses selected files larger than
-25 MiB.
+and ad-hoc repair scripts. It also scans for several high-confidence credential
+signatures and refuses selected files larger than 25 MiB. Project recovery
+notes are included only after personal paths have been removed.
 
 ## When to checkpoint
 

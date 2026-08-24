@@ -60,8 +60,9 @@ commits, pull requests, merges, releases, or changes to `main`.
 - Never treat `git stash`, reflog-only objects, ignored files, copied working
   directories, or the local `.git` directory as the sole backup of useful work.
 - Never add `.env`, credentials, media, private transcripts, logs, pytest
-  scratch directories, coverage output, or ad-hoc local repair scripts to a
-  public checkpoint.
+  scratch directories, coverage output, personal paths, or ad-hoc local repair
+  scripts to a public checkpoint. Sanitize useful project recovery notes before
+  including them.
 - Checkpoint history is recovery-only. Finished changes still use the normal
   reviewed feature-branch and pull-request workflow, normally squash-merging
   WIP history before `main`.

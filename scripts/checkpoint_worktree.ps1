@@ -71,7 +71,6 @@ try {
         '.claude/**',
         '.agents/**',
         '.codex/**',
-        'FRONTEND_RECOVERY_GUIDE.md',
         'patch.py',
         'patch.js',
         'check_drives.py',
@@ -113,6 +112,18 @@ try {
     if ($LASTEXITCODE -notin @(0, 1)) { throw 'The staged credential scan could not be completed.' }
     if ($credentialMatches.Count -gt 0) {
         throw "Checkpoint refused because $($credentialMatches.Count) possible credential occurrence(s) were detected."
+    }
+
+    $userProfilePath = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+    if ($userProfilePath) {
+        $profileForms = @($userProfilePath, ($userProfilePath -replace '\\', '/')) | Select-Object -Unique
+        foreach ($profileForm in $profileForms) {
+            $personalPathMatches = @(& git -C $repoRoot grep --cached -I -i -F -e $profileForm -- . 2>$null)
+            if ($LASTEXITCODE -notin @(0, 1)) { throw 'The staged personal-path scan could not be completed.' }
+            if ($personalPathMatches.Count -gt 0) {
+                throw "Checkpoint refused because $($personalPathMatches.Count) local user-profile path occurrence(s) were detected."
+            }
+        }
     }
 
     $maximumBlobBytes = 25MB
