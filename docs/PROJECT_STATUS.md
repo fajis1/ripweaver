@@ -9,6 +9,32 @@
 > *Note: A full snapshot of all uncommitted files as of 2026-08-23 has been safely saved to the local branch `emergency-backup-20260823`. If you accidentally destroy the working tree, you can recover from that branch.*
 
 
+## 2026-08-24 - Substantial unresolved titles remain recovery obligations
+
+TV recovery no longer treats every title outside the dominant episode-runtime
+cluster as non-content. A title classified as `review` with at least a
+15-minute runtime and a positive inventory size remains part of a separate,
+exact-fingerprint `disc_recovery_scopes` record. Short extras, menus, and
+navigation titles remain outside that recovery scope.
+
+- `disc_matching_scopes` continues to contain only the titles selected for
+  disc-aware episode matching.
+- `disc_recovery_scopes` contains episode candidates plus substantial
+  unresolved content that must be staged, organized, present in the library,
+  or explicitly skipped before acquisition can be called complete.
+- A completed orchestration preview is no longer accepted as proof that every
+  title listed in that preview is safe. Completion reuse now requires concrete
+  staged, organized, or library evidence.
+- Existing installations without a saved recovery scope show the failed-disc
+  plan as stale until the user performs the existing confirmed read-only
+  recovery refresh. This prevents an older three-title matching scope from
+  silently hiding substantial unresolved titles.
+
+Synthetic coverage models a TV disc with three clustered episodes plus two
+large review titles. Matching retains the three episodes while recovery
+requires all five.
+
+
 ## 2026-08-23 - Automatic Staged MKV Admission, Safe Basename Extension, and UI Job Priority
 
 ### Safe MKV Basename Validation with Parentheses and Special Characters

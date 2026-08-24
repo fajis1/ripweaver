@@ -376,6 +376,10 @@ interface PipelineQueue {
     disc_fingerprint: string;
     relevant_title_indexes: number[];
   }>;
+  disc_recovery_scopes?: Array<{
+    disc_fingerprint: string;
+    required_title_indexes: number[];
+  }>;
 }
 
 const episodeReviewCandidates = (item: PipelineQueueItem): Array<{ name: string; source: string; score: number | null; margin: number | null }> => {
@@ -3624,6 +3628,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
               const preparedMatchingScope = driveFingerprint
                 ? pipelineQueue?.disc_matching_scopes?.find((scope) => scope.disc_fingerprint === driveFingerprint)
                 : undefined;
+              const preparedRecoveryScope = driveFingerprint
+                ? pipelineQueue?.disc_recovery_scopes?.find((scope) => scope.disc_fingerprint === driveFingerprint)
+                : undefined;
               const latestDrivePipelineItems = Array.from(drivePipelineItems.reduce((items, item) => {
                 if (typeof item.title_index !== 'number') return items;
                 const previous = items.get(item.title_index);
@@ -3648,16 +3655,20 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                 })[0] ?? job;
               const failedRecoveryPlanIsStale = Boolean(
                 failedRipJob
-                && !preparedMatchingScope
-                && inventoryPlanJob
-                && Date.parse(inventoryPlanJob.created_at) <= Date.parse(failedRipJob.created_at),
+                && !preparedRecoveryScope,
               );
-              const expectedPipelineTitleIndexes = new Set(preparedMatchingScope
-                ? preparedMatchingScope.relevant_title_indexes
-                : inventoryPlanJob?.preview?.jobs
+              const expectedPipelineTitleIndexes = new Set(preparedRecoveryScope
+                ? preparedRecoveryScope.required_title_indexes
+                : failedRecoveryPlanIsStale
+                  ? failedRipJob?.preview?.jobs
+                    .filter((item) => item.drive_index === drive.drive_index)
+                    .map((item) => item.title_index) ?? []
+                  : preparedMatchingScope
+                    ? preparedMatchingScope.relevant_title_indexes
+                    : inventoryPlanJob?.preview?.jobs
                   .filter((item) => item.drive_index === drive.drive_index)
                   .map((item) => item.title_index) ?? []);
-              const historicallyKnownTitleIndexes = preparedMatchingScope || preparedFailureRecoveryJob
+              const historicallyKnownTitleIndexes = preparedRecoveryScope || preparedFailureRecoveryJob
                 ? new Set(expectedPipelineTitleIndexes)
                 : new Set(currentDiscJobs.flatMap((candidate) => (
                     candidate.preview?.jobs
@@ -4050,7 +4061,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                     <div className="rounded-lg border border-green-400/40 bg-green-500/15 p-3 text-sm text-green-100 space-y-2">
                       <div className="font-semibold">Disc content is safely present</div>
                       <div className="text-xs text-green-100/80">
-                        All {completedDiscTitleCount} relevant {completedDiscTitleCount === 1 ? 'title is' : 'titles are'} safely present in staging or Jellyfin, or explicitly skipped. No additional MakeMKV rip is needed.
+                        All {completedDiscTitleCount} substantial content {completedDiscTitleCount === 1 ? 'title is' : 'titles are'} safely present in staging or Jellyfin, or explicitly skipped. No additional MakeMKV rip is needed.
                         {outstandingDiscReviewItems.length > 0
                           ? ` ${outstandingDiscReviewItems.length} additional saved ${outstandingDiscReviewItems.length === 1 ? 'result still requires' : 'results still require'} review.`
                           : ' No downstream work remains for this disc.'}

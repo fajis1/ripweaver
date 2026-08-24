@@ -6,6 +6,7 @@ from fastapi import HTTPException
 
 from mkv_episode_matcher.backend.routers.rip import (
     _dashboard_disc_matching_scopes,
+    _dashboard_disc_recovery_scopes,
     _filter_dashboard_jobs,
     _filter_dashboard_pipeline_items,
     _parse_dashboard_disc_fingerprints,
@@ -132,6 +133,19 @@ def test_dashboard_returns_authoritative_saved_matching_scope(tmp_path) -> None:
         {
             "disc_fingerprint": "a5c6de13f86cc16b",
             "relevant_title_indexes": [2, 5, 8],
+        }
+    ]
+
+
+def test_dashboard_returns_substantial_content_recovery_scope(tmp_path) -> None:
+    store = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+    store.remember_disc_matching_scope("a5c6de13f86cc16b", (1, 3, 4))
+    store.remember_disc_recovery_scope("a5c6de13f86cc16b", (1, 2, 3, 4, 5))
+
+    assert _dashboard_disc_recovery_scopes(store, ("a5c6de13f86cc16b",)) == [
+        {
+            "disc_fingerprint": "a5c6de13f86cc16b",
+            "required_title_indexes": [1, 2, 3, 4, 5],
         }
     ]
 

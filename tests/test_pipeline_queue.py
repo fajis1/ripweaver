@@ -708,6 +708,8 @@ def test_delete_discarded_item_media_after_preserving_it(tmp_path):
 
 def test_forget_disc_records_removes_only_metadata_and_preserves_media(tmp_path):
     store = _store(tmp_path)
+    store.remember_disc_matching_scope("0123456789abcdef", (1, 3))
+    store.remember_disc_recovery_scope("0123456789abcdef", (1, 2, 3))
     sources = {}
     for media_id, fingerprint in (
         ("forgotten-disc-item", "0123456789abcdef"),
@@ -734,6 +736,8 @@ def test_forget_disc_records_removes_only_metadata_and_preserves_media(tmp_path)
     assert (record_count, history_count) == (1, 0)
     assert {item.media_id for item in store.list_items()} == {"other-disc-item"}
     assert all(source.is_file() for source in sources.values())
+    assert store.disc_matching_scope("0123456789abcdef") is None
+    assert store.disc_recovery_scope("0123456789abcdef") is None
 
 
 def test_review_held_verified_rip_source_is_eligible_for_exact_deletion(tmp_path):
@@ -1313,6 +1317,8 @@ def test_verified_non_episode_is_retained_without_downstream_queue(tmp_path):
     assert store.expected_title_indexes_for_disc("0123456789abcdef") == (1,)
     store.remember_disc_matching_scope("0123456789abcdef", (1, 3))
     assert store.disc_matching_scope("0123456789abcdef") == (1, 3)
+    store.remember_disc_recovery_scope("0123456789abcdef", (1, 2, 3, 4))
+    assert store.disc_recovery_scope("0123456789abcdef") == (1, 2, 3, 4)
     assert store.expected_title_indexes_for_disc("0123456789abcdef") == (1, 3)
     assert store.restore_title_disposition("0123456789abcdef", 0) is True
     assert store.expected_title_indexes_for_disc("0123456789abcdef") == (0, 1, 3)

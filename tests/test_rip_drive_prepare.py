@@ -252,6 +252,71 @@ def _result(
     )
 
 
+def _substantial_review_result(
+    source: str, *, inventory: bool = False
+) -> CommandResult:
+    rows = ['DRV:0,2,999,1,"private hardware","Example Series S7 D4","D:"']
+    if inventory:
+        durations = [120, 1935, 2725, 1980, 2001, 3570, 10, 1, 60, 25]
+        sizes = [
+            120_000_000,
+            6_800_000_000,
+            8_170_000_000,
+            6_930_000_000,
+            6_780_000_000,
+            10_660_000_000,
+            1_000_000,
+            100_000,
+            60_000_000,
+            25_000_000,
+        ]
+        for index, (duration, size) in enumerate(zip(durations, sizes, strict=True)):
+            rows.extend([
+                f'TINFO:{index},2,0,"Title {index}"',
+                f'TINFO:{index},9,0,"{duration // 3600}:{(duration % 3600) // 60:02d}:{duration % 60:02d}"',
+                f'TINFO:{index},11,0,"{size}"',
+                f'TINFO:{index},27,0,"title_t{index:02d}.mkv"',
+                f'SINFO:{index},0,1,0,"Video"',
+                f'SINFO:{index},1,1,0,"Audio"',
+                f'SINFO:{index},1,3,0,"eng"',
+            ])
+    return CommandResult(
+        command=("makemkvcon64.exe", "info", source),
+        return_code=0,
+        stdout="\n".join(rows) + "\n",
+        stderr="",
+        started_at="2026-08-01T00:00:00+00:00",
+        finished_at="2026-08-01T00:00:01+00:00",
+    )
+
+
+def _record_safe_pipeline_title(
+    store: PipelineQueueStore,
+    tmp_path,
+    output_root,
+    *,
+    fingerprint: str,
+    title_index: int,
+    suffix: str,
+) -> None:
+    media_id = f"safe-title-{title_index}-{suffix}"
+    source = output_root / f"{media_id}.mkv"
+    source.write_bytes(f"synthetic-{title_index}".encode())
+    contract = tmp_path / f"{media_id}.verified-rip.json"
+    contract.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "media_id": media_id,
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "disc_fingerprint": fingerprint,
+            "title_index": title_index,
+        }),
+        encoding="utf-8",
+    )
+    store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+
+
 def test_gemini_retry_starts_only_the_exact_requested_item(tmp_path, monkeypatch):
     requested = SimpleNamespace(
         media_id="disc-title-001",
@@ -803,6 +868,11 @@ def test_failed_whole_disc_batch_recovers_only_current_relevant_scope(
         "select_pipeline_titles",
         lambda plan, _hint: (plan.decisions[1],),
     )
+    monkeypatch.setattr(
+        rip,
+        "select_recovery_titles",
+        lambda plan, _hint: (plan.decisions[1],),
+    )
     public = OrchestrationStore(tmp_path / "public.sqlite3")
     private = PrivateBindingStore(tmp_path / "private.sqlite3")
     pipeline = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
@@ -850,6 +920,159 @@ def test_failed_whole_disc_batch_recovers_only_current_relevant_scope(
     assert {item["title_index"] for item in recovery["preview"]["jobs"]} == {1}
     context = private.get(recovery["job_id"]).media_contexts["disc-01"]
     assert context.selected_title_indexes == (1,)
+
+
+def test_failed_tv_recovery_keeps_substantial_review_titles(monkeypatch, tmp_path):
+    executable = tmp_path / "makemkvcon64.exe"
+    executable.write_bytes(b"synthetic")
+    ffprobe = tmp_path / "ffprobe.exe"
+    ffprobe.write_bytes(b"synthetic")
+    output_root = tmp_path / "rips"
+    output_root.mkdir()
+    cache_dir = tmp_path / "cache"
+    watcher = DriveWatcher(
+        lambda _exe, source, **_kwargs: _substantial_review_result(source)
+    )
+    watcher.refresh(executable)
+    monkeypatch.setattr(
+        rip,
+        "get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                makemkv_path=executable,
+                ffprobe_path=ffprobe,
+                rip_output_root=output_root,
+                cache_dir=cache_dir,
+                jellyfin_tv_root=None,
+                jellyfin_movie_root=None,
+            )
+        ),
+    )
+    public = OrchestrationStore(tmp_path / "public.sqlite3")
+    private = PrivateBindingStore(tmp_path / "private.sqlite3")
+    pipeline = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+    from dataclasses import replace
+
+    def inventory_runner(_exe, source, **_kwargs):
+        result = _substantial_review_result(source, inventory=True)
+        stdout = result.stdout
+        for estimated_size in (
+            120_000_000,
+            6_800_000_000,
+            8_170_000_000,
+            6_930_000_000,
+            6_780_000_000,
+            10_660_000_000,
+        ):
+            stdout = stdout.replace(f'"{estimated_size}"', '"2000000"')
+        return replace(result, stdout=stdout)
+
+    fresh = rip.prepare_drive_pipeline(
+        rip.PrepareDrivePipelineRequest(
+            drive_index=0,
+            content_hint="tv",
+            confirm_read=True,
+        ),
+        "prepare-substantial-review-fresh",
+        watcher,
+        public,
+        private,
+        pipeline,
+        inventory_runner,
+    )
+    assert {item["title_index"] for item in fresh["preview"]["jobs"]} == set(range(10))
+    public.authorize(
+        fresh["job_id"],
+        expected_plan_sha256=fresh["plan_sha256"],
+        idempotency_key="authorize-substantial-review",
+    )
+    public.queue(fresh["job_id"], idempotency_key="queue-substantial-review")
+    public.claim_for_dispatch(
+        fresh["job_id"], idempotency_key="claim-substantial-review"
+    )
+    public.fail(
+        fresh["job_id"],
+        idempotency_key="fail-substantial-review",
+        error_type="ParallelRipError",
+        error_category="makemkv_failure",
+        failed_drive_indexes=(0,),
+        completed_job_ids=(),
+    )
+    fingerprint = next(
+        part
+        for part in fresh["preview"]["jobs"][0]["staging_destination"].split("/")
+        if len(part) == 16
+    )
+    for title_index in (1, 3, 4):
+        _record_safe_pipeline_title(
+            pipeline,
+            tmp_path,
+            output_root,
+            fingerprint=fingerprint,
+            title_index=title_index,
+            suffix="substantial-review",
+        )
+    failed_batch_dir = output_root / fresh["preview"]["jobs"][0]["staging_destination"]
+    failed_batch_dir.mkdir(parents=True, exist_ok=True)
+    for title_index in range(1, 6):
+        (failed_batch_dir / f"title_t{title_index:02d}.mkv").write_bytes(
+            b"x" * 2_000_000
+        )
+
+    inspected: list[str] = []
+
+    def fake_inspector(_exe, source, **_kwargs):
+        from mkv_episode_matcher.media.ffprobe_runner import FFprobeInspection
+        from mkv_episode_matcher.media.probe import ProbedMedia
+
+        inspected.append(source.name)
+        return FFprobeInspection(
+            return_code=0,
+            stdout="",
+            stderr="",
+            started_at="2026-08-22T00:00:00Z",
+            finished_at="2026-08-22T00:00:01Z",
+            media=ProbedMedia(
+                duration_seconds=1200,
+                size_bytes=source.stat().st_size,
+                container="matroska",
+                audio_streams=(),
+            ),
+        )
+
+    monkeypatch.setattr(rip, "get_ffprobe_inspector", lambda: fake_inspector)
+    monkeypatch.setattr(
+        rip, "get_pipeline_contract_root", lambda: tmp_path / "contracts"
+    )
+
+    recovery = rip.prepare_drive_pipeline(
+        rip.PrepareDrivePipelineRequest(
+            drive_index=0,
+            content_hint="tv",
+            confirm_read=True,
+        ),
+        "prepare-substantial-review-recovery",
+        watcher,
+        public,
+        private,
+        pipeline,
+        inventory_runner,
+    )
+
+    assert recovery["state"] == "completed"
+    assert inspected == ["title_t02.mkv", "title_t05.mkv"]
+    assert len(pipeline.list_items()) == 5
+    assert {item["title_index"] for item in recovery["preview"]["jobs"]} == {
+        1,
+        2,
+        3,
+        4,
+        5,
+    }
+    context = private.get(recovery["job_id"]).media_contexts["disc-01"]
+    assert context.selected_title_indexes == (1, 2, 3, 4, 5)
+    assert pipeline.disc_matching_scope(fingerprint) == (1, 3, 4)
+    assert pipeline.disc_recovery_scope(fingerprint) == (1, 2, 3, 4, 5)
 
 
 def test_retry_preparation_replaces_same_drive_awaiting_review(monkeypatch, tmp_path):
@@ -948,6 +1171,20 @@ def test_retry_preparation_rebinds_same_completed_disc(monkeypatch, tmp_path):
         completed_count=len(first["preview"]["jobs"]),
         pipeline_queued_count=len(first["preview"]["jobs"]),
     )
+    fingerprint = next(
+        part
+        for part in first["preview"]["jobs"][0]["staging_destination"].split("/")
+        if len(part) == 16
+    )
+    for item in first["preview"]["jobs"]:
+        _record_safe_pipeline_title(
+            pipeline,
+            tmp_path,
+            output_root,
+            fingerprint=fingerprint,
+            title_index=item["title_index"],
+            suffix="completed",
+        )
 
     rebound = rip.prepare_drive_pipeline(
         rip.PrepareDrivePipelineRequest(drive_index=0, confirm_read=True),
@@ -1043,6 +1280,19 @@ def test_retry_preparation_retires_completed_duplicate_but_keeps_uncovered_title
         idempotency_key="complete-newer-completed",
         completed_count=1,
         pipeline_queued_count=1,
+    )
+    fingerprint = next(
+        part
+        for part in completed["preview"]["jobs"][0]["staging_destination"].split("/")
+        if len(part) == 16
+    )
+    _record_safe_pipeline_title(
+        pipeline,
+        tmp_path,
+        output_root,
+        fingerprint=fingerprint,
+        title_index=selected_index,
+        suffix="newer-completed",
     )
 
     rebound = rip.prepare_drive_pipeline(

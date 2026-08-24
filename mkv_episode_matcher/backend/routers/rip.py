@@ -149,6 +149,7 @@ from mkv_episode_matcher.disc.thediscdb import (
 from mkv_episode_matcher.disc.title_selector import (
     load_title_plan,
     select_pipeline_titles,
+    select_recovery_titles,
 )
 from mkv_episode_matcher.media.ffprobe_runner import FFprobeError, resolve_ffprobe_path
 from mkv_episode_matcher.media.handbrake import HandBrakeProfile
@@ -287,8 +288,8 @@ def _filter_dashboard_pipeline_items(
     )
 
 
-def _pipeline_item_saved_disc_fingerprint(item) -> str | None:
-    """Read only the saved path-free disc identity needed for dashboard scope."""
+def _pipeline_item_saved_rip_payload(item) -> dict[str, object] | None:
+    """Read the first valid saved rip identity contract for one queue item."""
 
     artifact = getattr(item, "artifact", None)
     contract_path = getattr(artifact, "contract_path", None)
@@ -305,8 +306,49 @@ def _pipeline_item_saved_disc_fingerprint(item) -> str | None:
             continue
         fingerprint = payload.get("disc_fingerprint")
         if isinstance(fingerprint, str) and re.fullmatch(r"[0-9a-f]{16}", fingerprint):
-            return fingerprint
+            return payload
     return None
+
+
+def _pipeline_item_saved_disc_fingerprint(item) -> str | None:
+    """Read only the saved path-free disc identity needed for dashboard scope."""
+
+    payload = _pipeline_item_saved_rip_payload(item)
+    return str(payload["disc_fingerprint"]) if payload is not None else None
+
+
+def _safely_present_pipeline_title_indexes(
+    store: PipelineQueueStore,
+    disc_fingerprint: str,
+) -> frozenset[int]:
+    """Return concrete staged or organized titles, never predictive scope rows."""
+
+    present: set[int] = set()
+    for item in store.list_items():
+        payload = _pipeline_item_saved_rip_payload(item)
+        if payload is None or payload.get("disc_fingerprint") != disc_fingerprint:
+            continue
+        title_index = payload.get("title_index")
+        if not isinstance(title_index, int) or isinstance(title_index, bool):
+            continue
+        if item.stage == "organize" and item.state == "completed":
+            present.add(title_index)
+            continue
+        source_value = payload.get("source_path")
+        source_size = payload.get("source_size_bytes")
+        if not isinstance(source_value, str) or not isinstance(source_size, int):
+            continue
+        try:
+            source = Path(source_value)
+            if (
+                source_size > 0
+                and source.is_file()
+                and source.stat().st_size == source_size
+            ):
+                present.add(title_index)
+        except OSError:
+            continue
+    return frozenset(present)
 
 
 def _dashboard_disc_matching_scopes(
@@ -323,6 +365,24 @@ def _dashboard_disc_matching_scopes(
         scopes.append({
             "disc_fingerprint": fingerprint,
             "relevant_title_indexes": list(title_indexes),
+        })
+    return scopes
+
+
+def _dashboard_disc_recovery_scopes(
+    store: PipelineQueueStore,
+    disc_fingerprints: tuple[str, ...],
+) -> list[dict[str, object]]:
+    """Return substantial-content obligations for visible exact discs."""
+
+    scopes: list[dict[str, object]] = []
+    for fingerprint in disc_fingerprints:
+        title_indexes = store.disc_recovery_scope(fingerprint)
+        if title_indexes is None:
+            continue
+        scopes.append({
+            "disc_fingerprint": fingerprint,
+            "required_title_indexes": list(title_indexes),
         })
     return scopes
 
@@ -417,6 +477,7 @@ def _failed_rip_title_indexes(
 def _newer_completed_job_covering(
     candidate: OrchestrationJob,
     jobs: tuple[OrchestrationJob, ...],
+    safely_present_title_indexes: frozenset[int],
 ) -> OrchestrationJob | None:
     """Find a later completed rip that already covers every candidate title."""
 
@@ -430,6 +491,7 @@ def _newer_completed_job_covering(
             if completed.state == "completed"
             and completed.created_at > candidate.created_at
             and candidate_titles <= _preview_title_indexes(completed.preview)
+            and candidate_titles <= safely_present_title_indexes
         ),
         None,
     )
@@ -1421,7 +1483,8 @@ def _auto_admit_staged_disc_if_complete(  # noqa: C901 - auto-admit verification
     manifest_jobs,
     disc_fingerprint: str,
     output_root: Path,
-    matching_scope: frozenset[int],
+    recovery_scope: frozenset[int],
+    safely_present_title_indexes: frozenset[int],
     preview: RipPreview,
     report_path: Path,
     disc_id: str,
@@ -1440,8 +1503,8 @@ def _auto_admit_staged_disc_if_complete(  # noqa: C901 - auto-admit verification
     if not staged_plan.candidates:
         return None
     required_title_indexes = (
-        matching_scope
-        if matching_scope
+        recovery_scope
+        if recovery_scope
         else frozenset(job.title_index for job in manifest_jobs)
     )
     library_title_indexes = frozenset(
@@ -1455,7 +1518,7 @@ def _auto_admit_staged_disc_if_complete(  # noqa: C901 - auto-admit verification
         if isinstance(item.get("title_index"), int)
     )
     needed_title_indexes = required_title_indexes - (
-        library_title_indexes | skipped_title_indexes
+        library_title_indexes | skipped_title_indexes | safely_present_title_indexes
     )
     if not needed_title_indexes:
         return None
@@ -1754,14 +1817,24 @@ def prepare_drive_pipeline(  # noqa: C901
         use_special_features = request.content_hint in {"extras", "mixed"} or (
             request.content_hint is None and not discdb_episode_assignments
         )
-        planned_titles = select_pipeline_titles(
-            episode_plan,
+        effective_content_hint = (
             "tv"
             if explicit_tv_context and request.content_hint is None
-            else request.content_hint,
+            else request.content_hint
+        )
+        planned_titles = select_pipeline_titles(
+            episode_plan,
+            effective_content_hint,
         )
         selected_title_indexes = tuple(
             decision.title.index for decision in planned_titles
+        )
+        recovery_title_indexes = tuple(
+            decision.title.index
+            for decision in select_recovery_titles(
+                episode_plan,
+                effective_content_hint,
+            )
         )
         downstream_skip_title_indexes = (
             tuple(
@@ -1779,6 +1852,15 @@ def prepare_drive_pipeline(  # noqa: C901
             selected_title_indexes = tuple(
                 sorted(
                     set(selected_title_indexes)
+                    | {
+                        int(assignment["title_index"])
+                        for assignment in discdb_episode_assignments
+                    }
+                )
+            )
+            recovery_title_indexes = tuple(
+                sorted(
+                    set(recovery_title_indexes)
                     | {
                         int(assignment["title_index"])
                         for assignment in discdb_episode_assignments
@@ -1819,6 +1901,7 @@ def prepare_drive_pipeline(  # noqa: C901
                         )
                     )
                 )
+                recovery_title_indexes = selected_title_indexes
                 catalog_id = selection.plan.catalog_id
                 release_id = selection.plan.release_id
                 library_title = selection.plan.library_title
@@ -1848,6 +1931,9 @@ def prepare_drive_pipeline(  # noqa: C901
         pipeline_store.remember_disc_matching_scope(
             disc_fingerprint, tuple(sorted(set(selected_title_indexes)))
         )
+        pipeline_store.remember_disc_recovery_scope(
+            disc_fingerprint, tuple(sorted(set(recovery_title_indexes)))
+        )
         failed_title_indexes = _failed_rip_title_indexes(
             public_store,
             disc_fingerprint,
@@ -1861,7 +1947,7 @@ def prepare_drive_pipeline(  # noqa: C901
         if failed_title_indexes:
             selected_title_indexes = tuple(
                 title_index
-                for title_index in selected_title_indexes
+                for title_index in recovery_title_indexes
                 if title_index in failed_title_indexes
             )
             if not selected_title_indexes:
@@ -2027,29 +2113,26 @@ def prepare_drive_pipeline(  # noqa: C901
                 for item in skipped_title_dispositions
                 if isinstance(item.get("title_index"), int)
             )
-            completed_title_indexes = frozenset().union(
-                *(
-                    _preview_title_indexes(candidate.preview)
-                    for candidate in drive_matching_jobs
-                    if candidate.state == "completed"
-                )
-            )
-            # Titles outside the classifier-derived relevant scope (menus,
-            # navigation tracks, non-content titles) don't need to be present
-            # in a completed rip for the disc to be considered done.
             matching_scope = frozenset(
                 pipeline_store.disc_matching_scope(disc_fingerprint) or ()
             )
-            non_episode_title_indexes = (
-                prepared_title_indexes - matching_scope
-                if matching_scope
-                else frozenset()
+            recovery_scope = frozenset(
+                pipeline_store.disc_recovery_scope(disc_fingerprint) or matching_scope
             )
-            completed_history_covers_prepared = prepared_title_indexes <= (
+            safely_present_title_indexes = _safely_present_pipeline_title_indexes(
+                pipeline_store,
+                disc_fingerprint,
+            )
+            completion_required_title_indexes = (
+                recovery_scope if recovery_scope else prepared_title_indexes
+            )
+            # A completed orchestration preview is only a plan.  It may contain
+            # titles omitted from a narrowed recovery handoff, so completion
+            # requires concrete staged/organized/library evidence instead.
+            completed_history_covers_prepared = completion_required_title_indexes <= (
                 prepared_library_title_indexes
                 | skipped_title_indexes
-                | completed_title_indexes
-                | non_episode_title_indexes
+                | safely_present_title_indexes
             )
             superseded_job_ids: set[str] = set()
             for candidate in drive_matching_jobs:
@@ -2059,7 +2142,9 @@ def prepare_drive_pipeline(  # noqa: C901
                 ):
                     continue
                 completed = _newer_completed_job_covering(
-                    candidate, drive_matching_jobs
+                    candidate,
+                    drive_matching_jobs,
+                    safely_present_title_indexes,
                 )
                 if completed is None:
                     continue
@@ -2104,7 +2189,8 @@ def prepare_drive_pipeline(  # noqa: C901
                 manifest_jobs=manifest.jobs,
                 disc_fingerprint=disc_fingerprint,
                 output_root=config.rip_output_root,
-                matching_scope=matching_scope,
+                recovery_scope=recovery_scope,
+                safely_present_title_indexes=safely_present_title_indexes,
                 preview=preview,
                 report_path=report_path,
                 disc_id=disc_id,
@@ -2602,6 +2688,11 @@ class DiscMatchingScopeResponse(BaseModel):
     relevant_title_indexes: list[int]
 
 
+class DiscRecoveryScopeResponse(BaseModel):
+    disc_fingerprint: str
+    required_title_indexes: list[int]
+
+
 class PipelineQueueResponse(BaseModel):
     paused: bool
     startup_resume_in_seconds: int | None = None
@@ -2611,6 +2702,7 @@ class PipelineQueueResponse(BaseModel):
     items: list[PipelineItemResponse]
     title_dispositions: list[DiscTitleDispositionResponse] = Field(default_factory=list)
     disc_matching_scopes: list[DiscMatchingScopeResponse] = Field(default_factory=list)
+    disc_recovery_scopes: list[DiscRecoveryScopeResponse] = Field(default_factory=list)
 
 
 class PipelineControlRequest(BaseModel):
@@ -4684,6 +4776,9 @@ def get_pipeline_items(
             if not fingerprints or disposition["disc_fingerprint"] in fingerprints
         ],
         "disc_matching_scopes": _dashboard_disc_matching_scopes(
+            store, matching_scope_fingerprints
+        ),
+        "disc_recovery_scopes": _dashboard_disc_recovery_scopes(
             store, matching_scope_fingerprints
         ),
         "items": item_responses,

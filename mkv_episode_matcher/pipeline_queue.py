@@ -543,6 +543,11 @@ class PipelineQueueStore:
                     relevant_title_indexes_json TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS disc_recovery_scopes (
+                    disc_fingerprint TEXT PRIMARY KEY,
+                    required_title_indexes_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
             matching_columns = {
@@ -698,6 +703,59 @@ class PipelineQueueStore:
             for index in values
         ):
             raise PipelineQueueError("Disc matching scope is invalid")
+        return tuple(sorted(set(values)))
+
+    def remember_disc_recovery_scope(
+        self, disc_fingerprint: str, title_indexes: tuple[int, ...]
+    ) -> None:
+        """Persist content titles that must be safe before recovery completes."""
+
+        if re.fullmatch(r"[0-9a-f]{16}", disc_fingerprint) is None:
+            raise PipelineQueueError("Disc fingerprint is invalid")
+        if len(set(title_indexes)) != len(title_indexes) or any(
+            isinstance(index, bool) or not isinstance(index, int) or index < 0
+            for index in title_indexes
+        ):
+            raise PipelineQueueError("Disc recovery scope is invalid")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO disc_recovery_scopes (
+                    disc_fingerprint, required_title_indexes_json, updated_at
+                ) VALUES (?, ?, ?)
+                ON CONFLICT(disc_fingerprint) DO UPDATE SET
+                    required_title_indexes_json = excluded.required_title_indexes_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    disc_fingerprint,
+                    json.dumps(sorted(title_indexes), separators=(",", ":")),
+                    self._now(),
+                ),
+            )
+
+    def disc_recovery_scope(self, disc_fingerprint: str) -> tuple[int, ...] | None:
+        """Return the latest substantial-content recovery scope, if prepared."""
+
+        if re.fullmatch(r"[0-9a-f]{16}", disc_fingerprint) is None:
+            raise PipelineQueueError("Disc fingerprint is invalid")
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT required_title_indexes_json FROM disc_recovery_scopes "
+                "WHERE disc_fingerprint = ?",
+                (disc_fingerprint,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            values = json.loads(row["required_title_indexes_json"])
+        except json.JSONDecodeError as exc:
+            raise PipelineQueueError("Disc recovery scope is invalid") from exc
+        if not isinstance(values, list) or any(
+            isinstance(index, bool) or not isinstance(index, int) or index < 0
+            for index in values
+        ):
+            raise PipelineQueueError("Disc recovery scope is invalid")
         return tuple(sorted(set(values)))
 
     def list_title_dispositions(self) -> tuple[dict[str, str | int], ...]:
@@ -1092,6 +1150,10 @@ class PipelineQueueStore:
             )
             connection.execute(
                 "DELETE FROM disc_matching_scopes WHERE disc_fingerprint = ?",
+                (disc_fingerprint,),
+            )
+            connection.execute(
+                "DELETE FROM disc_recovery_scopes WHERE disc_fingerprint = ?",
                 (disc_fingerprint,),
             )
             connection.commit()
