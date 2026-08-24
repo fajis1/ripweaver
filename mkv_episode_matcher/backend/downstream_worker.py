@@ -8,7 +8,10 @@ import threading
 
 from loguru import logger
 
-from mkv_episode_matcher.backend.automatic_rip import _AUTOMATIC_UNMATCHED_CODES
+from mkv_episode_matcher.backend.automatic_rip import (
+    _AUTOMATIC_DISC_RETRY_CODES,
+    _AUTOMATIC_UNMATCHED_CODES,
+)
 from mkv_episode_matcher.core.config_manager import get_config_manager
 from mkv_episode_matcher.pipeline_queue import DownstreamDispatcher, PipelineQueueError
 
@@ -17,11 +20,12 @@ _DISC_TITLE_ID = re.compile(
 )
 _AUTOMATIC_DISC_COORDINATOR_CODES = _AUTOMATIC_UNMATCHED_CODES | frozenset({
     "all_season_analysis_running",
-    "all_season_analysis_failed",
-})
-_AUTOMATIC_DISC_IMMEDIATE_CODES = _AUTOMATIC_UNMATCHED_CODES - frozenset({
-    "all_season_sequence_review_required",
-})
+}) | _AUTOMATIC_DISC_RETRY_CODES
+_AUTOMATIC_DISC_IMMEDIATE_CODES = (
+    _AUTOMATIC_UNMATCHED_CODES
+    - frozenset({"all_season_sequence_review_required"})
+    | _AUTOMATIC_DISC_RETRY_CODES
+)
 
 
 def _sequence_only_attempts(attempts: tuple[dict[str, object], ...]) -> bool:

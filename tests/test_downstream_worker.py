@@ -169,6 +169,63 @@ def test_automatic_analysis_rechecks_complete_disc_when_one_old_item_failed(
     assert captured == [("media-0", "media-1")]
 
 
+def test_automatic_analysis_retries_failed_only_disc_once_per_restart(
+    tmp_path, monkeypatch
+):
+    fingerprint = "0123456789abcdef"
+    items = []
+    for title_index, review_code in (
+        (3, "all_season_analysis_failed"),
+        (4, "gemini_analysis_failed"),
+    ):
+        contract = tmp_path / f"failed-{title_index}.json"
+        contract.write_text(
+            json.dumps({
+                "disc_fingerprint": fingerprint,
+                "title_index": title_index,
+                "disc_expected_title_indexes": [3, 4],
+                "media_context": {"series_name": "The Office", "season": 7},
+            }),
+            encoding="utf-8",
+        )
+        items.append(
+            SimpleNamespace(
+                media_id=f"show--disc-01-{fingerprint}-title-{title_index:03d}",
+                stage="identify",
+                state="review_required",
+                review_code=review_code,
+                artifact=SimpleNamespace(contract_path=contract),
+            )
+        )
+    store = SimpleNamespace(
+        list_items=lambda: items,
+        silent_video_review_flags=lambda: {},
+        disc_matching_scope=lambda _fingerprint: (3, 4),
+    )
+    worker = DownstreamWorker(
+        SimpleNamespace(store=store), allowed_stages=("identify",)
+    )
+    captured = []
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(automatic_processing_enabled=True)
+        ),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root",
+        lambda: tmp_path,
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.automatic_rip._resolve_automatic_unmatched_disc",
+        lambda media_ids, *_args: captured.append(media_ids),
+    )
+
+    assert worker._apply_automatic_disc_analysis() is True
+    assert worker._apply_automatic_disc_analysis() is False
+    assert captured == [(items[0].media_id, items[1].media_id)]
+
+
 def test_automatic_analysis_runs_for_one_remaining_unresolved_title(
     tmp_path, monkeypatch
 ):

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from fastapi import HTTPException
 
 from mkv_episode_matcher.backend.automatic_rip import (
+    _AUTOMATIC_DISC_RETRY_CODES,
     _AUTOMATIC_UNMATCHED_CODES,
     AutomaticRipCoordinator,
     _automatic_failure_is_retryable,
@@ -55,11 +56,57 @@ def test_automatic_series_name_recovers_disc_label_without_using_volume_as_seaso
     )
 
 
-def test_failed_all_season_analysis_requires_explicit_retry():
+def test_failed_all_season_analysis_is_a_bounded_restart_retry():
     assert "episode_match_review" in _AUTOMATIC_UNMATCHED_CODES
     assert "unmatched_disc_analysis_required" in _AUTOMATIC_UNMATCHED_CODES
     assert "all_season_analysis_failed" not in _AUTOMATIC_UNMATCHED_CODES
     assert "all_season_analysis_running" not in _AUTOMATIC_UNMATCHED_CODES
+    assert _AUTOMATIC_DISC_RETRY_CODES == {
+        "all_season_analysis_failed",
+        "gemini_analysis_failed",
+    }
+
+
+def test_failed_disc_analysis_can_reenter_one_automatic_attempt(tmp_path, monkeypatch):
+    fingerprint = "0123456789abcdef"
+    media_id = f"show--disc-01-{fingerprint}-title-003"
+    store = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+    contract = tmp_path / "rip-3.json"
+    contract.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "disc_fingerprint": fingerprint,
+            "title_index": 3,
+            "media_context": {
+                "content_hint": "tv",
+                "series_name": "The Office",
+                "season": 7,
+            },
+        }),
+        encoding="utf-8",
+    )
+    store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+    store.hold_for_review(media_id, "all_season_analysis_failed")
+    captured = []
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_engine",
+        lambda: SimpleNamespace(asr=object()),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.unmatched_disc_analysis.execute_unmatched_disc_analysis",
+        lambda *_args, **_kwargs: captured.append(media_id) or (media_id,),
+    )
+
+    _resolve_automatic_unmatched_disc(
+        (media_id,),
+        store,
+        SimpleNamespace(automatic_gemini_ambiguity_fallback=True),
+        tmp_path / "contracts",
+    )
+
+    assert captured == [media_id]
+    assert store.get(media_id).review_code == "all_season_analysis_running"
 
 
 def test_episode_reviews_enter_one_disc_level_analysis(tmp_path, monkeypatch):

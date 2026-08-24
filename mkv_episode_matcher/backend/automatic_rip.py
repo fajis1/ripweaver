@@ -26,6 +26,10 @@ _AUTOMATIC_UNMATCHED_CODES = frozenset({
     "all_season_sequence_review_required",
     "independent_episode_evidence_required",
 })
+_AUTOMATIC_DISC_RETRY_CODES = frozenset({
+    "all_season_analysis_failed",
+    "gemini_analysis_failed",
+})
 
 
 def set_automatic_rip_startup_hold(enabled: bool) -> None:
@@ -471,7 +475,8 @@ def _resolve_automatic_unmatched_disc(  # noqa: C901
         for media_id in media_ids
         if store.get(media_id).stage == "identify"
         and store.get(media_id).state == "review_required"
-        and store.get(media_id).review_code in _AUTOMATIC_UNMATCHED_CODES
+        and store.get(media_id).review_code
+        in (_AUTOMATIC_UNMATCHED_CODES | _AUTOMATIC_DISC_RETRY_CODES)
     ]
     if not held:
         return
