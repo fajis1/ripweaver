@@ -280,8 +280,51 @@ def _filter_dashboard_pipeline_items(
     return tuple(
         item
         for item in items
-        if any(fingerprint in item.media_id for fingerprint in disc_fingerprints)
+        if (
+            any(fingerprint in item.media_id for fingerprint in disc_fingerprints)
+            or _pipeline_item_saved_disc_fingerprint(item) in disc_fingerprints
+        )
     )
+
+
+def _pipeline_item_saved_disc_fingerprint(item) -> str | None:
+    """Read only the saved path-free disc identity needed for dashboard scope."""
+
+    artifact = getattr(item, "artifact", None)
+    contract_path = getattr(artifact, "contract_path", None)
+    if not isinstance(contract_path, Path):
+        return None
+    candidates = (
+        contract_path.with_name(f"{item.media_id}.verified-rip.json"),
+        contract_path,
+    )
+    for candidate in dict.fromkeys(candidates):
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        fingerprint = payload.get("disc_fingerprint")
+        if isinstance(fingerprint, str) and re.fullmatch(r"[0-9a-f]{16}", fingerprint):
+            return fingerprint
+    return None
+
+
+def _dashboard_disc_matching_scopes(
+    store: PipelineQueueStore,
+    disc_fingerprints: tuple[str, ...],
+) -> list[dict[str, object]]:
+    """Return the latest path-free classifier scope for visible exact discs."""
+
+    scopes: list[dict[str, object]] = []
+    for fingerprint in disc_fingerprints:
+        title_indexes = store.disc_matching_scope(fingerprint)
+        if title_indexes is None:
+            continue
+        scopes.append({
+            "disc_fingerprint": fingerprint,
+            "relevant_title_indexes": list(title_indexes),
+        })
+    return scopes
 
 
 def _claim_drive_preparation(
@@ -2554,6 +2597,11 @@ class DiscTitleDispositionResponse(BaseModel):
     reason: str
 
 
+class DiscMatchingScopeResponse(BaseModel):
+    disc_fingerprint: str
+    relevant_title_indexes: list[int]
+
+
 class PipelineQueueResponse(BaseModel):
     paused: bool
     startup_resume_in_seconds: int | None = None
@@ -2562,6 +2610,7 @@ class PipelineQueueResponse(BaseModel):
     automatic_organization_enabled: bool
     items: list[PipelineItemResponse]
     title_dispositions: list[DiscTitleDispositionResponse] = Field(default_factory=list)
+    disc_matching_scopes: list[DiscMatchingScopeResponse] = Field(default_factory=list)
 
 
 class PipelineControlRequest(BaseModel):
@@ -4612,6 +4661,17 @@ def get_pipeline_items(
     )
     visual_reviews = store.silent_video_review_flags()
     config = get_config_manager().load()
+    item_responses = [
+        _pipeline_item_response(item, dossier, visual_reviews.get(item.media_id))
+        for item in items
+    ]
+    matching_scope_fingerprints = fingerprints or tuple(
+        sorted({
+            fingerprint
+            for item in item_responses
+            if isinstance((fingerprint := item.get("disc_fingerprint")), str)
+        })
+    )
     return {
         "paused": store.is_paused(),
         "startup_resume_in_seconds": startup_queue_resume_seconds(),
@@ -4623,10 +4683,10 @@ def get_pipeline_items(
             for disposition in store.list_title_dispositions()
             if not fingerprints or disposition["disc_fingerprint"] in fingerprints
         ],
-        "items": [
-            _pipeline_item_response(item, dossier, visual_reviews.get(item.media_id))
-            for item in items
-        ],
+        "disc_matching_scopes": _dashboard_disc_matching_scopes(
+            store, matching_scope_fingerprints
+        ),
+        "items": item_responses,
     }
 
 

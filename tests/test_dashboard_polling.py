@@ -1,9 +1,11 @@
+import json
 from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 
 from mkv_episode_matcher.backend.routers.rip import (
+    _dashboard_disc_matching_scopes,
     _filter_dashboard_jobs,
     _filter_dashboard_pipeline_items,
     _parse_dashboard_disc_fingerprints,
@@ -83,6 +85,55 @@ def test_pipeline_scopes_return_only_items_visible_in_each_view() -> None:
     assert _filter_dashboard_pipeline_items(
         items, scope="active", disc_fingerprints=()
     ) == (selected_review, other_running)
+
+
+def test_dashboard_pipeline_scope_uses_saved_fingerprint_for_opaque_recovery_ids(
+    tmp_path,
+) -> None:
+    store = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+    selected_id = "opaque-recovery-title"
+    selected_contract = tmp_path / f"{selected_id}.verified-rip.json"
+    selected_contract.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "disc_fingerprint": "a5c6de13f86cc16b",
+            "title_index": 1,
+        }),
+        encoding="utf-8",
+    )
+    other_id = "other-opaque-recovery-title"
+    other_contract = tmp_path / f"{other_id}.verified-rip.json"
+    other_contract.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "disc_fingerprint": "5b2c2f4143e17730",
+            "title_index": 2,
+        }),
+        encoding="utf-8",
+    )
+    store.enqueue_verified_rip(selected_id, build_artifact("rip", selected_contract))
+    store.enqueue_verified_rip(other_id, build_artifact("rip", other_contract))
+    selected, other = store.list_items()
+
+    assert "a5c6de13f86cc16b" not in selected.media_id
+    assert _filter_dashboard_pipeline_items(
+        (selected, other),
+        scope="dashboard",
+        disc_fingerprints=("a5c6de13f86cc16b",),
+    ) == (selected,)
+
+
+def test_dashboard_returns_authoritative_saved_matching_scope(tmp_path) -> None:
+    store = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+    store.remember_disc_matching_scope("a5c6de13f86cc16b", (8, 2, 5))
+    store.remember_disc_matching_scope("5b2c2f4143e17730", (1,))
+
+    assert _dashboard_disc_matching_scopes(store, ("a5c6de13f86cc16b",)) == [
+        {
+            "disc_fingerprint": "a5c6de13f86cc16b",
+            "relevant_title_indexes": [2, 5, 8],
+        }
+    ]
 
 
 def test_empty_dashboard_disc_scope_keeps_only_actionable_pipeline_work() -> None:

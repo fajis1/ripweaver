@@ -372,6 +372,10 @@ interface PipelineQueue {
     disposition: string;
     reason: string;
   }>;
+  disc_matching_scopes?: Array<{
+    disc_fingerprint: string;
+    relevant_title_indexes: number[];
+  }>;
 }
 
 const episodeReviewCandidates = (item: PipelineQueueItem): Array<{ name: string; source: string; score: number | null; margin: number | null }> => {
@@ -3617,6 +3621,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
               const earlierActiveJob = currentDiscJobs.find((candidate) => candidate.job_id !== job?.job_id && ['authorized', 'queued', 'running', 'pause_requested'].includes(candidate.state));
               const driveFingerprint = drive.current_disc_fingerprint ?? job?.preview?.jobs.map((item) => item.staging_destination.match(/(?:^|\/)([0-9a-f]{16})(?:\/|$)/)?.[1]).find((value): value is string => Boolean(value));
               const drivePipelineItems = (pipelineQueue?.items ?? []).filter((item) => driveFingerprint && item.disc_fingerprint === driveFingerprint);
+              const preparedMatchingScope = driveFingerprint
+                ? pipelineQueue?.disc_matching_scopes?.find((scope) => scope.disc_fingerprint === driveFingerprint)
+                : undefined;
               const latestDrivePipelineItems = Array.from(drivePipelineItems.reduce((items, item) => {
                 if (typeof item.title_index !== 'number') return items;
                 const previous = items.get(item.title_index);
@@ -3641,13 +3648,16 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                 })[0] ?? job;
               const failedRecoveryPlanIsStale = Boolean(
                 failedRipJob
+                && !preparedMatchingScope
                 && inventoryPlanJob
                 && Date.parse(inventoryPlanJob.created_at) <= Date.parse(failedRipJob.created_at),
               );
-              const expectedPipelineTitleIndexes = new Set(inventoryPlanJob?.preview?.jobs
-                .filter((item) => item.drive_index === drive.drive_index)
-                .map((item) => item.title_index) ?? []);
-              const historicallyKnownTitleIndexes = preparedFailureRecoveryJob
+              const expectedPipelineTitleIndexes = new Set(preparedMatchingScope
+                ? preparedMatchingScope.relevant_title_indexes
+                : inventoryPlanJob?.preview?.jobs
+                  .filter((item) => item.drive_index === drive.drive_index)
+                  .map((item) => item.title_index) ?? []);
+              const historicallyKnownTitleIndexes = preparedMatchingScope || preparedFailureRecoveryJob
                 ? new Set(expectedPipelineTitleIndexes)
                 : new Set(currentDiscJobs.flatMap((candidate) => (
                     candidate.preview?.jobs
