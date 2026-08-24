@@ -495,6 +495,26 @@ def _select_gemini_file_evidence(
     return tuple(selected_files)
 
 
+def _filter_gemini_subtitle_comparisons(
+    comparisons: Mapping[str, tuple[GeminiSubtitleComparisonEvidence, ...]],
+    catalog: tuple[EpisodeCatalogEntry, ...],
+) -> dict[str, tuple[GeminiSubtitleComparisonEvidence, ...]]:
+    """Keep paired subtitle evidence inside Gemini's final candidate set."""
+
+    allowed_episode_ids = {entry.episode_id for entry in catalog}
+    return {
+        file_id: filtered
+        for file_id, pairs in comparisons.items()
+        if (
+            filtered := tuple(
+                pair
+                for pair in pairs
+                if pair.candidate_episode_id in allowed_episode_ids
+            )
+        )
+    }
+
+
 def _score_subtitle(
     asr,
     excerpts: tuple[str, ...],
@@ -2325,9 +2345,6 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
         opensubtitles_candidate_evaluations,
         asr,
     )
-    unresolved_for_gemini = _select_gemini_file_evidence(
-        unresolved_for_gemini, gemini_subtitle_comparisons
-    )
     # Preserve independent subtitle matches, but let Gemini inspect unresolved
     # titles against only the established season scope and unassigned episodes.
     if unresolved_for_gemini and allow_gemini:
@@ -2348,6 +2365,12 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
             )
             if disc_range_fence is not None
             else season_bounded_gemini_catalog
+        )
+        gemini_subtitle_comparisons = _filter_gemini_subtitle_comparisons(
+            gemini_subtitle_comparisons, remaining_gemini_catalog
+        )
+        unresolved_for_gemini = _select_gemini_file_evidence(
+            unresolved_for_gemini, gemini_subtitle_comparisons
         )
         effective_gemini_scope = (
             disc_range_fence.scope

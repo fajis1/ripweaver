@@ -37,15 +37,68 @@ def _sequence_only_attempts(attempts: tuple[dict[str, object], ...]) -> bool:
     return sequence_matched and not independently_matched
 
 
-def _current_disc_title_lineages(items: tuple[object, ...]) -> tuple[object, ...]:
+def _contract_disc_title_identity(
+    item: object, store: object | None = None
+) -> tuple[str, int] | None:
+    """Read exact physical title identity from the immutable rip contract.
+
+    Recovered MakeMKV outputs intentionally keep their original basename and
+    therefore do not necessarily have a canonical queue media ID.  The rip
+    contract is the authoritative lineage boundary for those items.
+    """
+
+    artifacts = []
+    rip_artifact_reader = getattr(store, "rip_artifact", None)
+    if callable(rip_artifact_reader):
+        try:
+            artifacts.append(rip_artifact_reader(item.media_id))
+        except (PipelineQueueError, OSError):
+            pass
+    artifact = getattr(item, "artifact", None)
+    if artifact is not None:
+        artifacts.append(artifact)
+    seen_paths = set()
+    for candidate in artifacts:
+        contract_path = getattr(candidate, "contract_path", None)
+        if contract_path is None or contract_path in seen_paths:
+            continue
+        seen_paths.add(contract_path)
+        try:
+            payload = json.loads(contract_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, AttributeError):
+            continue
+        fingerprint = payload.get("disc_fingerprint")
+        title_index = payload.get("title_index")
+        if (
+            isinstance(fingerprint, str)
+            and re.fullmatch(r"[0-9a-f]{16}", fingerprint, re.IGNORECASE)
+            and isinstance(title_index, int)
+            and not isinstance(title_index, bool)
+            and title_index >= 0
+        ):
+            return fingerprint.lower(), title_index
+
+    # Retain compatibility with older identified contracts that did not copy
+    # physical lineage forward but still used the canonical queue ID.
+    media_match = _DISC_TITLE_ID.search(item.media_id)
+    if media_match is None:
+        return None
+    return media_match.group(1).lower(), int(media_match.group(2))
+
+
+def _current_disc_title_lineages(
+    items: tuple[object, ...], store: object | None = None
+) -> tuple[object, ...]:
     """Keep only the newest queue record for each physical disc title."""
 
     newest: dict[tuple[str, int], object] = {}
+    identities: dict[int, tuple[str, int] | None] = {}
     for item in items:
-        media_match = _DISC_TITLE_ID.search(item.media_id)
-        if media_match is None:
+        identity = _contract_disc_title_identity(item, store)
+        identities[id(item)] = identity
+        if identity is None:
             continue
-        key = (media_match.group(1).lower(), int(media_match.group(2)))
+        key = identity
         previous = newest.get(key)
         if previous is None or (
             getattr(item, "updated_at", ""),
@@ -60,12 +113,11 @@ def _current_disc_title_lineages(items: tuple[object, ...]) -> tuple[object, ...
 
     selected = []
     for item in items:
-        media_match = _DISC_TITLE_ID.search(item.media_id)
-        if media_match is None:
+        identity = identities[id(item)]
+        if identity is None:
             selected.append(item)
             continue
-        key = (media_match.group(1).lower(), int(media_match.group(2)))
-        if newest[key] is item:
+        if newest[identity] is item:
             selected.append(item)
     return tuple(selected)
 
@@ -214,13 +266,14 @@ class DownstreamWorker:
                 continue
             if not _sequence_only_attempts(attempts):
                 continue
-            media_match = _DISC_TITLE_ID.search(item.media_id)
+            identity = _contract_disc_title_identity(item, self.dispatcher.store)
             try:
-                if item.stage == "transcode" and media_match is not None:
+                if item.stage == "transcode" and identity is not None:
+                    fingerprint, title_index = identity
                     self.dispatcher.store.restart_identification(
                         item.media_id,
-                        expected_disc_fingerprint=media_match.group(1).lower(),
-                        expected_title_index=int(media_match.group(2)),
+                        expected_disc_fingerprint=fingerprint,
+                        expected_title_index=title_index,
                     )
                     restarted += 1
                 elif item.stage == "organize" and item.state == "queued":
@@ -262,13 +315,14 @@ class DownstreamWorker:
         expected: dict[str, set[int]] = {}
         observed: dict[str, set[int]] = {}
         resolved: dict[str, set[int]] = {}
-        items = _current_disc_title_lineages(tuple(self.dispatcher.store.list_items()))
+        items = _current_disc_title_lineages(
+            tuple(self.dispatcher.store.list_items()), self.dispatcher.store
+        )
         visual_reviews = self.dispatcher.store.silent_video_review_flags()
         for item in items:
-            media_match = _DISC_TITLE_ID.search(item.media_id)
-            if media_match is not None:
-                fingerprint = media_match.group(1).lower()
-                title_index = int(media_match.group(2))
+            identity = _contract_disc_title_identity(item, self.dispatcher.store)
+            if identity is not None:
+                fingerprint, title_index = identity
                 observed.setdefault(fingerprint, set()).add(title_index)
                 if item.stage != "identify":
                     resolved.setdefault(fingerprint, set()).add(title_index)

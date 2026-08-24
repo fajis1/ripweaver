@@ -239,6 +239,30 @@ def test_gemini_uses_six_diverse_excerpts_and_paired_subtitle_passages():
     assert len(selected[0].transcript_excerpts) == 6
 
 
+def test_gemini_subtitle_comparisons_follow_final_unassigned_catalog():
+    comparisons = {
+        "title-1": (
+            analysis.GeminiSubtitleComparisonEvidence(
+                "S07E21", "assigned dialogue", "assigned reference", 0.9
+            ),
+            analysis.GeminiSubtitleComparisonEvidence(
+                "S07E22", "remaining dialogue", "remaining reference", 0.8
+            ),
+        )
+    }
+    remaining_catalog = (
+        EpisodeCatalogEntry("S07E22", 7, 22, "Episode 22", "", 1200),
+    )
+
+    filtered = analysis._filter_gemini_subtitle_comparisons(
+        comparisons, remaining_catalog
+    )
+
+    assert tuple(
+        pair.candidate_episode_id for pair in filtered["title-1"]
+    ) == ("S07E22",)
+
+
 def test_residual_subtitle_pass_preserves_close_or_weak_choices_for_review():
     episode_12 = EpisodeCatalogEntry("S02E12", 2, 12, "The Injury", "", 1200)
     episode_15 = EpisodeCatalogEntry("S02E15", 2, 15, "Boys and Girls", "", 1200)

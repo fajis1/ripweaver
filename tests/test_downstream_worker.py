@@ -1,7 +1,10 @@
 import json
 from types import SimpleNamespace
 
-from mkv_episode_matcher.backend.downstream_worker import DownstreamWorker
+from mkv_episode_matcher.backend.downstream_worker import (
+    DownstreamWorker,
+    _contract_disc_title_identity,
+)
 
 
 def test_worker_quarantines_legacy_sequence_only_downstream_assignments(
@@ -85,6 +88,32 @@ def test_worker_quarantines_legacy_sequence_only_downstream_assignments(
         )
     ]
     assert held == [(sequence_organize, "legacy_sequence_assignment_review_required")]
+
+
+def test_recovered_downstream_item_reads_lineage_from_saved_rip_artifact(tmp_path):
+    fingerprint = "0123456789abcdef"
+    current = tmp_path / "identified.json"
+    current.write_text(
+        json.dumps({"mode": "identified-episode-contract"}), encoding="utf-8"
+    )
+    rip = tmp_path / "recovered.verified-rip.json"
+    rip.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "disc_fingerprint": fingerprint,
+            "title_index": 7,
+        }),
+        encoding="utf-8",
+    )
+    item = SimpleNamespace(
+        media_id="Disc_Name_t06-recovery-deadbeef",
+        artifact=SimpleNamespace(contract_path=current),
+    )
+    store = SimpleNamespace(
+        rip_artifact=lambda _media_id: SimpleNamespace(contract_path=rip)
+    )
+
+    assert _contract_disc_title_identity(item, store) == (fingerprint, 7)
 
 
 def test_automatic_analysis_rechecks_complete_disc_when_one_old_item_failed(
@@ -425,6 +454,62 @@ def test_automatic_analysis_uses_prepared_relevant_matching_scope(
 
     assert worker._apply_automatic_disc_analysis() is False
     store.disc_matching_scope = lambda _fingerprint: (1, 7)
+    assert worker._apply_automatic_disc_analysis() is True
+    assert captured == [(items[0].media_id, items[1].media_id)]
+
+
+def test_automatic_analysis_uses_contract_identity_for_recovered_media_ids(
+    tmp_path, monkeypatch
+):
+    fingerprint = "0123456789abcdef"
+    items = []
+    for title_index in (1, 2):
+        contract = tmp_path / f"recovered-{title_index}.json"
+        contract.write_text(
+            json.dumps({
+                "mode": "verified-rip-contract",
+                "disc_fingerprint": fingerprint,
+                "title_index": title_index,
+                "disc_expected_title_indexes": [1, 2],
+                "media_context": {"series_name": "The Office", "season": None},
+            }),
+            encoding="utf-8",
+        )
+        items.append(
+            SimpleNamespace(
+                media_id=f"Disc_Name_t{title_index:02d}-recovery-deadbeef{title_index}",
+                stage="identify",
+                state="review_required",
+                review_code="unmatched_disc_analysis_required",
+                artifact=SimpleNamespace(contract_path=contract),
+                created_at=f"2026-08-24T00:00:0{title_index}Z",
+                updated_at=f"2026-08-24T00:00:0{title_index}Z",
+            )
+        )
+    store = SimpleNamespace(
+        list_items=lambda: items,
+        silent_video_review_flags=lambda: {},
+        disc_matching_scope=lambda _fingerprint: (1, 2),
+    )
+    worker = DownstreamWorker(
+        SimpleNamespace(store=store), allowed_stages=("identify",)
+    )
+    captured = []
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(automatic_processing_enabled=True)
+        ),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root",
+        lambda: tmp_path,
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.automatic_rip._resolve_automatic_unmatched_disc",
+        lambda media_ids, *_args: captured.append(media_ids),
+    )
+
     assert worker._apply_automatic_disc_analysis() is True
     assert captured == [(items[0].media_id, items[1].media_id)]
 

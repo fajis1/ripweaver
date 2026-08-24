@@ -3756,6 +3756,11 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
               const failedRipTitleIsSkipped = failedRipTitleIndex !== null && skippedTitleIndexes.has(failedRipTitleIndex);
               const identificationReviewItems = latestDrivePipelineItems.filter((item) => item.stage === 'identify' && ['failed', 'review_required'].includes(item.state));
               const identificationNeedsAttention = identificationReviewItems.length > 0;
+              const identificationAwaitingFirstAttempt = identificationReviewItems.some((item) => (
+                item.state === 'review_required'
+                && ['missing_season_context', 'unmatched_disc_analysis_required'].includes(item.review_code || '')
+                && (item.identification_attempts?.length ?? 0) === 0
+              ));
               const identificationReviewTarget = identificationReviewItems[0];
               const outstandingDiscReviewItems = latestDrivePipelineItems.filter((item) => item.state === 'review_required');
               const discardedIdentificationRemains = drivePipelineItems.some((item) => item.stage === 'identify' && item.state === 'discarded' && item.staged_source_available);
@@ -3774,7 +3779,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                     : `rerip ${missingRipTitleCount} relevant missing ${missingRipTitleCount === 1 ? 'title' : 'titles'}`
                 : driveRipComplete
                   ? identificationNeedsAttention
-                    ? 'rip complete · identification needs attention'
+                    ? identificationAwaitingFirstAttempt
+                      ? 'rip complete · matching waiting to start'
+                      : 'rip complete · identification needs attention'
                     : outstandingDiscReviewItems.length > 0
                       ? `rip complete · ${outstandingDiscReviewItems.length} saved ${outstandingDiscReviewItems.length === 1 ? 'result needs' : 'results need'} review`
                       : skippedDiscTitles.length > 0
@@ -4000,7 +4007,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                           )}
                         </>
                       ) : (
-                        <div>Ripping finished, but one or more verified titles still need identification review. Reripping those files would not improve their identification evidence.</div>
+                        identificationAwaitingFirstAttempt
+                          ? <div>Ripping finished, but one or more preserved titles have not received their first disc-wide matching attempt. Their MKVs are safe; run identification recovery, not MakeMKV.</div>
+                          : <div>Ripping finished, but one or more verified titles still need identification review. Reripping those files would not improve their identification evidence.</div>
                       )}
                       <button
                         type="button"
@@ -4114,6 +4123,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                                   ? `not an episode · intentionally skipped${skipReason ? ` · ${skipReason.replaceAll('_', ' ')}` : ''}`
                                   : `${item.stage} · ${item.state.replaceAll('_', ' ')}${item.review_code ? ` · ${item.review_code.replaceAll('_', ' ')}` : ''}`}
                                 {!skipped && attempts.length > 0 ? ` · ${attempts.length} matching attempts recorded` : ''}
+                                {!skipped && item.state === 'review_required' && attempts.length === 0 ? ' · matching has not started' : ''}
                               </div>
                               {!skipped && item.state === 'queued' && (
                                 <div className="mt-2 rounded border border-blue-300/25 bg-blue-500/10 p-2 text-xs text-blue-100">
@@ -4843,7 +4853,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                     ) : episodeSequenceReviewCodes.has(item.review_code || '') ? (
                       <div className="max-w-md rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-100">
                         <div>{item.review_code === 'episode_match_review' ? 'Initial episode matching could not safely approve a title. Review the suggested match or retry the entire disc with exhaustive matching.' : 'This title needs episode-sequence analysis before it can continue.'}</div>
-                        {!item.identification_attempts?.length && <div className="mt-2">No current matcher attempt is recorded for this older hold. Retry the entire disc once to run every preserved title through the current identification pipeline.</div>}
+                        {!item.identification_attempts?.length && <div className="mt-2">No matcher attempt is recorded for this preserved title. Run the disc-wide identification retry once; this reads the existing staged MKV and does not rerip the disc.</div>}
                         {item.review_code === 'all_season_catalog_unavailable' && <div className="mt-2">TMDb did not return an aired episode catalogue for the reviewed series name. Open the disc dashboard, confirm the canonical series name, and retry.</div>}
                         {item.review_code === 'all_season_series_not_found' && <div className="mt-2">No TV series could be validated from the supplied name. When automatic Gemini fallback is enabled, inexact labels are sent to Gemini before this review is shown.</div>}
                         {item.review_code === 'all_season_evidence_failed' && <div className="mt-2">Audio evidence collection failed before episode matching began. Review the server diagnostic for the safe failure category, then retry.</div>}
