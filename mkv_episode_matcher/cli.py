@@ -1,5 +1,5 @@
 """
-Unified CLI Interface for MKV Episode Matcher V2
+Unified CLI interface for RipWeaver
 
 This module provides a single, intuitive command-line interface that handles
 all use cases with intelligent auto-detection and minimal configuration.
@@ -28,7 +28,7 @@ from mkv_episode_matcher.core.models import Config
 
 app = typer.Typer(
     name="mkv-match",
-    help="""MKV Episode Matcher - Intelligent TV episode identification and renaming
+    help="""RipWeaver - Disc ripping, episode identification, and media organization
 
 Quick Start:
   mkv-match serve     Launch the Web UI (recommended)
@@ -79,7 +79,7 @@ def _prompt_for_replacement_credential(error) -> bool:
 
 def print_banner():
     """Print application banner."""
-    banner = Text("MKV Episode Matcher", style="bold blue")
+    banner = Text("RipWeaver", style="bold blue")
     console.print(
         Panel(banner, subtitle="Intelligent episode matching with zero-config setup")
     )
@@ -434,7 +434,7 @@ def config(
     ),
 ):
     """
-    Configure MKV Episode Matcher settings.
+    Configure RipWeaver settings.
 
     Most settings are auto-configured, but you can customize:
     â€¢ Cache directory location
@@ -456,7 +456,7 @@ def config(
         return
 
     # Interactive configuration
-    console.print(Panel("MKV Episode Matcher Configuration"))
+    console.print(Panel("RipWeaver Configuration"))
 
     config = cm.load()
 
@@ -565,7 +565,7 @@ def info():
     """
     Show system information and available models.
     """
-    console.print(Panel("MKV Episode Matcher - System Information"))
+    console.print(Panel("RipWeaver - System Information"))
 
     # Configuration info
     try:
@@ -623,7 +623,7 @@ def info():
 
 
 @app.command()
-def preflight(
+def preflight(  # noqa: C901
     drive: Annotated[
         list[int] | None,
         typer.Option(
@@ -693,34 +693,60 @@ def preflight(
         executable = resolve_makemkv_path(makemkv_path)
         output_dir = output_dir.resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
-
-        console.print("[blue]Discovering MakeMKV drives...[/blue]")
-        discovery = run_info_command(
-            executable,
-            "disc:9999",
-            timeout_seconds=min(timeout, 120),
-        )
-        (output_dir / "drive-discovery.robot.log").write_text(
-            sanitize_robot_output(discovery.stdout)
-            + (
-                "\n--- STDERR ---\n" + sanitize_robot_output(discovery.stderr)
-                if discovery.stderr
-                else ""
-            ),
-            encoding="utf-8",
-        )
-
-        detected = parse_drives(discovery.stdout)
-        loaded = [item for item in detected if item.has_disc]
+        selected_results = {}
         if drive:
-            requested = set(drive)
-            unknown = requested.difference(item.index for item in detected)
-            if unknown:
+            requested = tuple(dict.fromkeys(drive))
+            if any(index < 0 or index > 99 for index in requested):
                 raise PreflightError(
-                    "Unknown MakeMKV drive index(es): "
-                    + ", ".join(str(index) for index in sorted(unknown))
+                    "MakeMKV drive indexes must be between 0 and 99"
                 )
-            loaded = [item for item in loaded if item.index in requested]
+            loaded = []
+            for drive_index in requested:
+                console.print(
+                    f"[blue]Inspecting selected drive {drive_index}...[/blue]"
+                )
+                result = run_info_command(
+                    executable,
+                    f"disc:{drive_index}",
+                    minimum_length=minimum_length,
+                    timeout_seconds=timeout,
+                )
+                matching_drive = next(
+                    (
+                        item
+                        for item in parse_drives(result.stdout)
+                        if item.index == drive_index
+                    ),
+                    None,
+                )
+                if matching_drive is None:
+                    raise PreflightError(
+                        "Selected MakeMKV drive was absent from its targeted inventory"
+                    )
+                if not matching_drive.has_disc:
+                    raise PreflightError(
+                        "Selected MakeMKV drive does not report a loaded disc"
+                    )
+                loaded.append(matching_drive)
+                selected_results[drive_index] = result
+        else:
+            console.print("[blue]Discovering MakeMKV drives...[/blue]")
+            discovery = run_info_command(
+                executable,
+                "disc:9999",
+                timeout_seconds=min(timeout, 120),
+            )
+            (output_dir / "drive-discovery.robot.log").write_text(
+                sanitize_robot_output(discovery.stdout)
+                + (
+                    "\n--- STDERR ---\n" + sanitize_robot_output(discovery.stderr)
+                    if discovery.stderr
+                    else ""
+                ),
+                encoding="utf-8",
+            )
+            detected = parse_drives(discovery.stdout)
+            loaded = [item for item in detected if item.has_disc]
 
         if not loaded:
             console.print("[yellow]No selected drives report a loaded disc.[/yellow]")
@@ -755,16 +781,18 @@ def preflight(
         }
 
         for item in loaded:
-            console.print(
-                f"[blue]Inspecting drive {item.index} ({item.device_name}) "
-                f"- {item.disc_name}...[/blue]"
-            )
-            result = run_info_command(
-                executable,
-                f"disc:{item.index}",
-                minimum_length=minimum_length,
-                timeout_seconds=timeout,
-            )
+            result = selected_results.get(item.index)
+            if result is None:
+                console.print(
+                    f"[blue]Inspecting drive {item.index} ({item.device_name}) "
+                    f"- {item.disc_name}...[/blue]"
+                )
+                result = run_info_command(
+                    executable,
+                    f"disc:{item.index}",
+                    minimum_length=minimum_length,
+                    timeout_seconds=timeout,
+                )
             inventory = parse_disc_inventory(result, item)
             json_path, robot_path = write_inventory_report(
                 output_dir,
@@ -3580,7 +3608,7 @@ def version():
     except AttributeError:
         version = "unknown"
 
-    console.print(f"MKV Episode Matcher v{version}")
+    console.print(f"RipWeaver v{version}")
 
 
 def _display_comprehensive_summary(results, failures, dry_run, output_dir, console):
@@ -3742,12 +3770,20 @@ def serve(
     no_browser: bool = typer.Option(
         False, "--no-browser", help="Don't open browser automatically"
     ),
+    hold_automatic_rips: bool = typer.Option(
+        False,
+        "--hold-automatic-rips",
+        help=(
+            "Discover and review loaded discs without launching unattended rip or "
+            "downstream workers for this server lifetime"
+        ),
+    ),
 ):
     """
     Launch the Web UI server.
 
     Starts the backend API server and opens the web interface in your browser.
-    This is the recommended way to use MKV Episode Matcher for most users.
+    This is the recommended way to use RipWeaver for most users.
 
     Examples:
 
@@ -3763,10 +3799,23 @@ def serve(
 
     import uvicorn
 
+    from mkv_episode_matcher.backend.automatic_rip import (
+        set_automatic_rip_startup_hold,
+    )
+
+    set_automatic_rip_startup_hold(hold_automatic_rips)
+    from mkv_episode_matcher.backend.main import (
+        UVICORN_GRACEFUL_SHUTDOWN_SECONDS,
+    )
     from mkv_episode_matcher.backend.main import app as fastapi_app
 
     print_banner()
     console.print(f"[blue]Starting Web UI server on http://{host}:{port}[/blue]")
+    if hold_automatic_rips:
+        console.print(
+            "[yellow]Automatic disc ripping and downstream processing are held for "
+            "this server lifetime.[/yellow]"
+        )
     console.print("[dim]Press Ctrl+C to stop the server[/dim]\n")
 
     if not no_browser:
@@ -3777,7 +3826,12 @@ def serve(
 
         threading.Thread(target=open_browser, daemon=True).start()
 
-    uvicorn.run(fastapi_app, host=host, port=port)
+    uvicorn.run(
+        fastapi_app,
+        host=host,
+        port=port,
+        timeout_graceful_shutdown=UVICORN_GRACEFUL_SHUTDOWN_SECONDS,
+    )
 
 
 @app.command()
@@ -3788,9 +3842,13 @@ def gui(
     ),
 ):
     """Launch the Web UI (alias for 'serve')."""
-    serve(port=port, host="0.0.0.0", no_browser=no_browser)
+    serve(
+        port=port,
+        host="0.0.0.0",
+        no_browser=no_browser,
+        hold_automatic_rips=False,
+    )
 
 
 if __name__ == "__main__":
     app()
-

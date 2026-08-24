@@ -17,12 +17,30 @@ from mkv_episode_matcher.disc.drive_watcher import DriveStatusSnapshot
 from mkv_episode_matcher.disc.ripper import RipError
 
 _downstream_lock = threading.Lock()
+_automatic_rip_startup_hold = threading.Event()
 _AUTOMATIC_UNMATCHED_CODES = frozenset({
+    "episode_match_review",
+    "gemini_descriptive_review_required",
     "missing_season_context",
     "unmatched_disc_analysis_required",
     "all_season_sequence_review_required",
     "independent_episode_evidence_required",
 })
+
+
+def set_automatic_rip_startup_hold(enabled: bool) -> None:
+    """Hold automatic disc execution for one explicitly staged server lifetime."""
+
+    if enabled:
+        _automatic_rip_startup_hold.set()
+    else:
+        _automatic_rip_startup_hold.clear()
+
+
+def automatic_rip_startup_held() -> bool:
+    """Return whether this process must not launch unattended disc workers."""
+
+    return _automatic_rip_startup_hold.is_set()
 
 
 def _preview_fingerprints(preview: dict[str, object]) -> frozenset[str]:
@@ -141,6 +159,19 @@ def _automatic_job_can_advance(job, store) -> bool:
     return True
 
 
+def _automatic_failure_is_retryable(exc: Exception) -> bool:
+    """Return whether an unchanged loaded disc may be prepared again.
+
+    HTTP failures are decisions made after the request reached the guarded
+    preparation boundary.  Retrying the same disc without a media change just
+    repeats deterministic review, configuration, or durable-state conflicts.
+    Low-level operating-system failures may be transient, so the coordinator
+    retains its existing one-reconciliation retry behavior for those only.
+    """
+
+    return isinstance(exc, OSError) and not isinstance(exc, HTTPException)
+
+
 class AutomaticRipCoordinator:
     """Launch one worker per newly loaded drive and suppress refresh duplicates."""
 
@@ -158,7 +189,8 @@ class AutomaticRipCoordinator:
             )
             for drive in snapshot.drives
             if (
-                drive.has_disc
+                drive.available
+                and drive.has_disc
                 and drive.mapping_status == "trusted"
                 and drive.makemkv_confirmed
             )
@@ -211,6 +243,10 @@ class AutomaticRipCoordinator:
 
 def run_automatic_drive(drive_index: int) -> bool:
     """Prepare, authorize, queue, and execute one collision-free inserted disc."""
+
+    if automatic_rip_startup_held():
+        logger.info("Automatic rip remained held for exact-plan review")
+        return True
 
     from mkv_episode_matcher.backend.dependencies import (
         get_disc_inventory_runner,
@@ -293,6 +329,7 @@ def run_automatic_drive(drive_index: int) -> bool:
             pipeline_store,
             get_pipeline_contract_root(),
             get_disc_inventory_runner(),
+            watcher,
         )
         if completed.get("state") == "completed":
             media_ids = tuple(
@@ -307,10 +344,17 @@ def run_automatic_drive(drive_index: int) -> bool:
             )
         return True
     except (HTTPException, RipError, OSError, ValueError) as exc:
+        retry = _automatic_failure_is_retryable(exc)
+        status_code = exc.status_code if isinstance(exc, HTTPException) else None
         logger.warning(
-            "Automatic rip stopped safely during {}: {}", stage, type(exc).__name__
+            "Automatic rip stopped safely during {}: failure_type={} "
+            "status_code={} retry_unchanged_disc={}",
+            stage,
+            type(exc).__name__,
+            status_code,
+            retry,
         )
-        return False
+        return not retry
 
 
 def _wait_for_stage_to_settle(
@@ -506,6 +550,20 @@ def _resolve_automatic_unmatched_disc(  # noqa: C901
 
 
 automatic_rip_coordinator = AutomaticRipCoordinator(run_automatic_drive)
+
+
+def observe_automatic_drives(
+    snapshot: DriveStatusSnapshot,
+    *,
+    enabled: bool,
+    processing_paused: bool = False,
+) -> bool:
+    """Observe loaded media unless startup or durable processing is held."""
+
+    if automatic_rip_startup_held() or processing_paused:
+        return False
+    automatic_rip_coordinator.observe(snapshot, enabled=enabled)
+    return True
 
 
 def _automatic_series_name(series_name: object, media_id: str) -> str | None:

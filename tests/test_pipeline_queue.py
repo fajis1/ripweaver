@@ -5,6 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from mkv_episode_matcher.backend.identification_dossier import (
+    IdentificationDossierStore,
+)
 from mkv_episode_matcher.backend.routers.rip import (
     AmbiguityChoiceRequest,
     ManualEpisodeIdentificationRequest,
@@ -12,9 +15,11 @@ from mkv_episode_matcher.backend.routers.rip import (
     _delete_exact_queued_rip,
     _disc_range_elimination_candidate,
     _exact_queued_rip_source,
+    _pipeline_identification_attempts,
     apply_manual_episode_identification,
     restart_placeholder_identification,
 )
+from mkv_episode_matcher.disc.rip_manifest import MediaContext
 from mkv_episode_matcher.disc.ripper import RipJob, RipResult, resolve_final_output
 from mkv_episode_matcher.media.handbrake import HandBrakeError
 from mkv_episode_matcher.pipeline_adapters import IdentifyStageAdapter
@@ -206,7 +211,7 @@ def test_dispatcher_claims_only_exact_authorized_media_ids(tmp_path):
     assert store.get("media-1").state == "queued"
 
 
-def test_atomic_claim_allows_only_one_downstream_worker(tmp_path):
+def test_atomic_claim_allows_only_one_worker_for_the_same_stage(tmp_path):
     store = _store(tmp_path)
     for index in range(3):
         media_id = f"media-{index}"
@@ -226,6 +231,47 @@ def test_atomic_claim_allows_only_one_downstream_worker(tmp_path):
 
     assert sum(item is not None for item in claims) == 1
     assert sum(item.state == "running" for item in store.list_items()) == 1
+
+
+def test_claim_allows_organization_to_overlap_unrelated_transcode(tmp_path):
+    store = _store(tmp_path)
+    for media_id in ("transcoding", "organizing"):
+        store.enqueue_verified_rip(media_id, _artifact(tmp_path, media_id, "rip"))
+
+    identifying = store.claim_next(
+        allowed_stages=("identify",), allowed_media_ids=("transcoding",)
+    )
+    store.complete_stage(
+        identifying.media_id,
+        "identify",
+        _artifact(tmp_path, identifying.media_id, "identify"),
+    )
+    identifying = store.claim_next(
+        allowed_stages=("identify",), allowed_media_ids=("organizing",)
+    )
+    store.complete_stage(
+        identifying.media_id,
+        "identify",
+        _artifact(tmp_path, identifying.media_id, "identify"),
+    )
+    transcoding_for_organize = store.claim_next(
+        allowed_stages=("transcode",), allowed_media_ids=("organizing",)
+    )
+    store.complete_stage(
+        transcoding_for_organize.media_id,
+        "transcode",
+        _artifact(tmp_path, transcoding_for_organize.media_id, "transcode"),
+    )
+
+    active_transcode = store.claim_next(
+        allowed_stages=("transcode",), allowed_media_ids=("transcoding",)
+    )
+    active_organize = store.claim_next(allowed_stages=("organize",))
+
+    assert active_transcode.media_id == "transcoding"
+    assert active_organize.media_id == "organizing"
+    assert store.claim_next(allowed_stages=("transcode",)) is None
+    assert store.claim_next(allowed_stages=("organize",)) is None
 
 
 def test_review_and_failure_isolate_items_and_retry_same_stage(tmp_path):
@@ -318,6 +364,19 @@ def test_restart_restores_interrupted_all_season_analysis_to_review(tmp_path):
     recovered = reopened.get("media-1")
     assert recovered.state == "review_required"
     assert recovered.review_code == "all_season_analysis_failed"
+
+
+def test_episode_match_review_can_enter_all_season_analysis(tmp_path):
+    store = _store(tmp_path)
+    original = _artifact(tmp_path, "media-1", "rip")
+    store.enqueue_verified_rip("media-1", original)
+    store.hold_for_review("media-1", "episode_match_review")
+
+    selected = store.choose_review_path("media-1", "all_season_analysis_running")
+
+    assert selected.state == "review_required"
+    assert selected.stage == "identify"
+    assert selected.review_code == "all_season_analysis_running"
 
 
 def test_changed_contract_and_path_leaking_events_are_refused(tmp_path):
@@ -947,7 +1006,11 @@ def test_episode_correction_preserves_encode_and_updates_history(tmp_path):
     )
 
 
-def test_manual_playback_review_teaches_disc_title_history(tmp_path):
+@pytest.mark.parametrize(
+    "review_code",
+    ["all_season_analysis_failed", "episode_match_review", "gemini_analysis_failed"],
+)
+def test_manual_playback_review_teaches_disc_title_history(tmp_path, review_code):
     store = _store(tmp_path)
     source = tmp_path / "staged-rip.mkv"
     source.write_bytes(b"verified-rip")
@@ -967,7 +1030,7 @@ def test_manual_playback_review_teaches_disc_title_history(tmp_path):
     contracts.mkdir()
     store.enqueue_verified_rip("media-1", build_artifact("rip", rip))
     store.claim_next()
-    store.require_review("media-1", "all_season_analysis_failed")
+    store.require_review("media-1", review_code)
 
     response = apply_manual_episode_identification(
         "media-1",
@@ -993,6 +1056,51 @@ def test_manual_playback_review_teaches_disc_title_history(tmp_path):
         ),
         "episode_id": "S03E02",
     }
+
+
+def test_legacy_episode_review_surfaces_best_audit_candidate(tmp_path):
+    contract = tmp_path / "rip.json"
+    contract.write_text(
+        json.dumps({"media_context": {"series_name": "The Office"}}),
+        encoding="utf-8",
+    )
+    dossier = IdentificationDossierStore(tmp_path / "evidence")
+    dossier.record_initial_match_trace(
+        "media-1",
+        {
+            "schema_version": 1,
+            "engine_decision": "review",
+            "engine_reason": "no_candidate_met_segment_threshold",
+            "segments": [
+                {
+                    "segment_index": 0,
+                    "status": "below_threshold",
+                    "candidate_evaluations": [
+                        {
+                            "rank": 1,
+                            "candidate_episode_id": "S06E12",
+                            "candidate_episode_title": "Scott's Tots",
+                            "score": 0.50348,
+                            "segment_threshold": 0.6,
+                            "qualified": False,
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    item = SimpleNamespace(
+        media_id="media-1",
+        review_code="episode_match_review",
+        artifact=SimpleNamespace(contract_path=contract),
+    )
+
+    attempts = _pipeline_identification_attempts(item, dossier)
+
+    assert attempts[0]["summary"]["candidate_series_name"] == "The Office"
+    assert attempts[0]["summary"]["candidate_episode_id"] == "S06E12"
+    assert attempts[0]["summary"]["candidate_episode_title"] == "Scott's Tots"
+    assert attempts[0]["summary"]["best_score"] == pytest.approx(0.50348)
 
 
 def test_reviewed_catalogue_candidate_remains_server_assisted_history(tmp_path):
@@ -1139,6 +1247,75 @@ def test_verified_rip_result_is_admitted_without_discovering_media(tmp_path):
     assert str(source) not in json.dumps([
         event.details for event in store.list_events()
     ])
+
+
+def test_verified_non_episode_is_retained_without_downstream_queue(tmp_path):
+    store = _store(tmp_path)
+    output_root = tmp_path / "media-output"
+    contract_root = tmp_path / "private-contracts"
+    output_root.mkdir()
+    contract_root.mkdir()
+    basename = "Test-Disc--disc-01-0123456789abcdef-title-000.mkv"
+    job = RipJob(
+        job_id="disc-01-title-000",
+        drive_index=0,
+        title_index=0,
+        relative_output_dir="Test Show/Season 01/isolated/title-000",
+        output_basename=basename,
+        final_relative_dir="Test Show/Season 01",
+    )
+    source = resolve_final_output(output_root, job)
+    assert source is not None
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"verified-short-title")
+    result = RipResult(
+        job_id=job.job_id,
+        return_code=0,
+        output_count=1,
+        output_bytes=source.stat().st_size,
+        warning_count=0,
+        started_at="2026-01-01T00:00:00+00:00",
+        finished_at="2026-01-01T00:01:00+00:00",
+    )
+
+    handled = enqueue_verified_rip_results(
+        store,
+        jobs=(job,),
+        results=[result],
+        output_root=output_root,
+        contract_root=contract_root,
+        media_contexts={
+            "disc-01": MediaContext(
+                disc_id="disc-01",
+                series_name="Test Show",
+                season=1,
+                content_hint="tv",
+                downstream_skip_title_indexes=(0,),
+            )
+        },
+        expected_title_indexes_by_disc={"disc-01": (0, 1)},
+    )
+
+    assert source.is_file()
+    assert handled[0].state == "completed"
+    assert handled[0].stage == "identify"
+    assert store.claim_next() is None
+    assert store.title_dispositions("0123456789abcdef") == {
+        0: {"disposition": "skip", "reason": "automatic_non_episode"}
+    }
+    assert store.list_events(handled[0].media_id)[-1].event_type == (
+        "verified_rip_downstream_skipped"
+    )
+    private_payload = json.loads(
+        handled[0].artifact.contract_path.read_text(encoding="utf-8")
+    )
+    assert private_payload["disc_expected_title_indexes"] == [1]
+    assert store.expected_title_indexes_for_disc("0123456789abcdef") == (1,)
+    store.remember_disc_matching_scope("0123456789abcdef", (1, 3))
+    assert store.disc_matching_scope("0123456789abcdef") == (1, 3)
+    assert store.expected_title_indexes_for_disc("0123456789abcdef") == (1, 3)
+    assert store.restore_title_disposition("0123456789abcdef", 0) is True
+    assert store.expected_title_indexes_for_disc("0123456789abcdef") == (0, 1, 3)
 
 
 def test_verified_rip_retry_preserves_old_contract_and_uses_digest_name(tmp_path):

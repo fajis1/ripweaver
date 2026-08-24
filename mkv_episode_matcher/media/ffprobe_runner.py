@@ -169,6 +169,30 @@ def sanitized_ffprobe_payload(media: ProbedMedia) -> dict[str, Any]:
     """Return replayable FFprobe-shaped JSON without source-identifying fields."""
 
     streams: list[dict[str, Any]] = []
+    if media.video_codec or media.video_width or media.video_height:
+        streams.append({
+            "index": 0,
+            "codec_type": "video",
+            "codec_name": media.video_codec,
+            "width": media.video_width,
+            "height": media.video_height,
+            "field_order": media.video_field_order,
+            "bit_rate": media.video_bit_rate,
+            "avg_frame_rate": media.video_frame_rate,
+            "profile": media.video_profile,
+            "pix_fmt": media.video_pixel_format,
+            "bits_per_raw_sample": media.video_bit_depth,
+            "color_primaries": media.video_color_primaries,
+            "color_transfer": media.video_color_transfer,
+            "color_space": media.video_color_space,
+            "color_range": media.video_color_range,
+            "side_data_list": (
+                [{"side_data_type": "Dolby Vision configuration record"}]
+                if media.video_hdr_format == "Dolby Vision"
+                else []
+            ),
+            "tags": ({"encoder": media.video_encoder} if media.video_encoder else {}),
+        })
     for stream in media.audio_streams:
         tags = {
             key: value
@@ -184,6 +208,8 @@ def sanitized_ffprobe_payload(media: ProbedMedia) -> dict[str, Any]:
             "codec_name": stream.codec,
             "channels": stream.channels,
             "channel_layout": stream.channel_layout,
+            "bit_rate": stream.bit_rate,
+            "sample_rate": stream.sample_rate,
             "tags": tags,
             "disposition": {"default": int(stream.is_default)},
         })
@@ -193,6 +219,8 @@ def sanitized_ffprobe_payload(media: ProbedMedia) -> dict[str, Any]:
             "duration": media.duration_seconds,
             "size": media.size_bytes,
             "format_name": media.container,
+            "bit_rate": media.overall_bit_rate,
+            "tags": ({"encoder": media.format_encoder} if media.format_encoder else {}),
         },
         "streams": streams,
     }

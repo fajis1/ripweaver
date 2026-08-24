@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -11,10 +12,12 @@ from mkv_episode_matcher.backend.routers.rip import (
     save_drive_mapping_plan,
     update_drive_mapping,
 )
+from mkv_episode_matcher.disc import drive_mapping
 from mkv_episode_matcher.disc.drive_mapping import (
     DriveMappingError,
     DriveMappingStore,
     NativeOpticalDevice,
+    discover_windows_optical_devices,
     parse_windows_optical_devices,
 )
 from mkv_episode_matcher.disc.drive_watcher import DriveWatcher
@@ -83,6 +86,20 @@ def test_windows_identity_parser_refuses_ambiguous_hardware_keys():
 
     with pytest.raises(DriveMappingError, match="ambiguous"):
         parse_windows_optical_devices(payload)
+
+
+def test_windows_identity_discovery_allows_slow_multi_drive_metadata(monkeypatch):
+    observed: dict[str, int] = {}
+
+    def run(*_args, **kwargs):
+        observed["timeout_seconds"] = kwargs["timeout"]
+        return SimpleNamespace(returncode=0, stdout="[]")
+
+    monkeypatch.setattr(drive_mapping.sys, "platform", "win32")
+    monkeypatch.setattr(drive_mapping.subprocess, "run", run)
+
+    assert discover_windows_optical_devices() == ()
+    assert observed == {"timeout_seconds": 30}
 
 
 def test_drive_mapping_store_persists_only_hashed_decisions(tmp_path):

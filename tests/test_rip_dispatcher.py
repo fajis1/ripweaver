@@ -60,8 +60,13 @@ def _queued_dispatch(tmp_path):
 
 
 def test_fake_dispatch_revalidates_claims_and_completes(tmp_path):
-    dispatcher, job_id, _report, output_root = _queued_dispatch(tmp_path)
+    dispatcher, job_id, report, output_root = _queued_dispatch(tmp_path)
     calls = []
+    inventory_calls = []
+
+    def fresh_inventory():
+        inventory_calls.append(True)
+        return [report]
 
     def fake_executor(bound):
         calls.append(bound)
@@ -73,6 +78,7 @@ def test_fake_dispatch_revalidates_claims_and_completes(tmp_path):
         job_id,
         dispatch_key="fake-dispatch-0001",
         executor=fake_executor,
+        fresh_inventory_provider=fresh_inventory,
     )
 
     assert len(calls) == 1
@@ -88,10 +94,33 @@ def test_fake_dispatch_revalidates_claims_and_completes(tmp_path):
         job_id,
         dispatch_key="fake-dispatch-0001",
         executor=lambda _bound: calls.append("unexpected"),
+        fresh_inventory_provider=fresh_inventory,
     )
     assert retry.state == "completed"
     assert len(calls) == 1
+    assert inventory_calls == [True]
     assert len(dispatcher.public_store.list_events(job_id)) == len(events)
+
+
+def test_pipeline_handoff_warning_does_not_mark_physical_rip_failed(tmp_path):
+    dispatcher, job_id, _report, _output_root = _queued_dispatch(tmp_path)
+    pending_id = dispatcher.public_store.get_job(job_id).preview["jobs"][0]["job_id"]
+
+    completed = dispatcher.dispatch(
+        job_id,
+        dispatch_key="fake-handoff-warning-0001",
+        executor=lambda bound: DispatchOutcome(
+            completed_count=len(bound.manifest.jobs),
+            pipeline_queued_count=len(bound.manifest.jobs) - 1,
+            pipeline_handoff_pending_job_ids=(pending_id,),
+        ),
+    )
+
+    assert completed.state == "completed"
+    event = dispatcher.public_store.list_events(job_id)[-1]
+    assert event.event_type == "job_completed"
+    assert event.details["pipeline_handoff_status"] == "attention_required"
+    assert event.details["pipeline_handoff_pending_job_ids"] == [pending_id]
 
 
 def test_incomplete_fake_executor_marks_job_failed(tmp_path):
@@ -117,7 +146,8 @@ def test_changed_fresh_report_refuses_before_claim(tmp_path):
     dispatcher, job_id, report, _output_root = _queued_dispatch(tmp_path)
     payload = json.loads(report.read_text(encoding="utf-8"))
     payload["titles"][0]["attributes"]["9"] = "0:22:00"
-    report.write_text(json.dumps(payload), encoding="utf-8")
+    changed_report = tmp_path / "changed-fresh-report.json"
+    changed_report.write_text(json.dumps(payload), encoding="utf-8")
     calls = []
 
     with pytest.raises(RipError, match="no longer match"):
@@ -125,6 +155,7 @@ def test_changed_fresh_report_refuses_before_claim(tmp_path):
             job_id,
             dispatch_key="fake-dispatch-0003",
             executor=lambda _bound: calls.append(True),
+            fresh_inventory_provider=lambda: [changed_report],
         )
 
     assert calls == []

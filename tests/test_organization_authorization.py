@@ -139,3 +139,55 @@ def test_organization_preview_allows_other_episode_resolution_but_not_same_versi
     assert build_organization_authorization_plan(store, config).collision_media_ids == (
         "disc-01-title-000",
     )
+
+
+def test_organization_preview_omits_legacy_untitled_placeholder(tmp_path):
+    _unused, config = _queued_organization(tmp_path)
+    store = PipelineQueueStore(tmp_path / "untitled-pipeline.sqlite3")
+    media_id = "disc-01-title-001"
+    store.enqueue_verified_rip(
+        media_id,
+        _artifact(tmp_path, "untitled-media", "rip", {"mode": "verified-rip-contract"}),
+    )
+    store.claim_next()
+    store.complete_stage(
+        media_id,
+        "identify",
+        _artifact(
+            tmp_path,
+            "untitled-media",
+            "identify",
+            {
+                "mode": "identified-episode-contract",
+                "episode_id": "S06E02",
+                "library_relative": (
+                    "Test Show/Season 06/Test Show - S06E02 - Untitled.mkv"
+                ),
+            },
+        ),
+    )
+    store.claim_next()
+    store.complete_stage(
+        media_id,
+        "transcode",
+        _artifact(
+            tmp_path,
+            "untitled-media",
+            "transcode",
+            {
+                "mode": "verified-transcode-contract",
+                "episode_id": "S06E02",
+                "library_relative": (
+                    "Test Show/Season 06/Test Show - S06E02 - Untitled.mkv"
+                ),
+                "encoded_height": 1080,
+                "encoded_field_order": "progressive",
+            },
+        ),
+    )
+
+    plan = build_organization_authorization_plan(store, config)
+
+    assert plan.items[0].destination_relative == (
+        "Test Show/Season 06/Test Show - S06E02 - 1080p.mkv"
+    )

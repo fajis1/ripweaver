@@ -23,9 +23,7 @@ def test_unmatched_directory_match_admits_verified_files_without_running_worker(
     monkeypatch.setattr(
         match,
         "get_config_manager",
-        lambda: SimpleNamespace(
-            load=lambda: SimpleNamespace(ffprobe_path=executable)
-        ),
+        lambda: SimpleNamespace(load=lambda: SimpleNamespace(ffprobe_path=executable)),
     )
     monkeypatch.setattr(
         match.threading,
@@ -58,11 +56,50 @@ def test_unmatched_directory_match_admits_verified_files_without_running_worker(
     items = store.list_items()
     assert len(items) == 2
     assert all(item.state == "review_required" for item in items)
-    assert all(
-        item.review_code == "unmatched_disc_analysis_required" for item in items
-    )
+    assert all(item.review_code == "unmatched_disc_analysis_required" for item in items)
     contract = Path(items[0].artifact.contract_path)
     assert "Faerie Tale Theatre" in contract.read_text(encoding="utf-8")
+
+
+def test_unmatched_directory_match_accepts_one_verified_file(monkeypatch, tmp_path):
+    source = tmp_path / "only-title.mkv"
+    source.write_bytes(b"synthetic-mkv")
+    executable = tmp_path / "ffprobe.exe"
+    executable.write_bytes(b"synthetic")
+    store = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+    started = []
+    monkeypatch.setattr(
+        match,
+        "get_config_manager",
+        lambda: SimpleNamespace(load=lambda: SimpleNamespace(ffprobe_path=executable)),
+    )
+    monkeypatch.setattr(
+        match.threading,
+        "Thread",
+        lambda **kwargs: SimpleNamespace(
+            start=lambda: started.append(kwargs["target"])
+        ),
+    )
+
+    response = match.start_unmatched_match(
+        match.UnmatchedMatchRequest(
+            files=[str(source)],
+            series_name="The Office",
+            season=6,
+            confirm_media_read=True,
+            confirm_provider_lookup=True,
+        ),
+        store,
+        tmp_path / "contracts",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            media=SimpleNamespace(duration_seconds=1800)
+        ),
+    )
+
+    assert response["status"] == "started"
+    assert response["item_count"] == 1
+    assert len(store.list_items()) == 1
+    assert len(started) == 1
 
 
 def test_smart_folder_routes_episode_cluster_to_durable_tv_analysis(
@@ -144,6 +181,5 @@ def test_smart_folder_routes_dominant_feature_to_descriptive_review(
 
     assert response["classification"] == "movie"
     assert all(
-        item.review_code == "gemini_evidence_required"
-        for item in store.list_items()
+        item.review_code == "gemini_evidence_required" for item in store.list_items()
     )

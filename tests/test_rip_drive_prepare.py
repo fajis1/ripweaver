@@ -53,6 +53,23 @@ def test_pipeline_display_name_uses_pending_episode_assignment(tmp_path):
     )
 
 
+def test_pipeline_display_name_omits_legacy_untitled_placeholder(tmp_path):
+    contract = tmp_path / "identify.json"
+    contract.write_text(
+        json.dumps({
+            "mode": "identified-episode-contract",
+            "episode_id": "S06E02",
+            "library_relative": (
+                "Test Show/Season 06/Test Show - S06E02 - Untitled.mkv"
+            ),
+        }),
+        encoding="utf-8",
+    )
+    item = SimpleNamespace(artifact=SimpleNamespace(contract_path=contract))
+
+    assert rip._pipeline_item_display_name(item) == "Test Show - S06E02"
+
+
 def test_pipeline_response_exposes_candidate_help_without_authorizing_it(tmp_path):
     source = tmp_path / "source.mkv"
     source.write_bytes(b"synthetic")
@@ -101,7 +118,10 @@ def test_pipeline_response_exposes_candidate_help_without_authorizing_it(tmp_pat
 def test_drive_preparation_guard_refuses_duplicate_scan_and_releases():
     claimed = rip._claim_drive_preparation(17)
     try:
-        with pytest.raises(HTTPException, match="already being prepared"):
+        with pytest.raises(
+            HTTPException,
+            match="Disc preparation scan is already active on optical drive 18",
+        ):
             rip._claim_drive_preparation(17)
     finally:
         claimed.release()
@@ -475,6 +495,7 @@ def test_loaded_drive_can_prepare_non_authorized_pipeline(monkeypatch, tmp_path)
     assert binding.media_contexts["disc-01"].content_hint == "tv"
     assert binding.media_contexts["disc-01"].series_name == "Dragons Race to the Edge"
     assert binding.media_contexts["disc-01"].season == 1
+    assert binding.media_contexts["disc-01"].disc_number == 2
     assert binding.media_contexts["disc-01"].existing_output_policy == "missing-only"
     assert binding.media_contexts["disc-01"].staging_attempt.startswith("attempt-")
     assert all(
@@ -668,6 +689,169 @@ def test_missing_only_preparation_recognizes_resolution_suffixed_jellyfin_episod
     )
 
 
+def test_failed_per_title_disc_prepares_only_its_relevant_failed_scope(
+    monkeypatch, tmp_path
+):
+    executable = tmp_path / "makemkvcon64.exe"
+    executable.write_bytes(b"synthetic")
+    output_root = tmp_path / "rips"
+    output_root.mkdir()
+    cache_dir = tmp_path / "cache"
+    watcher = DriveWatcher(lambda _exe, source, **_kwargs: _result(source))
+    watcher.refresh(executable)
+    monkeypatch.setattr(
+        rip,
+        "get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                makemkv_path=executable,
+                rip_output_root=output_root,
+                cache_dir=cache_dir,
+            )
+        ),
+    )
+    public = OrchestrationStore(tmp_path / "public.sqlite3")
+    private = PrivateBindingStore(tmp_path / "private.sqlite3")
+    pipeline = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+    inventory_runner = lambda _exe, source, **_kwargs: _result(  # noqa: E731
+        source, inventory=True
+    )
+
+    fresh = rip.prepare_drive_pipeline(
+        rip.PrepareDrivePipelineRequest(drive_index=0, confirm_read=True),
+        "prepare-failed-scope-fresh",
+        watcher,
+        public,
+        private,
+        pipeline,
+        inventory_runner,
+    )
+    assert {item["title_index"] for item in fresh["preview"]["jobs"]} == {0, 1, 2}
+
+    selected = rip.select_rip_titles(
+        fresh["job_id"],
+        rip.SelectRipTitlesRequest(title_indexes=[1], confirm_selection=True),
+        "select-failed-scope-title",
+        public,
+        private,
+        pipeline,
+    )
+    public.authorize(
+        selected["job_id"],
+        expected_plan_sha256=selected["plan_sha256"],
+        idempotency_key="authorize-failed-scope-title",
+    )
+    public.queue(selected["job_id"], idempotency_key="queue-failed-scope-title")
+    public.claim_for_dispatch(
+        selected["job_id"], idempotency_key="claim-failed-scope-title"
+    )
+    public.fail(
+        selected["job_id"],
+        idempotency_key="fail-failed-scope-title",
+        error_type="RipError",
+        error_category="makemkv_failure",
+        failed_drive_indexes=(0,),
+        completed_job_ids=(),
+    )
+
+    recovery = rip.prepare_drive_pipeline(
+        rip.PrepareDrivePipelineRequest(drive_index=0, confirm_read=True),
+        "prepare-failed-scope-recovery",
+        watcher,
+        public,
+        private,
+        pipeline,
+        inventory_runner,
+    )
+
+    assert recovery["job_id"] != fresh["job_id"]
+    assert {item["title_index"] for item in recovery["preview"]["jobs"]} == {1}
+    context = private.get(recovery["job_id"]).media_contexts["disc-01"]
+    assert context.selected_title_indexes == (1,)
+    assert pipeline.disc_matching_scope(
+        next(
+            part
+            for part in recovery["preview"]["jobs"][0]["staging_destination"].split("/")
+            if len(part) == 16
+        )
+    ) == (0, 1, 2)
+
+
+def test_failed_whole_disc_batch_recovers_only_current_relevant_scope(
+    monkeypatch, tmp_path
+):
+    executable = tmp_path / "makemkvcon64.exe"
+    executable.write_bytes(b"synthetic")
+    output_root = tmp_path / "rips"
+    output_root.mkdir()
+    cache_dir = tmp_path / "cache"
+    watcher = DriveWatcher(lambda _exe, source, **_kwargs: _result(source))
+    watcher.refresh(executable)
+    monkeypatch.setattr(
+        rip,
+        "get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                makemkv_path=executable,
+                rip_output_root=output_root,
+                cache_dir=cache_dir,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        rip,
+        "select_pipeline_titles",
+        lambda plan, _hint: (plan.decisions[1],),
+    )
+    public = OrchestrationStore(tmp_path / "public.sqlite3")
+    private = PrivateBindingStore(tmp_path / "private.sqlite3")
+    pipeline = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+    inventory_runner = lambda _exe, source, **_kwargs: _result(  # noqa: E731
+        source, inventory=True
+    )
+
+    fresh = rip.prepare_drive_pipeline(
+        rip.PrepareDrivePipelineRequest(drive_index=0, confirm_read=True),
+        "prepare-failed-batch-fresh",
+        watcher,
+        public,
+        private,
+        pipeline,
+        inventory_runner,
+    )
+    assert {item["title_index"] for item in fresh["preview"]["jobs"]} == {0, 1, 2}
+    assert fresh["preview"]["drives"][0]["strategy"] == "single-open"
+    public.authorize(
+        fresh["job_id"],
+        expected_plan_sha256=fresh["plan_sha256"],
+        idempotency_key="authorize-failed-batch",
+    )
+    public.queue(fresh["job_id"], idempotency_key="queue-failed-batch")
+    public.claim_for_dispatch(fresh["job_id"], idempotency_key="claim-failed-batch")
+    public.fail(
+        fresh["job_id"],
+        idempotency_key="fail-failed-batch",
+        error_type="ParallelRipError",
+        error_category="makemkv_failure",
+        failed_drive_indexes=(0,),
+        completed_job_ids=(),
+    )
+
+    recovery = rip.prepare_drive_pipeline(
+        rip.PrepareDrivePipelineRequest(drive_index=0, confirm_read=True),
+        "prepare-failed-batch-recovery",
+        watcher,
+        public,
+        private,
+        pipeline,
+        inventory_runner,
+    )
+
+    assert {item["title_index"] for item in recovery["preview"]["jobs"]} == {1}
+    context = private.get(recovery["job_id"]).media_contexts["disc-01"]
+    assert context.selected_title_indexes == (1,)
+
+
 def test_retry_preparation_replaces_same_drive_awaiting_review(monkeypatch, tmp_path):
     executable = tmp_path / "makemkvcon64.exe"
     executable.write_bytes(b"synthetic")
@@ -715,6 +899,198 @@ def test_retry_preparation_replaces_same_drive_awaiting_review(monkeypatch, tmp_
 
     assert second["job_id"] != first["job_id"]
     assert watcher.snapshot().drives[0].current_job_id == second["job_id"]
+
+
+def test_retry_preparation_rebinds_same_completed_disc(monkeypatch, tmp_path):
+    executable = tmp_path / "makemkvcon64.exe"
+    executable.write_bytes(b"synthetic")
+    output_root = tmp_path / "rips"
+    output_root.mkdir()
+    cache_dir = tmp_path / "cache"
+    watcher = DriveWatcher(lambda _exe, source, **_kwargs: _result(source))
+    watcher.refresh(executable)
+    monkeypatch.setattr(
+        rip,
+        "get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                makemkv_path=executable,
+                rip_output_root=output_root,
+                cache_dir=cache_dir,
+            )
+        ),
+    )
+    public = OrchestrationStore(tmp_path / "public.sqlite3")
+    private = PrivateBindingStore(tmp_path / "private.sqlite3")
+    pipeline = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+    inventory_runner = lambda _exe, source, **_kwargs: _result(  # noqa: E731
+        source, inventory=True
+    )
+    first = rip.prepare_drive_pipeline(
+        rip.PrepareDrivePipelineRequest(drive_index=0, confirm_read=True),
+        "prepare-completed-first",
+        watcher,
+        public,
+        private,
+        pipeline,
+        inventory_runner,
+    )
+    public.authorize(
+        first["job_id"],
+        expected_plan_sha256=first["plan_sha256"],
+        idempotency_key="authorize-completed-first",
+    )
+    public.queue(first["job_id"], idempotency_key="queue-completed-first")
+    public.claim_for_dispatch(first["job_id"], idempotency_key="claim-completed-first")
+    public.complete(
+        first["job_id"],
+        idempotency_key="complete-completed-first",
+        completed_count=len(first["preview"]["jobs"]),
+        pipeline_queued_count=len(first["preview"]["jobs"]),
+    )
+
+    rebound = rip.prepare_drive_pipeline(
+        rip.PrepareDrivePipelineRequest(drive_index=0, confirm_read=True),
+        "prepare-completed-second",
+        watcher,
+        public,
+        private,
+        pipeline,
+        inventory_runner,
+    )
+
+    assert rebound["job_id"] == first["job_id"]
+    assert rebound["state"] == "completed"
+    assert len(public.list_jobs()) == 1
+    assert watcher.snapshot().drives[0].current_job_id == first["job_id"]
+
+
+def test_retry_preparation_retires_completed_duplicate_but_keeps_uncovered_titles(
+    monkeypatch, tmp_path
+):
+    executable = tmp_path / "makemkvcon64.exe"
+    executable.write_bytes(b"synthetic")
+    output_root = tmp_path / "rips"
+    output_root.mkdir()
+    cache_dir = tmp_path / "cache"
+    watcher = DriveWatcher(lambda _exe, source, **_kwargs: _result(source))
+    watcher.refresh(executable)
+    monkeypatch.setattr(
+        rip,
+        "get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                makemkv_path=executable,
+                rip_output_root=output_root,
+                cache_dir=cache_dir,
+            )
+        ),
+    )
+    public = OrchestrationStore(tmp_path / "public.sqlite3")
+    private = PrivateBindingStore(tmp_path / "private.sqlite3")
+    pipeline = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+    inventory_runner = lambda _exe, source, **_kwargs: _result(  # noqa: E731
+        source, inventory=True
+    )
+    original = rip.prepare_drive_pipeline(
+        rip.PrepareDrivePipelineRequest(drive_index=0, confirm_read=True),
+        "prepare-resume-original",
+        watcher,
+        public,
+        private,
+        pipeline,
+        inventory_runner,
+    )
+    selected_index = original["preview"]["jobs"][0]["title_index"]
+    queued = rip.select_rip_titles(
+        original["job_id"],
+        rip.SelectRipTitlesRequest(
+            title_indexes=[selected_index], confirm_selection=True
+        ),
+        "select-queued-recovery",
+        public,
+        private,
+        pipeline,
+    )
+    public.authorize(
+        queued["job_id"],
+        expected_plan_sha256=queued["plan_sha256"],
+        idempotency_key="authorize-queued-recovery",
+    )
+    public.queue(queued["job_id"], idempotency_key="queue-queued-recovery")
+
+    completed = rip.select_rip_titles(
+        original["job_id"],
+        rip.SelectRipTitlesRequest(
+            title_indexes=[selected_index], confirm_selection=True
+        ),
+        "select-newer-completed",
+        public,
+        private,
+        pipeline,
+    )
+    public.authorize(
+        completed["job_id"],
+        expected_plan_sha256=completed["plan_sha256"],
+        idempotency_key="authorize-newer-completed",
+    )
+    public.queue(completed["job_id"], idempotency_key="queue-newer-completed")
+    public.claim_for_dispatch(
+        completed["job_id"], idempotency_key="claim-newer-completed"
+    )
+    public.complete(
+        completed["job_id"],
+        idempotency_key="complete-newer-completed",
+        completed_count=1,
+        pipeline_queued_count=1,
+    )
+
+    rebound = rip.prepare_drive_pipeline(
+        rip.PrepareDrivePipelineRequest(drive_index=0, confirm_read=True),
+        "prepare-resume-queued",
+        watcher,
+        public,
+        private,
+        pipeline,
+        inventory_runner,
+    )
+
+    assert rebound["job_id"] not in {queued["job_id"], completed["job_id"]}
+    assert rebound["state"] == "awaiting_review"
+    assert len(rebound["preview"]["jobs"]) == len(original["preview"]["jobs"])
+    assert public.get_job(queued["job_id"]).state == "cancelled"
+    assert watcher.snapshot().drives[0].current_job_id == rebound["job_id"]
+
+    newer_queued = rip.select_rip_titles(
+        original["job_id"],
+        rip.SelectRipTitlesRequest(
+            title_indexes=[selected_index], confirm_selection=True
+        ),
+        "select-newer-queued-recovery",
+        public,
+        private,
+        pipeline,
+    )
+    public.authorize(
+        newer_queued["job_id"],
+        expected_plan_sha256=newer_queued["plan_sha256"],
+        idempotency_key="authorize-newer-queued-recovery",
+    )
+    public.queue(newer_queued["job_id"], idempotency_key="queue-newer-queued-recovery")
+
+    resumed = rip.prepare_drive_pipeline(
+        rip.PrepareDrivePipelineRequest(drive_index=0, confirm_read=True),
+        "prepare-resume-newer-queued",
+        watcher,
+        public,
+        private,
+        pipeline,
+        inventory_runner,
+    )
+
+    assert resumed["job_id"] == newer_queued["job_id"]
+    assert resumed["state"] == "queued"
+    assert public.get_job(newer_queued["job_id"]).state == "queued"
 
 
 def test_bonus_drive_preparation_attaches_reviewed_catalogue(monkeypatch, tmp_path):
@@ -983,3 +1359,94 @@ def test_drive_preparation_holds_automatic_work_for_catalogue_support_prompt(
     assert context.disc_metadata_source == "ripweaver-catalogue"
     assert context.disc_metadata_status == "support-required"
     assert response["preview"]["requires_review"] is True
+
+
+def test_drive_preparation_auto_admits_complete_staged_disc(monkeypatch, tmp_path):
+    executable = tmp_path / "makemkvcon64.exe"
+    executable.write_bytes(b"synthetic")
+    ffprobe = tmp_path / "ffprobe.exe"
+    ffprobe.write_bytes(b"synthetic")
+    output_root = tmp_path / "rips"
+    output_root.mkdir()
+    watcher = DriveWatcher(lambda _exe, source, **_kwargs: _result(source))
+    watcher.refresh(executable)
+    fingerprint = "0123456789abcdef"
+    monkeypatch.setattr(
+        rip_manifest, "_inventory_fingerprint", lambda _payload: fingerprint
+    )
+
+    staging_dir = (
+        output_root
+        / ".staging"
+        / "disc-01"
+        / "attempt-0001"
+        / fingerprint
+        / "title-000"
+    )
+    staging_dir.mkdir(parents=True)
+    for index in range(3):
+        target = staging_dir / f"title_t{index:02d}.mkv"
+        target.write_bytes(b"x" * 2_000_000)
+
+    monkeypatch.setattr(
+        rip,
+        "get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                makemkv_path=executable,
+                ffprobe_path=ffprobe,
+                rip_output_root=output_root,
+                cache_dir=tmp_path / "cache",
+                jellyfin_tv_root=None,
+                jellyfin_movie_root=None,
+            )
+        ),
+    )
+
+    def fake_inspector(_exe, source, **_kwargs):
+        from mkv_episode_matcher.media.ffprobe_runner import FFprobeInspection
+        from mkv_episode_matcher.media.probe import ProbedMedia
+
+        return FFprobeInspection(
+            return_code=0,
+            stdout="",
+            stderr="",
+            started_at="2026-08-22T00:00:00Z",
+            finished_at="2026-08-22T00:00:01Z",
+            media=ProbedMedia(
+                duration_seconds=1200,
+                size_bytes=2_000_000,
+                container="matroska",
+                audio_streams=(),
+            ),
+        )
+
+    monkeypatch.setattr(rip, "get_ffprobe_inspector", lambda: fake_inspector)
+    monkeypatch.setattr(
+        rip, "get_pipeline_contract_root", lambda: tmp_path / "contracts"
+    )
+
+    public = OrchestrationStore(tmp_path / "public.sqlite3")
+    private = PrivateBindingStore(tmp_path / "private.sqlite3")
+    pipeline = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+
+    from dataclasses import replace
+
+    def custom_inventory(_exe, source, **_kwargs):
+        res = _result(source, inventory=True)
+        return replace(res, stdout=res.stdout.replace("2000000000", "2000000"))
+
+    response = rip.prepare_drive_pipeline(
+        rip.PrepareDrivePipelineRequest(drive_index=0, confirm_read=True),
+        "auto-admit-test-0001",
+        watcher,
+        public,
+        private,
+        pipeline,
+        custom_inventory,
+    )
+
+    assert response["state"] == "completed"
+    items = pipeline.list_items()
+    assert len(items) == 3
+    assert all(item.stage == "identify" for item in items)

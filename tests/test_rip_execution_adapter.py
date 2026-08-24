@@ -1,5 +1,6 @@
 from dataclasses import replace
 from datetime import UTC, datetime
+from threading import Event
 
 import pytest
 
@@ -65,6 +66,7 @@ def _options(tmp_path):
         run_directory=tmp_path / "new-run",
         timeout_seconds=600,
         max_drives=2,
+        physical_disc_execution_enabled=True,
     )
 
 
@@ -98,6 +100,7 @@ def test_adapter_rejects_run_directory_inside_media_root(tmp_path):
     options = RipExecutionOptions(
         makemkv_executable=_options(tmp_path).makemkv_executable,
         run_directory=bound.output_root / "logs",
+        physical_disc_execution_enabled=True,
     )
 
     with pytest.raises(RipError, match="outside"):
@@ -121,6 +124,13 @@ def test_adapter_rejects_existing_run_directory_before_queue(tmp_path):
     with pytest.raises(RipError, match="already exists"):
         ProductionRipExecutor(options, queue_runner=fake_queue)(bound)
     assert called is False
+
+
+def test_adapter_can_explicitly_disable_physical_execution(tmp_path):
+    bound = _bound(tmp_path)
+    options = replace(_options(tmp_path), physical_disc_execution_enabled=False)
+    with pytest.raises(RipError, match="Physical disc execution is disabled"):
+        ProductionRipExecutor(options, queue_runner=lambda *_args, **_kwargs: [])(bound)
 
 
 def test_adapter_rejects_unexpected_result_set(tmp_path):
@@ -150,10 +160,65 @@ def test_adapter_hands_verified_results_to_completion_sink(tmp_path):
         completion_sink=lambda dispatch, results: observed.append((dispatch, results)),
     )(bound)
 
-    assert observed[0][0] is bound
-    assert {item.job_id for item in observed[0][1]} == {
+    assert all(dispatch is bound for dispatch, _results in observed)
+    assert {items[0].job_id for _dispatch, items in observed} == {
         job.job_id for job in bound.manifest.jobs
     }
+    assert all(len(items) == 1 for _dispatch, items in observed)
+
+
+def test_adapter_handoff_worker_does_not_block_drive_worker(tmp_path):
+    bound = _bound(tmp_path)
+    admitted = Event()
+
+    def fake_queue(_executable, _root, jobs, _run_dir, **kwargs):
+        results = [_result(job.job_id) for job in jobs]
+        kwargs["on_result"](results[0])
+        assert admitted.wait(timeout=2)
+        kwargs["on_result"](results[1])
+        return results
+
+    def sink(_dispatch, results):
+        if results[0].job_id == bound.manifest.jobs[0].job_id:
+            admitted.set()
+
+    outcome = ProductionRipExecutor(
+        _options(tmp_path),
+        queue_runner=fake_queue,
+        completion_sink=sink,
+    )(bound)
+
+    assert outcome.completed_count == 2
+    assert outcome.pipeline_queued_count == 2
+    assert outcome.pipeline_handoff_pending_job_ids == ()
+
+
+def test_adapter_reports_queue_handoff_failure_without_failing_rip(tmp_path):
+    bound = _bound(tmp_path)
+    attempts = []
+
+    def fake_queue(_executable, _root, jobs, _run_dir, **kwargs):
+        results = [_result(job.job_id) for job in jobs]
+        for result in results:
+            kwargs["on_result"](result)
+        return results
+
+    def failing_sink(_dispatch, results):
+        attempts.append(results[0].job_id)
+        raise RipError("synthetic queue admission failure")
+
+    outcome = ProductionRipExecutor(
+        _options(tmp_path),
+        queue_runner=fake_queue,
+        completion_sink=failing_sink,
+    )(bound)
+
+    assert outcome.completed_count == 2
+    assert outcome.pipeline_queued_count == 0
+    assert set(outcome.pipeline_handoff_pending_job_ids) == {
+        job.job_id for job in bound.manifest.jobs
+    }
+    assert len(attempts) == 4
 
 
 def test_adapter_hands_unaffected_drive_results_to_sink_before_failure(tmp_path):

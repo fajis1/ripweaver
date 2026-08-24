@@ -8,12 +8,20 @@ import threading
 
 from loguru import logger
 
+from mkv_episode_matcher.backend.automatic_rip import _AUTOMATIC_UNMATCHED_CODES
 from mkv_episode_matcher.core.config_manager import get_config_manager
 from mkv_episode_matcher.pipeline_queue import DownstreamDispatcher, PipelineQueueError
 
 _DISC_TITLE_ID = re.compile(
     r"-disc-\d+-([0-9a-f]{16})-title-(\d{3})(?:-|$)", re.IGNORECASE
 )
+_AUTOMATIC_DISC_COORDINATOR_CODES = _AUTOMATIC_UNMATCHED_CODES | frozenset({
+    "all_season_analysis_running",
+    "all_season_analysis_failed",
+})
+_AUTOMATIC_DISC_IMMEDIATE_CODES = _AUTOMATIC_UNMATCHED_CODES - frozenset({
+    "all_season_sequence_review_required",
+})
 
 
 def _sequence_only_attempts(attempts: tuple[dict[str, object], ...]) -> bool:
@@ -27,6 +35,39 @@ def _sequence_only_attempts(attempts: tuple[dict[str, object], ...]) -> bool:
         for attempt in attempts
     )
     return sequence_matched and not independently_matched
+
+
+def _current_disc_title_lineages(items: tuple[object, ...]) -> tuple[object, ...]:
+    """Keep only the newest queue record for each physical disc title."""
+
+    newest: dict[tuple[str, int], object] = {}
+    for item in items:
+        media_match = _DISC_TITLE_ID.search(item.media_id)
+        if media_match is None:
+            continue
+        key = (media_match.group(1).lower(), int(media_match.group(2)))
+        previous = newest.get(key)
+        if previous is None or (
+            getattr(item, "updated_at", ""),
+            getattr(item, "created_at", ""),
+            item.media_id,
+        ) >= (
+            getattr(previous, "updated_at", ""),
+            getattr(previous, "created_at", ""),
+            previous.media_id,
+        ):
+            newest[key] = item
+
+    selected = []
+    for item in items:
+        media_match = _DISC_TITLE_ID.search(item.media_id)
+        if media_match is None:
+            selected.append(item)
+            continue
+        key = (media_match.group(1).lower(), int(media_match.group(2)))
+        if newest[key] is item:
+            selected.append(item)
+    return tuple(selected)
 
 
 class DownstreamWorker:
@@ -46,7 +87,7 @@ class DownstreamWorker:
         self._thread: threading.Thread | None = None
         self._last_automatic_transcode_plan: str | None = None
         self._automatic_transcode_media_ids: tuple[str, ...] = ()
-        self._automatic_analysis_attempts: set[str] = set()
+        self._automatic_analysis_attempts: set[tuple[str, tuple[int, ...]]] = set()
         self._version_coexistence_reconciled = False
         self._legacy_sequence_assignments_reconciled = False
 
@@ -220,14 +261,17 @@ class DownstreamWorker:
         pending: set[str] = set()
         expected: dict[str, set[int]] = {}
         observed: dict[str, set[int]] = {}
-        items = self.dispatcher.store.list_items()
+        resolved: dict[str, set[int]] = {}
+        items = _current_disc_title_lineages(tuple(self.dispatcher.store.list_items()))
         visual_reviews = self.dispatcher.store.silent_video_review_flags()
         for item in items:
             media_match = _DISC_TITLE_ID.search(item.media_id)
             if media_match is not None:
-                observed.setdefault(media_match.group(1).lower(), set()).add(
-                    int(media_match.group(2))
-                )
+                fingerprint = media_match.group(1).lower()
+                title_index = int(media_match.group(2))
+                observed.setdefault(fingerprint, set()).add(title_index)
+                if item.stage != "identify":
+                    resolved.setdefault(fingerprint, set()).add(title_index)
         for item in items:
             if item.stage != "identify":
                 continue
@@ -237,8 +281,9 @@ class DownstreamWorker:
                 )
             except (OSError, json.JSONDecodeError):
                 continue
-            fingerprint = payload.get("disc_fingerprint")
-            if isinstance(fingerprint, str):
+            fingerprint_value = payload.get("disc_fingerprint")
+            if isinstance(fingerprint_value, str):
+                fingerprint = fingerprint_value.lower()
                 expected_indexes = payload.get("disc_expected_title_indexes")
                 if isinstance(expected_indexes, list) and all(
                     isinstance(index, int)
@@ -250,27 +295,21 @@ class DownstreamWorker:
                 if item.state in {"queued", "running"}:
                     pending.add(fingerprint)
                     continue
-                if item.state != "review_required" or item.review_code not in {
-                    "missing_season_context",
-                    "unmatched_disc_analysis_required",
-                    "all_season_analysis_running",
-                    "all_season_analysis_failed",
-                    "all_season_sequence_review_required",
-                    "independent_episode_evidence_required",
-                }:
+                if (
+                    item.state != "review_required"
+                    or item.review_code not in _AUTOMATIC_DISC_COORDINATOR_CODES
+                ):
                     continue
                 groups.setdefault(fingerprint, []).append(item.media_id)
-                if item.review_code in {
-                    "missing_season_context",
-                    "unmatched_disc_analysis_required",
-                    "all_season_analysis_running",
-                }:
+                if (
+                    item.review_code in _AUTOMATIC_DISC_IMMEDIATE_CODES
+                    or item.review_code == "all_season_analysis_running"
+                ):
                     triggered.add(fingerprint)
                 elif (
                     item.review_code
                     in {
                         "all_season_sequence_review_required",
-                        "independent_episode_evidence_required",
                     }
                     and config.automatic_gemini_ambiguity_fallback
                     and item.media_id not in visual_reviews
@@ -279,25 +318,59 @@ class DownstreamWorker:
                     # their evidence directory was absent. Retry such a disc
                     # once after restart; a durable visual flag prevents loops.
                     triggered.add(fingerprint)
+        # Contracts created before acquisition and matching scopes were split
+        # may still carry whole-disc expectations. Durable automatic/manual
+        # non-episode dispositions are authoritative for matching readiness.
+        disposition_reader = getattr(self.dispatcher.store, "title_dispositions", None)
+        if callable(disposition_reader):
+            for fingerprint, expected_indexes in expected.items():
+                dispositions = disposition_reader(fingerprint)
+                expected_indexes.difference_update(
+                    title_index
+                    for title_index, disposition in dispositions.items()
+                    if disposition.get("disposition") == "skip"
+                )
+        matching_scope_reader = getattr(
+            self.dispatcher.store, "disc_matching_scope", None
+        )
+        if callable(matching_scope_reader):
+            for fingerprint in tuple(expected):
+                prepared_scope = matching_scope_reader(fingerprint)
+                if prepared_scope is not None:
+                    expected[fingerprint] = set(prepared_scope)
+                    if callable(disposition_reader):
+                        dispositions = disposition_reader(fingerprint)
+                        expected[fingerprint].difference_update(
+                            title_index
+                            for title_index, disposition in dispositions.items()
+                            if disposition.get("disposition") == "skip"
+                        )
         ready = next(
             (
-                (fingerprint, tuple(ids))
+                (
+                    fingerprint,
+                    tuple(ids),
+                    (fingerprint, tuple(sorted(resolved.get(fingerprint, set())))),
+                )
                 for fingerprint, ids in groups.items()
                 if fingerprint in triggered
                 and fingerprint not in pending
-                and fingerprint not in self._automatic_analysis_attempts
+                and (
+                    fingerprint,
+                    tuple(sorted(resolved.get(fingerprint, set()))),
+                )
+                not in self._automatic_analysis_attempts
                 and (
                     not expected.get(fingerprint)
                     or expected[fingerprint].issubset(observed.get(fingerprint, set()))
                 )
-                and len(ids) >= 2
             ),
             None,
         )
         if ready is None:
             return False
-        fingerprint, media_ids = ready
-        self._automatic_analysis_attempts.add(fingerprint)
+        fingerprint, media_ids, attempt_key = ready
+        self._automatic_analysis_attempts.add(attempt_key)
         from mkv_episode_matcher.backend.automatic_rip import (
             _downstream_lock,
             _resolve_automatic_unmatched_disc,

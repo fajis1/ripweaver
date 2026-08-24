@@ -13,7 +13,9 @@ from mkv_episode_matcher.core.models import EpisodeInfo, SubtitleFile
 from mkv_episode_matcher.disc.orchestration_store import OrchestrationStore
 from mkv_episode_matcher.media.episode_catalog import EpisodeCatalogEntry
 from mkv_episode_matcher.media.gemini_matcher import (
+    GeminiMatchResult,
     GeminiResponseError,
+    GeminiReviewPlan,
     UnmatchedFileEvidence,
 )
 from mkv_episode_matcher.media.gemini_series_resolver import GeminiSeriesResolution
@@ -95,6 +97,148 @@ def test_residual_subtitle_pass_selects_strong_remaining_episode():
     assert details["title-004"]["reason"] == ("accepted_after_disc_residual_reduction")
 
 
+def test_gemini_disc_batch_sends_five_unresolved_titles_in_one_call():
+    files = tuple(
+        UnmatchedFileEvidence(f"title-{index}", 1200, (f"dialogue {index}",))
+        for index in range(5)
+    )
+    catalog = tuple(
+        EpisodeCatalogEntry(
+            f"S04E{index + 1:02d}", 4, index + 1, f"Episode {index + 1}", "", 1200
+        )
+        for index in range(5)
+    )
+
+    class Dossier:
+        @staticmethod
+        def safe_attempts(_file_id):
+            return ()
+
+    class Ranker:
+        model = "gemini-test"
+
+        def __init__(self):
+            self.calls = []
+
+        def rank_with_configured_keys(self, supplied_files, supplied_catalog, **kwargs):
+            self.calls.append((supplied_files, supplied_catalog, kwargs))
+            return SimpleNamespace(
+                matches=tuple(
+                    SimpleNamespace(
+                        file_id=item.file_id,
+                        episode_id=entry.episode_id,
+                        confidence=0.9,
+                    )
+                    for item, entry in zip(
+                        supplied_files, supplied_catalog, strict=True
+                    )
+                )
+            )
+
+    ranker = Ranker()
+    matches = analysis._rank_gemini_chunks(
+        ranker,
+        files,
+        catalog,
+        Dossier(),
+        frozenset(),
+    )
+
+    assert set(matches) == {item.file_id for item in files}
+    assert len(ranker.calls) == 1
+    assert len(ranker.calls[0][0]) == 5
+
+
+def test_gemini_disc_batch_reuses_private_exact_request_cache(tmp_path):
+    files = (UnmatchedFileEvidence("title-1", 1200, ("dialogue",)),)
+    catalog = (EpisodeCatalogEntry("S04E11", 4, 11, "Eleven", "", 1200),)
+    dossier = IdentificationDossierStore(tmp_path / "private")
+
+    class Ranker:
+        model = "gemini-test"
+
+        def __init__(self):
+            self.calls = 0
+
+        def rank_with_configured_keys(
+            self,
+            supplied_files,
+            _catalog,
+            *,
+            prior_attempts,
+            existing_episode_ids,
+            review_phase,
+            proposed_assignments=None,
+            subtitle_comparisons=None,
+        ):
+            self.calls += 1
+            return GeminiReviewPlan(
+                "gemini-unmatched-review-plan",
+                self.model,
+                (
+                    GeminiMatchResult(
+                        supplied_files[0].file_id,
+                        "S04E11",
+                        0.9,
+                        ("paired scenes",),
+                    ),
+                ),
+            )
+
+    ranker = Ranker()
+    first = analysis._rank_gemini_chunks(
+        ranker, files, catalog, dossier, frozenset()
+    )
+    second = analysis._rank_gemini_chunks(
+        ranker, files, catalog, dossier, frozenset()
+    )
+
+    assert first == second
+    assert ranker.calls == 1
+
+
+def test_gemini_uses_six_diverse_excerpts_and_paired_subtitle_passages():
+    excerpts = tuple(
+        f"speaker{index} topic{index} location{index} action{index}"
+        for index in range(12)
+    )
+    files = (UnmatchedFileEvidence("title-1", 1200, excerpts),)
+    reference = SimpleNamespace(
+        episode_info=SimpleNamespace(season=4, episode=11),
+        content=" ".join(
+            f"speaker{index} topic{index} location{index} action{index} continues"
+            for index in range(12)
+        ),
+        path=None,
+    )
+    evaluations = {
+        "title-1": [
+            {
+                "phase": "offset-six-window-retry",
+                "rank": 1,
+                "candidate_episode_id": "S04E11",
+            }
+        ]
+    }
+
+    class ASR:
+        @staticmethod
+        def calculate_match_score(query, candidate):
+            return 0.9 if query in candidate else 0.1
+
+    comparisons = analysis._gemini_subtitle_comparisons(
+        files, (reference,), evaluations, ASR()
+    )
+    selected = analysis._select_gemini_file_evidence(files, comparisons)
+
+    assert len(comparisons["title-1"]) == 2
+    assert all(
+        pair.candidate_episode_id == "S04E11"
+        for pair in comparisons["title-1"]
+    )
+    assert len(selected[0].transcript_excerpts) == 6
+
+
 def test_residual_subtitle_pass_preserves_close_or_weak_choices_for_review():
     episode_12 = EpisodeCatalogEntry("S02E12", 2, 12, "The Injury", "", 1200)
     episode_15 = EpisodeCatalogEntry("S02E15", 2, 15, "Boys and Girls", "", 1200)
@@ -134,6 +278,41 @@ def test_disc_episode_range_fence_uses_anchors_without_title_order():
     assert fence.permits(catalog[3]) is False
     assert fence.permits(catalog[13]) is False
     assert analysis._build_disc_episode_range_fence(anchors[:1], catalog, 7) is None
+
+
+def test_disc_number_prioritizes_expected_title_count_window_without_exclusion():
+    catalog = tuple(
+        EpisodeCatalogEntry(
+            f"S05E{episode:02d}", 5, episode, f"Episode {episode}", "", 1200
+        )
+        for episode in range(1, 25)
+    )
+
+    disc_two = analysis._prioritize_catalog_for_disc_number(catalog, 2, 6)
+    disc_four = analysis._prioritize_catalog_for_disc_number(catalog, 4, 6)
+
+    assert {entry.episode_id for entry in disc_two} == {
+        entry.episode_id for entry in catalog
+    }
+    assert tuple(entry.episode for entry in disc_two[:6]) == tuple(range(7, 13))
+    assert tuple(entry.episode for entry in disc_four[:6]) == tuple(range(19, 25))
+    assert disc_two.index(catalog[0]) > disc_two.index(catalog[6])
+
+
+def test_gemini_disc_coherence_rejects_split_s4_d3_assignments():
+    entries = tuple(
+        EpisodeCatalogEntry(
+            f"S04E{episode:02d}", 4, episode, f"Episode {episode}", "", 1200
+        )
+        for episode in (12, 11, 1, 2, 3, 4)
+    )
+
+    assert not analysis._gemini_disc_assignments_coherent(
+        entries, disc_title_count=6, required_season=4
+    )
+    assert analysis._gemini_disc_assignments_coherent(
+        tuple(entries[:2]), disc_title_count=6, required_season=4
+    )
 
 
 def test_disc_range_restart_anchors_require_independent_provenance(tmp_path):
@@ -1555,7 +1734,7 @@ def test_local_sequence_keeps_full_aired_order_when_library_has_gaps(
         for event in store.list_events()
         if event.event_type == "sequence_match_scored"
     )
-    assert diagnostic.details["candidate_scope"] == "all"
+    assert diagnostic.details["candidate_scope"] == "S01"
     assert diagnostic.details["catalog_episode_count"] == 4
     payload = json.loads(store.get(media_ids[0]).artifact.contract_path.read_text())
     assert [

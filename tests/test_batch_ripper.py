@@ -133,6 +133,7 @@ def test_build_command_uses_one_all_invocation():
 
     assert command[-4:] == ("mkv", "disc:1", "all", "batch")
     assert "--minlength=8" in command
+    assert "--noscan" in command
     assert command.count("mkv") == 1
 
 
@@ -254,6 +255,45 @@ def test_read_only_verifier_accepts_renumbered_outputs_without_distributing(
         "feature_t01.mkv",
     ]
     assert all((workspace / name).is_file() for name in plan.batch_output_names)
+
+
+def test_read_only_verifier_accepts_zero_byte_menu_outputs_as_graceful_skips(
+    tmp_path,
+):
+    plan = plan_single_open_batch(
+        (_job(0), _job(1)),
+        (
+            BatchInventoryTitle(0, 600, "main_t00.mkv"),
+            BatchInventoryTitle(1, 0, "menu_t01.mkv"),
+        ),
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / plan.batch_output_names[0]).write_bytes(b"x" * 2_000_000)
+    (workspace / plan.batch_output_names[1]).write_bytes(b"")
+
+    verified = verify_single_open_batch_outputs(workspace, plan)
+    assert verified[0][1] == 2_000_000
+    assert verified[1][1] == 0
+
+
+def test_read_only_verifier_rejects_partially_written_small_outputs(
+    tmp_path,
+):
+    plan = plan_single_open_batch(
+        (_job(0), _job(1)),
+        (
+            BatchInventoryTitle(0, 600, "main_t00.mkv"),
+            BatchInventoryTitle(1, 600, "episode_t01.mkv"),
+        ),
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / plan.batch_output_names[0]).write_bytes(b"x" * 2_000_000)
+    (workspace / plan.batch_output_names[1]).write_bytes(b"x" * 500)
+
+    with pytest.raises(RipError, match="unexpectedly small"):
+        verify_single_open_batch_outputs(workspace, plan)
 
 
 def test_unexpected_batch_output_preserves_every_file(tmp_path):

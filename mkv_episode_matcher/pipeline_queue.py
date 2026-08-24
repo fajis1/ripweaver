@@ -277,6 +277,14 @@ def enqueue_verified_rip_results(  # noqa: C901
             disc_id: set(title_indexes)
             for disc_id, title_indexes in expected_title_indexes_by_disc.items()
         }
+    # Whole-disc acquisition deliberately includes every MakeMKV title, but
+    # episode coordination must wait only for titles classified as relevant to
+    # downstream matching. Menus/extras retained by the batch are not episode
+    # candidates and must never block or influence disc-aware identification.
+    for disc_id, context in (media_contexts or {}).items():
+        expected_titles_by_disc.setdefault(disc_id, set()).difference_update(
+            context.downstream_skip_title_indexes
+        )
 
     queued: list[QueuedPipelineItem] = []
     for job in jobs:
@@ -317,6 +325,9 @@ def enqueue_verified_rip_results(  # noqa: C901
                 "episode_assignments": list(context.episode_assignments),
                 "catalogue_help_assignments": list(context.catalogue_help_assignments),
                 "existing_output_policy": context.existing_output_policy,
+                "downstream_skip_title_indexes": list(
+                    context.downstream_skip_title_indexes
+                ),
             }
         basename_match = _RIP_BASENAME.fullmatch(job.output_basename or "")
         queue_media_id = (media_id_overrides or {}).get(job.job_id)
@@ -387,7 +398,31 @@ def enqueue_verified_rip_results(  # noqa: C901
                 ) from exc
         artifact = build_artifact("rip", contract)
         try:
-            queued.append(store.enqueue_verified_rip(queue_media_id, artifact))
+            downstream_skip = (
+                context is not None
+                and job.title_index in context.downstream_skip_title_indexes
+            )
+            if downstream_skip:
+                fingerprint = payload.get("disc_fingerprint")
+                title_index = payload.get("title_index")
+                if not isinstance(fingerprint, str) or not isinstance(title_index, int):
+                    raise PipelineQueueError(
+                        "Automatic downstream skip requires exact disc identity"
+                    )
+                store.remember_title_skip(
+                    fingerprint,
+                    title_index,
+                    reason="automatic_non_episode",
+                )
+                queued.append(
+                    store.complete_verified_rip_without_downstream(
+                        queue_media_id,
+                        artifact,
+                        reason="automatic_non_episode",
+                    )
+                )
+            else:
+                queued.append(store.enqueue_verified_rip(queue_media_id, artifact))
         except PipelineQueueError:
             if not repair_recovered_identity:
                 raise
@@ -503,6 +538,11 @@ class PipelineQueueStore:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (disc_fingerprint, title_index)
                 );
+                CREATE TABLE IF NOT EXISTS disc_matching_scopes (
+                    disc_fingerprint TEXT PRIMARY KEY,
+                    relevant_title_indexes_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
             matching_columns = {
@@ -607,6 +647,59 @@ class PipelineQueueStore:
             for row in rows
         }
 
+    def remember_disc_matching_scope(
+        self, disc_fingerprint: str, title_indexes: tuple[int, ...]
+    ) -> None:
+        """Persist the path-free classifier scope used by disc-aware matching."""
+
+        if re.fullmatch(r"[0-9a-f]{16}", disc_fingerprint) is None:
+            raise PipelineQueueError("Disc fingerprint is invalid")
+        if len(set(title_indexes)) != len(title_indexes) or any(
+            isinstance(index, bool) or not isinstance(index, int) or index < 0
+            for index in title_indexes
+        ):
+            raise PipelineQueueError("Disc matching scope is invalid")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO disc_matching_scopes (
+                    disc_fingerprint, relevant_title_indexes_json, updated_at
+                ) VALUES (?, ?, ?)
+                ON CONFLICT(disc_fingerprint) DO UPDATE SET
+                    relevant_title_indexes_json = excluded.relevant_title_indexes_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    disc_fingerprint,
+                    json.dumps(sorted(title_indexes), separators=(",", ":")),
+                    self._now(),
+                ),
+            )
+
+    def disc_matching_scope(self, disc_fingerprint: str) -> tuple[int, ...] | None:
+        """Return the latest classifier-derived matching scope, if prepared."""
+
+        if re.fullmatch(r"[0-9a-f]{16}", disc_fingerprint) is None:
+            raise PipelineQueueError("Disc fingerprint is invalid")
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT relevant_title_indexes_json FROM disc_matching_scopes "
+                "WHERE disc_fingerprint = ?",
+                (disc_fingerprint,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            values = json.loads(row["relevant_title_indexes_json"])
+        except json.JSONDecodeError as exc:
+            raise PipelineQueueError("Disc matching scope is invalid") from exc
+        if not isinstance(values, list) or any(
+            isinstance(index, bool) or not isinstance(index, int) or index < 0
+            for index in values
+        ):
+            raise PipelineQueueError("Disc matching scope is invalid")
+        return tuple(sorted(set(values)))
+
     def list_title_dispositions(self) -> tuple[dict[str, str | int], ...]:
         """Return every path-free future-rip decision for local presentation."""
 
@@ -647,6 +740,7 @@ class PipelineQueueStore:
             "likely_warning_screen",
             "likely_disc_menu",
             "repeated_read_failure",
+            "automatic_non_episode",
         }:
             raise PipelineQueueError("Future-rip skip reason is invalid")
         with self._connect() as connection:
@@ -996,6 +1090,10 @@ class PipelineQueueStore:
                 "DELETE FROM disc_title_dispositions WHERE disc_fingerprint = ?",
                 (disc_fingerprint,),
             )
+            connection.execute(
+                "DELETE FROM disc_matching_scopes WHERE disc_fingerprint = ?",
+                (disc_fingerprint,),
+            )
             connection.commit()
         return len(media_ids), int(history_count)
 
@@ -1158,6 +1256,68 @@ class PipelineQueueStore:
                 stage="identify",
                 state="queued",
                 details={"item_count": artifact.item_count},
+            )
+            connection.commit()
+        return self.get(checked_id)
+
+    def complete_verified_rip_without_downstream(
+        self,
+        media_id: str,
+        artifact: PipelineArtifact,
+        *,
+        reason: str,
+    ) -> QueuedPipelineItem:
+        """Retain a verified rip while excluding it from CPU-heavy stages."""
+
+        checked_id = self._check_media_id(media_id)
+        _validate_artifact(artifact, "rip")
+        if reason != "automatic_non_episode":
+            raise PipelineQueueError("Pipeline skip reason is invalid")
+        now = self._now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT * FROM pipeline_items WHERE media_id = ?", (checked_id,)
+            ).fetchone()
+            if existing is not None:
+                if (
+                    Path(existing["rip_artifact_path"]) != artifact.contract_path
+                    or existing["rip_artifact_sha256"] != artifact.contract_sha256
+                    or existing["rip_artifact_count"] != artifact.item_count
+                ):
+                    connection.rollback()
+                    raise PipelineQueueError(
+                        "Pipeline media ID has a different artifact"
+                    )
+                connection.commit()
+                return self.get(checked_id)
+            connection.execute(
+                """
+                INSERT INTO pipeline_items (
+                    media_id, state, stage, artifact_path, artifact_sha256,
+                    artifact_count, rip_artifact_path, rip_artifact_sha256,
+                    rip_artifact_count, created_at, updated_at
+                ) VALUES (?, 'completed', 'identify', ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    checked_id,
+                    str(artifact.contract_path),
+                    artifact.contract_sha256,
+                    artifact.item_count,
+                    str(artifact.contract_path),
+                    artifact.contract_sha256,
+                    artifact.item_count,
+                    now,
+                    now,
+                ),
+            )
+            self._append_event(
+                connection,
+                media_id=checked_id,
+                event_type="verified_rip_downstream_skipped",
+                stage="identify",
+                state="completed",
+                details={"reason": reason, "media_changed": False},
             )
             connection.commit()
         return self.get(checked_id)
@@ -1366,25 +1526,31 @@ class PipelineQueueStore:
 
     def list_items(self) -> tuple[QueuedPipelineItem, ...]:
         with self._connect() as connection:
-            ids = [
-                row[0]
-                for row in connection.execute(
-                    "SELECT media_id FROM pipeline_items ORDER BY created_at, media_id"
-                ).fetchall()
-            ]
-        return tuple(self.get(media_id) for media_id in ids)
+            rows = connection.execute(
+                """
+                SELECT *, CASE
+                    WHEN stage = 'identify' THEN 'rip'
+                    WHEN stage = 'transcode' THEN 'identify'
+                    WHEN stage = 'organize' THEN 'transcode'
+                    ELSE 'organize'
+                END AS artifact_stage
+                FROM pipeline_items ORDER BY created_at, media_id
+                """
+            ).fetchall()
+        return tuple(self._decode(row) for row in rows)
 
     def expected_title_indexes_for_disc(self, disc_fingerprint: str) -> tuple[int, ...]:
         """Return path-free whole-disc title expectations from durable rip contracts."""
 
         if re.fullmatch(r"[0-9a-f]{16}", disc_fingerprint) is None:
             raise PipelineQueueError("Disc fingerprint is invalid")
+        prepared_scope = self.disc_matching_scope(disc_fingerprint)
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT DISTINCT rip_artifact_path FROM pipeline_items "
                 "WHERE rip_artifact_path IS NOT NULL"
             ).fetchall()
-        expected: set[int] = set()
+        expected: set[int] = set(prepared_scope or ())
         for row in rows:
             try:
                 payload = json.loads(
@@ -1394,14 +1560,35 @@ class PipelineQueueStore:
                 continue
             if payload.get("disc_fingerprint") != disc_fingerprint:
                 continue
+            # The classifier scope is predictive. Any title already admitted
+            # to this fingerprint's pipeline is concrete evidence that the
+            # file participates until it receives an explicit non-episode
+            # disposition. This retains held and already matched episodes that
+            # a later metadata-only refresh heuristic may omit.
+            observed_title_index = payload.get("title_index")
+            if (
+                isinstance(observed_title_index, int)
+                and not isinstance(observed_title_index, bool)
+                and observed_title_index >= 0
+            ):
+                expected.add(observed_title_index)
             values = payload.get("disc_expected_title_indexes", [])
             if not isinstance(values, list):
                 continue
-            expected.update(
-                value
-                for value in values
-                if isinstance(value, int) and not isinstance(value, bool) and value >= 0
-            )
+            if prepared_scope is None:
+                expected.update(
+                    value
+                    for value in values
+                    if isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and value >= 0
+                )
+        dispositions = self.title_dispositions(disc_fingerprint)
+        expected.difference_update(
+            title_index
+            for title_index, disposition in dispositions.items()
+            if disposition.get("disposition") == "skip"
+        )
         return tuple(sorted(expected))
 
     def list_events(self, media_id: str | None = None) -> tuple[QueueEvent, ...]:
@@ -1451,7 +1638,7 @@ class PipelineQueueStore:
             or file_count != len(checked_ids)
             or disposition not in {"proposed", "review", "review-ambiguous"}
             or library_episode_count < 0
-            or candidate_scope not in {"all", "missing"}
+            or re.fullmatch(r"(?:all|missing|S\d{2,3})", candidate_scope) is None
             or any(
                 not isinstance(value, int | float) or not 0 <= value <= 1
                 for value in (best_score, runner_up_score, global_margin)
@@ -1564,7 +1751,7 @@ class PipelineQueueStore:
         allowed_stages: tuple[str, ...] | None = None,
         allowed_media_ids: tuple[str, ...] | None = None,
     ) -> QueuedPipelineItem | None:
-        """Atomically claim one item; at most one downstream stage may run globally."""
+        """Atomically claim one item; at most one item may run per stage."""
 
         if allowed_stages is not None and (
             not allowed_stages
@@ -1587,12 +1774,6 @@ class PipelineQueueStore:
             if paused:
                 connection.commit()
                 return None
-            running = connection.execute(
-                "SELECT 1 FROM pipeline_items WHERE state = 'running' LIMIT 1"
-            ).fetchone()
-            if running is not None:
-                connection.commit()
-                return None
             conditions = ["state = 'queued'"]
             parameters: list[str] = []
             if allowed_stages is not None:
@@ -1605,9 +1786,13 @@ class PipelineQueueStore:
                 parameters.extend(allowed_media_ids)
             row = connection.execute(
                 f"""
-                SELECT media_id, stage FROM pipeline_items
-                WHERE {" AND ".join(conditions)}
-                ORDER BY updated_at, created_at, media_id LIMIT 1
+                SELECT queued.media_id, queued.stage FROM pipeline_items AS queued
+                WHERE {" AND ".join(f"queued.{condition}" for condition in conditions)}
+                  AND NOT EXISTS (
+                    SELECT 1 FROM pipeline_items AS active
+                    WHERE active.state = 'running' AND active.stage = queued.stage
+                  )
+                ORDER BY queued.updated_at, queued.created_at, queued.media_id LIMIT 1
                 """,
                 parameters,
             ).fetchone()
@@ -2385,6 +2570,7 @@ class PipelineQueueStore:
                 or row["stage"] != "identify"
                 or row["review_code"]
                 not in {
+                    "episode_match_review",
                     "special_feature_evidence_required",
                     "gemini_evidence_required",
                     "gemini_analysis_running",
@@ -2452,9 +2638,11 @@ class PipelineQueueStore:
                 not in {
                     "gemini_evidence_required",
                     "gemini_analysis_running",
+                    "gemini_analysis_failed",
                     "gemini_descriptive_review_required",
                     "special_feature_manual_assignment_required",
                     "missing_season_context",
+                    "episode_match_review",
                     "unmatched_disc_analysis_required",
                     "all_season_analysis_running",
                     "all_season_analysis_failed",
@@ -2672,7 +2860,7 @@ def _safe_adapter_failure_code(exc: Exception) -> str:
 
 
 class DownstreamDispatcher:
-    """Run at most one non-rip operation at a time across every stage."""
+    """Run one claimed operation while the store enforces per-stage limits."""
 
     def __init__(
         self,
@@ -2708,8 +2896,8 @@ class DownstreamDispatcher:
         except PipelineReviewRequiredError as exc:
             return self.store.require_review(item.media_id, exc.code)
         except Exception as exc:
-            # A media-specific adapter failure must release the global worker so
-            # unrelated queued discs can continue. Store failures still raise
+            # A media-specific adapter failure must release its stage so
+            # unrelated queued work can continue. Store failures still raise
             # from this call and stop the dispatcher because queue integrity is
             # then unknown.
             return self.store.fail(item.media_id, _safe_adapter_failure_code(exc))

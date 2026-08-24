@@ -11,12 +11,13 @@ import io
 import json
 import re
 import subprocess
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from mkv_episode_matcher.core.environment import load_environment_settings
+from mkv_episode_matcher.disc.makemkv_process_control import run_makemkv_command
 
 DEFAULT_MAKEMKV_PATH = Path(r"C:\Program Files (x86)\MakeMKV\makemkvcon64.exe")
 SAFE_ACTION = "info"
@@ -178,6 +179,10 @@ def build_info_command(
         "--messages=-stdout",
         "--progress=-same",
     ]
+    if source != "disc:9999":
+        # A targeted inventory must not perform MakeMKV's normal media scan
+        # against every other optical drive before opening the selected one.
+        command.append("--noscan")
     if minimum_length is not None:
         if minimum_length < 0:
             raise PreflightError("Minimum title length cannot be negative")
@@ -201,18 +206,17 @@ def run_info_command(
     command = build_info_command(executable, source, minimum_length)
     started = datetime.now(UTC)
     try:
-        completed = subprocess.run(
+        completed = run_makemkv_command(
             command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout_seconds,
-            check=False,
+            timeout_seconds=timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:
         raise PreflightError(
             f"MakeMKV info timed out after {timeout_seconds}s for {source}"
+        ) from exc
+    except OSError as exc:
+        raise PreflightError(
+            f"MakeMKV info could not be started: {type(exc).__name__}"
         ) from exc
 
     finished = datetime.now(UTC)
@@ -260,6 +264,60 @@ def parse_drives(robot_output: str) -> list[MakeMKVDrive]:
         except (IndexError, ValueError):
             continue
     return drives
+
+
+def targeted_inventory_drive(
+    robot_output: str,
+    *,
+    requested_index: int,
+    cached_device_name: str | None,
+    cached_drive_name: str | None,
+    cached_disc_name: str | None,
+) -> MakeMKVDrive | None:
+    """Bind valid targeted inventory to its already trusted private drive slot.
+
+    With noscan, MakeMKV may omit the global drive row or report the opened
+    drive under a local ordinal even while returning its title rows. The
+    command and process-control claim already bind the read to one exact disc
+    source, so valid title metadata may reuse the cached private device
+    identity. Empty output is still treated as a disappeared disc.
+    """
+
+    drives = parse_drives(robot_output)
+    exact = next((drive for drive in drives if drive.index == requested_index), None)
+    if exact is not None and exact.has_disc:
+        return exact
+    if not any(line.startswith("TINFO:") for line in robot_output.splitlines()):
+        return None
+    if not cached_device_name or not (cached_disc_name or "").strip():
+        return None
+
+    normalized_device = cached_device_name.strip().casefold().rstrip("\\/")
+    matching_device = next(
+        (
+            drive
+            for drive in drives
+            if drive.device_name.strip().casefold().rstrip("\\/")
+            == normalized_device
+        ),
+        None,
+    )
+    template = exact or matching_device
+    if template is not None:
+        return replace(
+            template,
+            index=requested_index,
+            disc_name=template.disc_name or str(cached_disc_name),
+        )
+    return MakeMKVDrive(
+        index=requested_index,
+        visible=1,
+        enabled=1,
+        flags=0,
+        drive_name=cached_drive_name or "",
+        disc_name=str(cached_disc_name),
+        device_name=cached_device_name,
+    )
 
 
 def parse_disc_inventory(result: CommandResult, drive: MakeMKVDrive) -> DiscInventory:

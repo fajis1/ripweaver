@@ -14,6 +14,7 @@ from mkv_episode_matcher.media.gemini_matcher import (
     GeminiDescriptiveRanker,
     GeminiEpisodeRanker,
     GeminiMatchError,
+    GeminiSubtitleComparisonEvidence,
     RequestsGeminiTransport,
     TransportResponse,
     UnmatchedFileEvidence,
@@ -67,6 +68,64 @@ def test_episode_request_accepts_six_bounded_excerpts_but_not_seven():
             ),
             catalog,
         )
+
+
+def test_episode_request_includes_bounded_paired_subtitle_evidence():
+    files = (UnmatchedFileEvidence("title-001", 1200, ("whisper dialogue",)),)
+    catalog = (EpisodeCatalogEntry("S04E11", 4, 11, "Survivor Man", "Trip", 1200),)
+    request = build_gemini_request(
+        "gemini-test",
+        files,
+        catalog,
+        subtitle_comparisons={
+            "title-001": (
+                GeminiSubtitleComparisonEvidence(
+                    "S04E11",
+                    "whisper dialogue",
+                    "regular subtitle dialogue",
+                    0.62,
+                ),
+            )
+        },
+    )
+
+    prompt = json.loads(request["input"])
+    comparison = prompt["files"][0]["subtitle_comparisons"][0]
+    assert comparison == {
+        "candidate_episode_id": "S04E11",
+        "whisper_excerpt": "whisper dialogue",
+        "subtitle_excerpt": "regular subtitle dialogue",
+        "local_score": 0.62,
+    }
+    assert "extended-cut dialogue" in prompt["task"]
+
+
+def test_confirmation_request_audits_complete_proposal_map():
+    files = (
+        UnmatchedFileEvidence("title-001", 1200, ("one",)),
+        UnmatchedFileEvidence("title-002", 1200, ("two",)),
+    )
+    catalog = (
+        EpisodeCatalogEntry("S04E11", 4, 11, "Eleven", "", 1200),
+        EpisodeCatalogEntry("S04E12", 4, 12, "Twelve", "", 1200),
+    )
+    request = build_gemini_request(
+        "gemini-test",
+        files,
+        catalog,
+        review_phase="confirmation",
+        proposed_assignments={"title-001": "S04E11", "title-002": None},
+    )
+
+    prompt = json.loads(request["input"])
+    assert prompt["review_phase"] == "confirmation"
+    assert prompt["proposed_assignments"] == {
+        "title-001": "S04E11",
+        "title-002": None,
+    }
+    assert "complete proposed one-to-one assignment map" in prompt[
+        "confirmation_instruction"
+    ]
 
 
 def test_episode_request_includes_explicit_reviewer_scene_description():

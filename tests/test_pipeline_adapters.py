@@ -3,6 +3,14 @@ from types import SimpleNamespace
 
 import pytest
 
+from mkv_episode_matcher.backend.identification_dossier import (
+    IdentificationDossierStore,
+)
+from mkv_episode_matcher.core.tv_identification_policy import (
+    AUTOMATIC_TV_IDENTIFICATION_POLICY_VERSION,
+    LOCAL_DIALOGUE_DISC_CORROBORATED_SOURCE,
+    LOCAL_DIALOGUE_TWO_WINDOW_SOURCE,
+)
 from mkv_episode_matcher.media.handbrake import HandBrakeProfile, HandBrakeResult
 from mkv_episode_matcher.pipeline_adapters import (
     IdentifyStageAdapter,
@@ -66,6 +74,240 @@ def test_identify_adapter_runs_engine_in_dry_run_and_writes_handoff(tmp_path):
     assert payload["library_relative"].endswith("Test Show - S01E02 - Second.mkv")
 
 
+def test_identify_adapter_omits_untitled_episode_placeholder(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+
+    class Engine:
+        def process_path(self, path, **_kwargs):
+            del path
+            return [
+                SimpleNamespace(
+                    confidence=0.91,
+                    episode_info=SimpleNamespace(
+                        series_name="Test Show",
+                        season=6,
+                        episode=2,
+                        title="Untitled",
+                    ),
+                )
+            ], []
+
+    item = _queued_item(
+        tmp_path,
+        {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "media_context": {"series_name": "Test Show", "season": 6},
+        },
+    )
+
+    artifact = IdentifyStageAdapter(Engine(), contracts)(item)
+    payload = json.loads(artifact.contract_path.read_text())
+
+    assert payload["episode_id"] == "S06E02"
+    assert payload["library_relative"].endswith("Test Show - S06E02.mkv")
+    assert "Untitled" not in payload["library_relative"]
+
+
+def test_identify_adapter_persists_initial_match_trace_for_completed_item(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    trace = {
+        "schema_version": 1,
+        "policy": "multi_segment_dialogue_v1",
+        "segment_threshold": 0.6,
+        "engine_threshold": 0.7,
+        "engine_decision": "matched",
+        "engine_reason": "candidate_met_engine_threshold",
+        "selected_episode_id": "S01E02",
+        "selected_episode_title": "Second",
+        "selected_score": 0.91,
+        "selected_vote_count": 2,
+        "runner_up_episode_id": "S01E03",
+        "runner_up_score": 0.64,
+        "runner_up_vote_count": 1,
+        "segments": [],
+    }
+
+    class Engine:
+        def process_path(self, path, **_kwargs):
+            del path
+            return [
+                SimpleNamespace(
+                    confidence=0.91,
+                    episode_info=SimpleNamespace(
+                        series_name="Test Show",
+                        season=1,
+                        episode=2,
+                        title="Second",
+                    ),
+                    decision_trace=trace,
+                )
+            ], []
+
+    item = _queued_item(
+        tmp_path,
+        {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "media_context": {"series_name": "Test Show", "season": 1},
+        },
+    )
+
+    artifact = IdentifyStageAdapter(Engine(), contracts)(item)
+
+    payload = json.loads(artifact.contract_path.read_text())
+    attempts = IdentificationDossierStore(
+        tmp_path / "identification-evidence"
+    ).safe_attempts("media-1")
+    assert payload["identification_decision"]["runner_up_episode_id"] == "S01E03"
+    assert "runner-up S01E03 64.0%" in payload["match_summary"]
+    assert attempts[0]["disposition"] == "matched"
+    assert attempts[0]["summary"]["selected_vote_count"] == 2
+
+
+def _single_window_engine_trace():
+    return {
+        "schema_version": 1,
+        "policy": "multi_segment_dialogue_v1",
+        "segment_threshold": 0.6,
+        "engine_threshold": 0.7,
+        "engine_decision": "matched",
+        "engine_reason": "candidate_met_engine_threshold",
+        "selected_episode_id": "S06E11",
+        "selected_episode_title": "Eleventh",
+        "selected_score": 0.890611,
+        "selected_vote_count": 1,
+        "runner_up_episode_id": None,
+        "runner_up_score": 0.0,
+        "runner_up_vote_count": 0,
+        "supplemental_attempted": True,
+        "supplemental_segment_count": 6,
+        "subtitle_release_match": "generic",
+        "segments": [],
+    }
+
+
+class _SingleWindowEngine:
+    def process_path(self, path, **_kwargs):
+        del path
+        return [
+            SimpleNamespace(
+                confidence=0.890611,
+                episode_info=SimpleNamespace(
+                    series_name="The Office",
+                    season=6,
+                    episode=11,
+                    title="Eleventh",
+                ),
+                subtitle_release_match="generic",
+                subtitle_release_name="Cached generic subtitle variant",
+                decision_trace=_single_window_engine_trace(),
+            )
+        ], []
+
+
+def _strong_local_history(episode_id):
+    return {
+        "episode_id": episode_id,
+        "series_name": "The Office",
+        "match_source": "local_evidence",
+        "assignment_evidence_source": LOCAL_DIALOGUE_TWO_WINDOW_SOURCE,
+        "identification_policy_version": AUTOMATIC_TV_IDENTIFICATION_POLICY_VERSION,
+    }
+
+
+def test_identify_adapter_holds_single_window_without_disc_corroboration(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    item = _queued_item(
+        tmp_path,
+        {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "disc_fingerprint": "0123456789abcdef",
+            "title_index": 4,
+            "media_context": {"series_name": "The Office", "season": 6},
+        },
+    )
+
+    with pytest.raises(
+        PipelineReviewRequiredError, match="independent_episode_evidence_required"
+    ):
+        IdentifyStageAdapter(_SingleWindowEngine(), contracts)(item)
+
+    attempt = IdentificationDossierStore(
+        tmp_path / "identification-evidence"
+    ).safe_attempts("media-1")[0]
+    assert attempt["disposition"] == "review"
+    assert attempt["summary"]["engine_reason"] == (
+        "single_window_requires_disc_corroboration"
+    )
+    assert attempt["summary"]["supplemental_segment_count"] == 6
+
+
+def test_identify_adapter_accepts_corroborated_single_window(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    item = _queued_item(
+        tmp_path,
+        {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "disc_fingerprint": "0123456789abcdef",
+            "disc_expected_title_indexes": [1, 2, 3, 4],
+            "title_index": 4,
+            "media_context": {"series_name": "The Office", "season": 6},
+        },
+    )
+    history = SimpleNamespace(
+        expected_title_indexes_for_disc=lambda _fingerprint: (1, 2, 3, 4),
+        catalogue_title_history=lambda _fingerprint: {
+            1: _strong_local_history("S06E08"),
+            2: _strong_local_history("S06E09"),
+            3: _strong_local_history("S06E10"),
+        },
+    )
+
+    artifact = IdentifyStageAdapter(
+        _SingleWindowEngine(), contracts, disc_match_history=history
+    )(item)
+
+    payload = json.loads(artifact.contract_path.read_text())
+    assert payload["episode_id"] == "S06E11"
+    assert payload["assignment_evidence_source"] == (
+        LOCAL_DIALOGUE_DISC_CORROBORATED_SOURCE
+    )
+    assert payload["identification_policy_version"] == (
+        AUTOMATIC_TV_IDENTIFICATION_POLICY_VERSION
+    )
+    assert payload["identification_decision"]["disc_context_corroborated"] is True
+    assert payload["identification_decision"]["disc_anchor_count"] == 3
+    assert (
+        "disc context confirmed by 3 strong sibling matches" in payload["match_summary"]
+    )
+    attempts = IdentificationDossierStore(
+        tmp_path / "identification-evidence"
+    ).safe_attempts("media-1")
+    assert [attempt["branch"] for attempt in attempts] == [
+        "tv-local",
+        "tv-disc-range",
+    ]
+
+
 def test_single_catalogue_candidate_is_held_as_help_after_local_match_fails(
     tmp_path,
 ):
@@ -105,6 +347,74 @@ def test_single_catalogue_candidate_is_held_as_help_after_local_match_fails(
         PipelineReviewRequiredError, match="catalogue_candidate_help_available"
     ):
         IdentifyStageAdapter(Engine(), contracts)(item)
+
+
+def test_identify_review_persists_rejected_initial_candidates(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    trace = {
+        "schema_version": 1,
+        "policy": "multi_segment_dialogue_v1",
+        "segment_threshold": 0.6,
+        "engine_threshold": 0.7,
+        "engine_decision": "review",
+        "engine_reason": "matcher_returned_no_candidate",
+        "segments": [
+            {
+                "segment_index": 0,
+                "sample_start_seconds": 180.0,
+                "sample_duration_seconds": 30,
+                "reference_variant_count": 2,
+                "status": "below_threshold",
+                "reason": "no_candidate_exceeded_segment_threshold",
+                "episode_candidate_count": 2,
+                "qualifying_candidate_count": 0,
+                "best_episode_id": "S01E03",
+                "best_score": 0.58,
+                "candidate_evaluations": [
+                    {
+                        "rank": 1,
+                        "candidate_episode_id": "S01E03",
+                        "candidate_episode_title": "Third",
+                        "score": 0.58,
+                        "segment_threshold": 0.6,
+                        "qualified": False,
+                        "subtitle_release_match": "generic",
+                        "subtitle_release_name": "Broadcast",
+                    }
+                ],
+            }
+        ],
+    }
+
+    class Engine:
+        def process_path(self, *_args, **_kwargs):
+            return [], [SimpleNamespace(decision_trace=trace)]
+
+    item = _queued_item(
+        tmp_path,
+        {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "media_context": {"series_name": "Test Show", "season": 1},
+        },
+    )
+
+    with pytest.raises(PipelineReviewRequiredError, match="episode_match_review"):
+        IdentifyStageAdapter(Engine(), contracts)(item)
+
+    dossier = IdentificationDossierStore(tmp_path / "identification-evidence")
+    assert dossier.safe_attempts("media-1")[0]["disposition"] == "review"
+    candidates = [
+        event
+        for event in dossier.audit_events("media-1")
+        if event["event_kind"] == "candidate"
+    ]
+    assert candidates[0]["summary"]["candidate_episode_id"] == "S01E03"
+    assert candidates[0]["summary"]["reason"] == "below_segment_threshold"
 
 
 def test_movie_hint_routes_to_movie_identifier_before_tv_fallback(tmp_path):

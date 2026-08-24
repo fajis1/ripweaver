@@ -6,6 +6,7 @@ It accepts already-collected, redacted evidence and returns review candidates.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -44,6 +45,14 @@ class UnmatchedFileEvidence:
     file_id: str
     duration_seconds: float
     transcript_excerpts: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class GeminiSubtitleComparisonEvidence:
+    candidate_episode_id: str
+    whisper_excerpt: str
+    subtitle_excerpt: str
+    local_score: float
 
 
 @dataclass(frozen=True)
@@ -240,6 +249,51 @@ def _validate_file_evidence(item: UnmatchedFileEvidence) -> None:
             raise GeminiMatchError("Transcript excerpts must not contain local paths")
 
 
+def _safe_subtitle_comparisons(
+    files: tuple[UnmatchedFileEvidence, ...],
+    catalog: tuple[EpisodeCatalogEntry, ...],
+    comparisons: Mapping[
+        str, tuple[GeminiSubtitleComparisonEvidence, ...]
+    ] | None,
+) -> dict[str, list[dict[str, object]]]:
+    if comparisons is None:
+        return {}
+    file_ids = {item.file_id for item in files}
+    episode_ids = {item.episode_id for item in catalog}
+    if set(comparisons) - file_ids:
+        raise GeminiMatchError("Subtitle comparisons contain an unknown file ID")
+    safe: dict[str, list[dict[str, object]]] = {}
+    for file_id, pairs in comparisons.items():
+        if len(pairs) > 6:
+            raise GeminiMatchError("Each file permits up to six subtitle comparisons")
+        serialized = []
+        for pair in pairs:
+            if pair.candidate_episode_id not in episode_ids:
+                raise GeminiMatchError(
+                    "Subtitle comparison episode is outside the catalogue"
+                )
+            whisper = " ".join(pair.whisper_excerpt.split())
+            subtitle = " ".join(pair.subtitle_excerpt.split())
+            if (
+                not whisper
+                or not subtitle
+                or len(whisper) > 400
+                or len(subtitle) > 400
+                or _WINDOWS_PATH.search(whisper)
+                or _WINDOWS_PATH.search(subtitle)
+                or not 0 <= pair.local_score <= 1
+            ):
+                raise GeminiMatchError("Subtitle comparison evidence is unsafe")
+            serialized.append({
+                "candidate_episode_id": pair.candidate_episode_id,
+                "whisper_excerpt": whisper,
+                "subtitle_excerpt": subtitle,
+                "local_score": round(pair.local_score, 6),
+            })
+        safe[file_id] = serialized
+    return safe
+
+
 def _validate_inputs(
     files: tuple[UnmatchedFileEvidence, ...],
     catalog: tuple[EpisodeCatalogEntry, ...],
@@ -328,7 +382,7 @@ def _safe_reviewer_scene_descriptions(
     return safe
 
 
-def build_gemini_request(
+def build_gemini_request(  # noqa: C901 - strict request validation
     model: str,
     files: tuple[UnmatchedFileEvidence, ...],
     catalog: tuple[EpisodeCatalogEntry, ...],
@@ -336,6 +390,11 @@ def build_gemini_request(
     prior_attempts: Mapping[str, tuple[dict[str, object], ...]] | None = None,
     existing_episode_ids: frozenset[str] | None = None,
     reviewer_scene_descriptions: Mapping[str, str] | None = None,
+    subtitle_comparisons: Mapping[
+        str, tuple[GeminiSubtitleComparisonEvidence, ...]
+    ] | None = None,
+    review_phase: str = "initial",
+    proposed_assignments: Mapping[str, str | None] | None = None,
 ) -> dict:
     """Build a path-free Interactions API request with a strict JSON schema."""
 
@@ -346,10 +405,24 @@ def build_gemini_request(
     safe_scene_descriptions = _safe_reviewer_scene_descriptions(
         files, reviewer_scene_descriptions
     )
+    safe_comparisons = _safe_subtitle_comparisons(files, catalog, subtitle_comparisons)
+    if review_phase not in {"initial", "confirmation", "outside-season-review"}:
+        raise GeminiMatchError("Gemini review phase is invalid")
     known_episode_ids = {item.episode_id for item in catalog}
     existing_episode_ids = existing_episode_ids or frozenset()
     if not existing_episode_ids.issubset(known_episode_ids):
         raise GeminiMatchError("Existing-library episodes are outside the catalogue")
+    proposed_assignments = dict(proposed_assignments or {})
+    if proposed_assignments:
+        if review_phase != "confirmation" or set(proposed_assignments) != {
+            item.file_id for item in files
+        }:
+            raise GeminiMatchError("Gemini proposed assignments are invalid")
+        if any(
+            episode_id is not None and episode_id not in known_episode_ids
+            for episode_id in proposed_assignments.values()
+        ):
+            raise GeminiMatchError("Gemini proposal is outside the catalogue")
     evidence_payload = []
     for item in files:
         evidence_item = {
@@ -362,6 +435,8 @@ def build_gemini_request(
             evidence_item["reviewer_scene_description"] = safe_scene_descriptions[
                 item.file_id
             ]
+        if item.file_id in safe_comparisons:
+            evidence_item["subtitle_comparisons"] = safe_comparisons[item.file_id]
         evidence_payload.append(evidence_item)
     catalog_payload = [
         {
@@ -388,6 +463,11 @@ def build_gemini_request(
             "Library status is a tie-break hint only: never choose a missing "
             "episode over a present episode when dialogue, plot, or runtime "
             "supports the present episode. "
+            "When subtitle_comparisons are supplied, decide whether each paired "
+            "Whisper and subtitle passage describes the same scene despite ASR "
+            "errors, inserted extended-cut dialogue, omissions, or shifted timing. "
+            "Require corroboration from two independent scenes for a confident "
+            "dialogue match. A weak or contradictory pair is not positive evidence. "
             + (
                 "Some files have no usable dialogue. For those files make the best "
                 "provisional one-to-one choice from runtime and the remaining names; "
@@ -399,7 +479,15 @@ def build_gemini_request(
         ),
         "files": evidence_payload,
         "allowed_episodes": catalog_payload,
+        "review_phase": review_phase,
     }
+    if proposed_assignments:
+        prompt["proposed_assignments"] = proposed_assignments
+        prompt["confirmation_instruction"] = (
+            "Audit the complete proposed one-to-one assignment map. Return the "
+            "proposal only where the paired dialogue and disc-wide constraints "
+            "still support it; otherwise return a corrected candidate or null."
+        )
     schema = {
         "type": "object",
         "properties": {
@@ -453,6 +541,19 @@ def build_gemini_request(
             "schema": schema,
         },
     }
+
+
+def gemini_request_digest(
+    model: str,
+    files: tuple[UnmatchedFileEvidence, ...],
+    catalog: tuple[EpisodeCatalogEntry, ...],
+    **kwargs,
+) -> str:
+    """Hash the exact path-free request so identical provider work is reusable."""
+
+    body = build_gemini_request(model, files, catalog, **kwargs)
+    encoded = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def build_descriptive_gemini_request(
@@ -813,6 +914,11 @@ class GeminiEpisodeRanker:
         prior_attempts: Mapping[str, tuple[dict[str, object], ...]] | None = None,
         existing_episode_ids: frozenset[str] | None = None,
         reviewer_scene_descriptions: Mapping[str, str] | None = None,
+        subtitle_comparisons: Mapping[
+            str, tuple[GeminiSubtitleComparisonEvidence, ...]
+        ] | None = None,
+        review_phase: str = "initial",
+        proposed_assignments: Mapping[str, str | None] | None = None,
     ) -> GeminiReviewPlan:
         if credential not in ("gemini-primary", "gemini-paid"):
             raise ValueError("Gemini credential name is invalid")
@@ -825,6 +931,9 @@ class GeminiEpisodeRanker:
             prior_attempts=prior_attempts,
             existing_episode_ids=existing_episode_ids,
             reviewer_scene_descriptions=reviewer_scene_descriptions,
+            subtitle_comparisons=subtitle_comparisons,
+            review_phase=review_phase,
+            proposed_assignments=proposed_assignments,
         )
         for attempt in range(self.max_retries + 1):
             try:
@@ -885,6 +994,11 @@ class GeminiEpisodeRanker:
         prior_attempts: Mapping[str, tuple[dict[str, object], ...]] | None = None,
         existing_episode_ids: frozenset[str] | None = None,
         reviewer_scene_descriptions: Mapping[str, str] | None = None,
+        subtitle_comparisons: Mapping[
+            str, tuple[GeminiSubtitleComparisonEvidence, ...]
+        ] | None = None,
+        review_phase: str = "initial",
+        proposed_assignments: Mapping[str, str | None] | None = None,
     ) -> GeminiReviewPlan:
         """Try primary then paid key, with one interactive auth recovery each."""
 
@@ -907,6 +1021,9 @@ class GeminiEpisodeRanker:
                         prior_attempts=prior_attempts,
                         existing_episode_ids=existing_episode_ids,
                         reviewer_scene_descriptions=reviewer_scene_descriptions,
+                        subtitle_comparisons=subtitle_comparisons,
+                        review_phase=review_phase,
+                        proposed_assignments=proposed_assignments,
                     )
                 except ApiCredentialError as exc:
                     if auth_attempt == 0 and request_credential_recovery(exc):

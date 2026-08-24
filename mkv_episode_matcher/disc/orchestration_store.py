@@ -327,7 +327,12 @@ class OrchestrationStore:
             if existing is not None:
                 connection.commit()
                 return self.get_job(job_id)
-            if row["state"] not in {"awaiting_review", "authorized", "queued", "running"}:
+            if row["state"] not in {
+                "awaiting_review",
+                "authorized",
+                "queued",
+                "running",
+            }:
                 connection.rollback()
                 raise RipError(
                     "Pipeline settings can no longer change after downstream work starts"
@@ -393,9 +398,7 @@ class OrchestrationStore:
             isinstance(item, dict)
             and isinstance(item.get("staging_destination"), str)
             and disc_fingerprint
-            in PurePosixPath(
-                item["staging_destination"].replace("\\", "/")
-            ).parts
+            in PurePosixPath(item["staging_destination"].replace("\\", "/")).parts
             for item in jobs
         )
 
@@ -502,6 +505,52 @@ class OrchestrationStore:
                     else "rip_title_output_closed"
                     if kind == "output-closed"
                     else f"rip_{kind}"
+                ),
+                from_state=row["state"],
+                to_state=row["state"],
+                details=details,
+            )
+            connection.commit()
+
+    def record_pipeline_handoff(
+        self,
+        job_id: str,
+        rip_job_id: str,
+        *,
+        queued: bool,
+        error_type: str | None = None,
+    ) -> None:
+        """Record a path-free queue handoff without changing rip state."""
+
+        self._validate_handoff_ids((rip_job_id,))
+        if queued:
+            if error_type is not None:
+                raise RipError("Successful pipeline handoff cannot have an error")
+        elif (
+            error_type is None
+            or re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", error_type) is None
+        ):
+            raise RipError("Pipeline handoff error type is invalid")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT state FROM jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+            if row is None or row["state"] not in {"running", "pause_requested"}:
+                connection.rollback()
+                return
+            timestamp = self._now()
+            connection.execute(
+                "UPDATE jobs SET updated_at = ? WHERE job_id = ?", (timestamp, job_id)
+            )
+            details: dict[str, object] = {"scope": rip_job_id}
+            if error_type is not None:
+                details["error_type"] = error_type
+            self._append_event(
+                connection,
+                job_id=job_id,
+                event_type=(
+                    "rip_pipeline_queued" if queued else "rip_pipeline_handoff_failed"
                 ),
                 from_state=row["state"],
                 to_state=row["state"],
@@ -763,9 +812,29 @@ class OrchestrationStore:
         *,
         idempotency_key: str,
         completed_count: int,
+        pipeline_queued_count: int | None = None,
+        pipeline_handoff_pending_job_ids: tuple[str, ...] = (),
     ) -> OrchestrationJob:
         if completed_count < 0:
             raise RipError("Completed job count cannot be negative")
+        if pipeline_queued_count is not None and not (
+            0 <= pipeline_queued_count <= completed_count
+        ):
+            raise RipError("Pipeline queued count is invalid")
+        self._validate_handoff_ids(pipeline_handoff_pending_job_ids)
+        details: dict[str, Any] = {"completed_count": completed_count}
+        if pipeline_queued_count is not None:
+            details.update({
+                "pipeline_queued_count": pipeline_queued_count,
+                "pipeline_handoff_status": (
+                    "attention_required"
+                    if pipeline_handoff_pending_job_ids
+                    else "complete"
+                ),
+                "pipeline_handoff_pending_job_ids": list(
+                    pipeline_handoff_pending_job_ids
+                ),
+            })
         return self._transition(
             job_id,
             action="complete",
@@ -773,7 +842,7 @@ class OrchestrationStore:
             allowed_from={"running"},
             to_state="completed",
             event_type="job_completed",
-            details={"completed_count": completed_count},
+            details=details,
             executor_attached=False,
         )
 
@@ -786,6 +855,8 @@ class OrchestrationStore:
         error_category: str = "unknown",
         failed_drive_indexes: tuple[int, ...] = (),
         completed_job_ids: tuple[str, ...] = (),
+        pipeline_queued_count: int | None = None,
+        pipeline_handoff_pending_job_ids: tuple[str, ...] = (),
     ) -> OrchestrationJob:
         if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", error_type) is None:
             raise RipError("Dispatcher error type is invalid")
@@ -800,6 +871,9 @@ class OrchestrationStore:
             for item in completed_job_ids
         ):
             raise RipError("Completed rip job ID is invalid")
+        if pipeline_queued_count is not None and pipeline_queued_count < 0:
+            raise RipError("Pipeline queued count is invalid")
+        self._validate_handoff_ids(pipeline_handoff_pending_job_ids)
         return self._transition(
             job_id,
             action="fail",
@@ -812,9 +886,27 @@ class OrchestrationStore:
                 "error_category": error_category,
                 "failed_drive_indexes": list(failed_drive_indexes),
                 "completed_job_ids": list(completed_job_ids),
+                "pipeline_queued_count": pipeline_queued_count,
+                "pipeline_handoff_status": (
+                    "attention_required"
+                    if pipeline_handoff_pending_job_ids
+                    else "complete"
+                    if pipeline_queued_count is not None
+                    else "not_configured"
+                ),
+                "pipeline_handoff_pending_job_ids": list(
+                    pipeline_handoff_pending_job_ids
+                ),
             },
             executor_attached=False,
         )
+
+    @staticmethod
+    def _validate_handoff_ids(job_ids: tuple[str, ...]) -> None:
+        if any(
+            re.fullmatch(r"[A-Za-z0-9._:-]{1,160}", item) is None for item in job_ids
+        ):
+            raise RipError("Pipeline handoff job ID is invalid")
 
     def retry_failed(
         self,

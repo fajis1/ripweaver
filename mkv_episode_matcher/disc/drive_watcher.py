@@ -385,6 +385,38 @@ class DriveWatcher:
                 ),
             )
 
+    def record_successful_eject(self, drive_index: int) -> DriveStatusSnapshot:
+        """Mark one cached tray empty after its guarded eject has succeeded."""
+
+        with self._lock:
+            if not any(
+                drive.drive_index == drive_index for drive in self._snapshot.drives
+            ):
+                # The eject endpoint can resolve an uncached slot from its
+                # guarded inventory fallback. There is no cached row to amend
+                # in that case; the next discovery will add it normally.
+                return self._snapshot
+            self._snapshot = replace(
+                self._snapshot,
+                drives=tuple(
+                    replace(
+                        drive,
+                        has_disc=False,
+                        disc_label=None,
+                        current_job_id=None,
+                        current_disc_fingerprint=None,
+                    )
+                    if drive.drive_index == drive_index
+                    else drive
+                    for drive in self._snapshot.drives
+                ),
+                refreshed_at=datetime.now(UTC).isoformat(),
+                status="ready",
+                error_type=None,
+                error_code=None,
+            )
+            return self._snapshot
+
     def clear_current_job(
         self, drive_index: int, *, expected_disc_fingerprint: str
     ) -> None:
@@ -506,9 +538,24 @@ class DriveWatcher:
                     if re.fullmatch(r"[A-Z]:[\\/]?", name.strip().upper())
                 })
             )
+            try:
+                native_media = {
+                    name.strip().upper().rstrip("\\/"): state
+                    for name, state in self._native_media_discovery().items()
+                    if re.fullmatch(r"[A-Z]:[\\/]?", name.strip().upper())
+                }
+            except OSError:
+                native_media = {}
             with self._lock:
                 refreshed: dict[int, PublicDriveStatus] = {}
                 parsed_device_names: dict[int, str] = {}
+                previous_by_index = {
+                    drive.drive_index: drive for drive in self._snapshot.drives
+                }
+                previous_index_by_device = {
+                    device_name.upper().rstrip("\\/"): drive_index
+                    for drive_index, device_name in self._device_names.items()
+                }
                 mapping_keys = {
                     native.mapping_id: native.device_key for native in native_identities
                 }
@@ -573,6 +620,65 @@ class DriveWatcher:
                 for ordinal, device_name in enumerate(native_names):
                     if device_name in parsed_device_names.values():
                         continue
+                    native = native_by_name.get(device_name)
+                    previous_index = previous_index_by_device.get(device_name)
+                    previous = previous_by_index.get(previous_index)
+                    same_device = bool(
+                        previous
+                        and previous_index not in used_indexes
+                        and (
+                            native is None
+                            or previous.mapping_id is None
+                            or previous.mapping_id == native.mapping_id
+                        )
+                    )
+                    if (
+                        same_device
+                        and previous is not None
+                        and previous_index is not None
+                        and (
+                            previous.current_job_id is not None
+                            or previous.current_disc_fingerprint is not None
+                        )
+                    ):
+                        refreshed[previous_index] = replace(
+                            previous,
+                            available=True,
+                            **(
+                                self._mapping_fields(native)
+                                if native is not None
+                                else {}
+                            ),
+                        )
+                        parsed_device_names[previous_index] = device_name
+                        used_indexes.add(previous_index)
+                        continue
+                    native_media_state = native_media.get(device_name)
+                    if (
+                        same_device
+                        and previous is not None
+                        and previous_index is not None
+                        and native_media_state is not None
+                        and native_media_state[0]
+                    ):
+                        native_label = _public_disc_label(native_media_state[1] or "")
+                        refreshed[previous_index] = replace(
+                            previous,
+                            available=True,
+                            has_disc=True,
+                            disc_label=native_label or previous.disc_label,
+                            current_job_id=None,
+                            current_disc_fingerprint=None,
+                            makemkv_confirmed=False,
+                            **(
+                                self._mapping_fields(native)
+                                if native is not None
+                                else {}
+                            ),
+                        )
+                        parsed_device_names[previous_index] = device_name
+                        used_indexes.add(previous_index)
+                        continue
                     drive_index = ordinal + index_offset
                     if drive_index < 0 or drive_index in used_indexes:
                         drive_index = next(
@@ -581,39 +687,79 @@ class DriveWatcher:
                     refreshed[drive_index] = PublicDriveStatus(
                         drive_index=drive_index,
                         available=True,
-                        has_disc=False,
-                        disc_label=None,
+                        has_disc=bool(native_media.get(device_name, (False, None))[0]),
+                        disc_label=(
+                            _public_disc_label(
+                                native_media.get(device_name, (False, None))[1] or ""
+                            )
+                            if native_media.get(device_name, (False, None))[0]
+                            else None
+                        ),
                         current_job_id=None,
                         current_disc_fingerprint=None,
                         makemkv_confirmed=False,
-                        **self._mapping_fields(native_by_name.get(device_name)),
+                        **self._mapping_fields(native),
                     )
                     parsed_device_names[drive_index] = device_name
                     used_indexes.add(drive_index)
-                known = (
-                    {
-                        drive.drive_index: replace(
+                # A busy, settling, or transiently unavailable optical drive
+                # may be omitted by both MakeMKV and one Windows enumeration.
+                # Keep an exactly bound disc/job identity visible, but mark the
+                # slot unavailable so no new work or tray control starts.
+                refreshed_mapping_ids = {
+                    drive.mapping_id
+                    for drive in refreshed.values()
+                    if drive.mapping_id is not None
+                }
+                refreshed_device_names = set(parsed_device_names.values())
+                known: dict[int, PublicDriveStatus] = {}
+                for drive in self._snapshot.drives:
+                    if drive.drive_index in refreshed:
+                        continue
+                    previous_device_name = self._device_names.get(drive.drive_index)
+                    if (
+                        drive.mapping_id in refreshed_mapping_ids
+                        or previous_device_name in refreshed_device_names
+                    ):
+                        # The same physical identity was authoritatively
+                        # rebound to a different MakeMKV slot.
+                        continue
+                    bound = (
+                        drive.current_job_id is not None
+                        or drive.current_disc_fingerprint is not None
+                    )
+                    if native_names and not bound:
+                        # A non-empty native inventory is authoritative for an
+                        # unbound device that has actually been disconnected.
+                        continue
+                    known[drive.drive_index] = (
+                        replace(drive, available=False)
+                        if bound
+                        else replace(
                             drive,
                             has_disc=False,
                             disc_label=None,
                             current_job_id=None,
                             current_disc_fingerprint=None,
                         )
-                        for drive in self._snapshot.drives
-                    }
-                    if not native_names
-                    else {}
-                )
+                    )
                 known.update(refreshed)
                 drives = tuple(known[index] for index in sorted(known))
                 if native_names:
-                    self._device_names = parsed_device_names
+                    retained_device_names = {
+                        drive_index: device_name
+                        for drive_index, device_name in self._device_names.items()
+                        if drive_index in known
+                        and drive_index not in parsed_device_names
+                        and device_name not in refreshed_device_names
+                    }
+                    self._device_names = retained_device_names | parsed_device_names
                 else:
                     self._device_names.update(parsed_device_names)
-                self._mapping_keys = mapping_keys
-                self._mapping_devices = {
+                self._mapping_keys.update(mapping_keys)
+                self._mapping_devices.update({
                     native.mapping_id: native for native in native_identities
-                }
+                })
                 self._snapshot = DriveStatusSnapshot(
                     drives=drives,
                     refreshed_at=datetime.now(UTC).isoformat(),

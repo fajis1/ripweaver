@@ -1,4 +1,5 @@
 from pathlib import Path
+from threading import Event
 
 import pytest
 
@@ -134,3 +135,64 @@ def test_parallel_batch_failure_does_not_cancel_other_drive(tmp_path):
         unaffected.job_id
     ]
     assert caught.value.drive_failures == {0: "RipError"}
+
+
+def test_parallel_queue_publishes_each_title_without_waiting_for_other_drive(
+    tmp_path,
+):
+    waiting_drive = _job(0, 0)
+    fast_drive = _job(1, 0)
+    fast_handoff = Event()
+
+    def fake_job(_executable, _root, job, _log, **_kwargs):
+        if job.job_id == waiting_drive.job_id:
+            if not fast_handoff.wait(timeout=2):
+                raise RipError("completed title was not handed off promptly")
+        return _result(job)
+
+    observed = []
+
+    def on_result(result):
+        observed.append(result.job_id)
+        if result.job_id == fast_drive.job_id:
+            fast_handoff.set()
+
+    results = run_parallel_auto_rip_queue(
+        Path("makemkvcon64.exe"),
+        tmp_path,
+        (waiting_drive, fast_drive),
+        tmp_path / "streaming-logs",
+        batch_plans={},
+        job_runner=fake_job,
+        on_result=on_result,
+    )
+
+    assert observed[0] == fast_drive.job_id
+    assert {result.job_id for result in results} == {
+        waiting_drive.job_id,
+        fast_drive.job_id,
+    }
+
+
+def test_parallel_failure_retains_earlier_title_from_same_drive(tmp_path):
+    first = _job(0, 0)
+    second = _job(0, 1)
+
+    def fake_job(_executable, _root, job, _log, **_kwargs):
+        if job.job_id == second.job_id:
+            raise RipError("second title failed")
+        return _result(job)
+
+    with pytest.raises(ParallelRipError, match="second title failed") as caught:
+        run_parallel_auto_rip_queue(
+            Path("makemkvcon64.exe"),
+            tmp_path,
+            (first, second),
+            tmp_path / "partial-logs",
+            batch_plans={},
+            job_runner=fake_job,
+        )
+
+    assert [result.job_id for result in caught.value.completed_results] == [
+        first.job_id
+    ]

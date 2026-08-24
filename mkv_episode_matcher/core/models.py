@@ -25,6 +25,11 @@ class SubtitleFile(BaseModel):
     language: str = "en"
     episode_info: EpisodeInfo | None = None
     content: str | None = None  # Loaded content (optional)
+    release_name: str | None = None
+    release_match: Literal["exact", "compatible", "generic", "unresolved"] = (
+        "unresolved"
+    )
+    release_profile: str | None = None
 
 
 class AudioChunk(BaseModel):
@@ -45,6 +50,11 @@ class MatchResult(BaseModel):
     chunk_index: int = 0
     model_name: str
     original_file: Path | None = None  # Store original filename for display
+    subtitle_release_name: str | None = None
+    subtitle_release_match: Literal[
+        "exact", "compatible", "generic", "unresolved"
+    ] = "unresolved"
+    decision_trace: dict[str, object] = Field(default_factory=dict)
 
 
 class FailedMatch(BaseModel):
@@ -55,6 +65,7 @@ class FailedMatch(BaseModel):
     confidence: float = 0.0
     series_name: str | None = None
     season: int | None = None
+    decision_trace: dict[str, object] = Field(default_factory=dict)
 
 
 class MatchCandidate(BaseModel):
@@ -63,6 +74,10 @@ class MatchCandidate(BaseModel):
     episode_info: EpisodeInfo
     confidence: float
     reference_file: Path
+    subtitle_release_name: str | None = None
+    subtitle_release_match: Literal[
+        "exact", "compatible", "generic", "unresolved"
+    ] = "unresolved"
 
 
 class Config(BaseModel):
@@ -78,6 +93,7 @@ class Config(BaseModel):
     # Local pipeline locations and unattended-operation policy. These values
     # are non-secret and may be persisted in the local JSON configuration.
     rip_output_root: Path | None = None
+    disc_image_root: Path | None = None
     transcode_output_root: Path | None = None
     deletion_staging_root: Path | None = None
     retained_source_ttl_days: int = 30
@@ -85,6 +101,7 @@ class Config(BaseModel):
     jellyfin_tv_root: Path | None = None
     jellyfin_movie_root: Path | None = None
     makemkv_path: Path | None = None
+    disc_image_creator_path: Path | None = None
     handbrake_path: Path | None = None
     ffmpeg_path: Path | None = None
     ffprobe_path: Path | None = None
@@ -141,11 +158,13 @@ class Config(BaseModel):
 
     @field_validator(
         "rip_output_root",
+        "disc_image_root",
         "transcode_output_root",
         "deletion_staging_root",
         "jellyfin_tv_root",
         "jellyfin_movie_root",
         "makemkv_path",
+        "disc_image_creator_path",
         "handbrake_path",
         "ffmpeg_path",
         "ffprobe_path",

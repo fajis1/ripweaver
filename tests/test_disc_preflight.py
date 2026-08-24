@@ -1,7 +1,10 @@
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
+from mkv_episode_matcher.cli import app
+from mkv_episode_matcher.disc import preflight
 from mkv_episode_matcher.disc.preflight import (
     CommandResult,
     MakeMKVDrive,
@@ -41,8 +44,43 @@ def test_build_info_command_allows_info_only():
 
     assert command[-2:] == ("info", "disc:3")
     assert "--minlength=120" in command
+    assert "--noscan" in command
     assert "mkv" not in command
     assert "backup" not in command
+
+
+def test_all_drive_discovery_retains_media_scan():
+    command = build_info_command(Path("makemkvcon64.exe"), "disc:9999")
+
+    assert "--noscan" not in command
+
+
+def test_targeted_inventory_reuses_cached_drive_when_global_row_is_omitted():
+    drive = preflight.targeted_inventory_drive(
+        'TINFO:0,9,0,"0:42:00"\n',
+        requested_index=3,
+        cached_device_name="D:",
+        cached_drive_name="Reviewed drive",
+        cached_disc_name="INSERTED_DISC",
+    )
+
+    assert drive is not None
+    assert drive.index == 3
+    assert drive.device_name == "D:"
+    assert drive.disc_name == "INSERTED_DISC"
+
+
+def test_targeted_inventory_refuses_cached_drive_without_title_metadata():
+    assert (
+        preflight.targeted_inventory_drive(
+            'MSG:1005,0,1,"No disc"\n',
+            requested_index=3,
+            cached_device_name="D:",
+            cached_drive_name="Reviewed drive",
+            cached_disc_name="INSERTED_DISC",
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize("source", ["dev:D:", "disc:1; eject", "file:test", "disc:-1"])
@@ -113,3 +151,80 @@ def test_safe_report_stem_removes_path_characters():
     )
 
     assert safe_report_stem(drive) == "drive_4_Disc_Name_One"
+
+
+def test_info_runner_uses_supervised_makemkv_boundary(monkeypatch):
+    calls = []
+
+    def run(command, *, timeout_seconds):
+        calls.append((command, timeout_seconds))
+        return preflight.subprocess.CompletedProcess(command, 0, "output", "")
+
+    monkeypatch.setattr(preflight, "run_makemkv_command", run)
+
+    result = preflight.run_info_command(
+        Path("makemkvcon64.exe"), "disc:2", timeout_seconds=15
+    )
+
+    assert calls == [(result.command, 15)]
+    assert result.stdout == "output"
+
+
+def test_info_runner_redacts_containment_start_failure(monkeypatch):
+    monkeypatch.setattr(
+        preflight,
+        "run_makemkv_command",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("private detail")),
+    )
+
+    with pytest.raises(PreflightError, match="OSError") as exc_info:
+        preflight.run_info_command(Path("makemkvcon64.exe"), "disc:2")
+
+    assert "private detail" not in str(exc_info.value)
+
+
+def test_explicit_drive_preflight_uses_one_targeted_info_call(tmp_path, monkeypatch):
+    executable = tmp_path / "makemkvcon64.exe"
+    executable.write_bytes(b"synthetic")
+    output_dir = tmp_path / "reports"
+    calls = []
+
+    def run_info(_executable, source, **kwargs):
+        calls.append((source, kwargs))
+        return CommandResult(
+            command=("makemkvcon64.exe", "info", source),
+            return_code=0,
+            stdout=ROBOT_OUTPUT,
+            stderr="",
+            started_at="2026-08-19T00:00:00+00:00",
+            finished_at="2026-08-19T00:00:01+00:00",
+        )
+
+    monkeypatch.setattr(preflight, "run_info_command", run_info)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "preflight",
+            "--drive",
+            "0",
+            "--output-dir",
+            str(output_dir),
+            "--makemkv-path",
+            str(executable),
+            "--min-length",
+            "0",
+            "--timeout",
+            "300",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        (
+            "disc:0",
+            {"minimum_length": 0, "timeout_seconds": 300},
+        )
+    ]
+    assert not (output_dir / "drive-discovery.robot.log").exists()
+    assert len(list(output_dir.glob("drive_0_*.json"))) == 1

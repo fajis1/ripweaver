@@ -3,6 +3,8 @@
 AUTOMATIC_TV_IDENTIFICATION_POLICY_VERSION = 4
 AUTOMATIC_TV_MIN_CONFIDENCE = 0.70
 
+LOCAL_DIALOGUE_TWO_WINDOW_SOURCE = "local-dialogue-two-window"
+LOCAL_DIALOGUE_DISC_CORROBORATED_SOURCE = "local-dialogue-disc-corroborated"
 OPENSUBTITLES_TWO_WINDOW_SOURCE = "opensubtitles-two-window"
 OPENSUBTITLES_RESIDUAL_SOURCE = "opensubtitles-residual-elimination"
 GEMINI_TWO_PASS_SOURCE = "gemini-two-pass"

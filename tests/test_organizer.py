@@ -12,6 +12,7 @@ from mkv_episode_matcher.media.organizer import (
     inspect_episode_version_destination,
     jellyfin_resolution_label,
     load_sequence_assignments,
+    omit_placeholder_episode_title,
     plan_tv_organization,
     write_safe_organization_plan,
 )
@@ -61,6 +62,31 @@ def test_jellyfin_resolution_version_uses_required_suffix():
         )
         .as_posix()
         .endswith("Test Series - S03E01 - A Story - 720p.mkv")
+    )
+
+
+def test_untitled_placeholder_is_omitted_without_a_dangling_separator():
+    assert (
+        build_episode_filename("Test Series", "S03E02", "Untitled")
+        == "Test Series - S03E02.mkv"
+    )
+    assert (
+        build_episode_filename(
+            "Test Series", "S03E02", " untitled ", version_label="1080p"
+        )
+        == "Test Series - S03E02 - 1080p.mkv"
+    )
+
+
+def test_legacy_untitled_contract_destination_is_normalized():
+    relative = PurePosixPath(
+        "Test Series/Season 03/Test Series - S03E02 - Untitled - 1080p.mkv"
+    )
+
+    assert (
+        omit_placeholder_episode_title(relative, "S03E02")
+        .as_posix()
+        .endswith("Test Series - S03E02 - 1080p.mkv")
     )
 
 

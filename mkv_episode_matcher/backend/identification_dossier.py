@@ -7,14 +7,18 @@ import json
 import os
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
 from mkv_episode_matcher.core.models import Config
 from mkv_episode_matcher.media.ffprobe_runner import inspect_mkv, resolve_ffprobe_path
-from mkv_episode_matcher.media.gemini_matcher import UnmatchedFileEvidence
+from mkv_episode_matcher.media.gemini_matcher import (
+    GeminiMatchResult,
+    GeminiReviewPlan,
+    UnmatchedFileEvidence,
+)
 from mkv_episode_matcher.media.silent_video_review import (
     collect_silent_video_review,
     resolve_tesseract_path,
@@ -47,7 +51,7 @@ _AUDIT_PHASE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _ANALYSIS_RUN_ID = re.compile(r"^[0-9a-f]{32}$")
 SCHEMA_VERSION = 1
 AUDIT_SCHEMA_VERSION = 1
-SAMPLING_VERSION = "six-window-v2"
+SAMPLING_VERSION = "twelve-window-fallback-v3"
 
 
 @dataclass(frozen=True)
@@ -199,7 +203,7 @@ class IdentificationDossierStore:
             not isinstance(duration, int | float)
             or duration <= 0
             or not isinstance(excerpts, list)
-            or not 0 <= len(excerpts) <= 6
+            or not 0 <= len(excerpts) <= 12
             or any(
                 not isinstance(value, str) or not value.strip() or len(value) > 600
                 for value in excerpts
@@ -235,7 +239,7 @@ class IdentificationDossierStore:
         previous = self._load(evidence.file_id)
         attempts = (
             previous.get("attempts", [])
-            if previous and previous.get("source_identity") == identity.digest()
+            if previous and isinstance(previous.get("attempts"), list)
             else []
         )
         self._write(
@@ -251,6 +255,232 @@ class IdentificationDossierStore:
                 },
                 "attempts": attempts,
                 "updated_at": datetime.now(UTC).isoformat(),
+            },
+        )
+
+    def record_initial_match_trace(  # noqa: C901 - linear audit normalization
+        self,
+        media_id: str,
+        trace: dict[str, object],
+        *,
+        candidate_series_name: str | None = None,
+    ) -> None:
+        """Persist one complete path- and dialogue-free first-pass decision."""
+
+        checked_id = self._check_id(media_id)
+        if not isinstance(trace, dict) or trace.get("schema_version") != 1:
+            return
+        payload = self._load(checked_id)
+        if payload is None:
+            self._write(
+                checked_id,
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "media_id": checked_id,
+                    "attempts": [],
+                    "updated_at": datetime.now(UTC).isoformat(),
+                },
+            )
+        analysis_run_id = uuid4().hex
+        engine_decision = trace.get("engine_decision")
+        matched = engine_decision == "matched"
+
+        def safe_value(key: str) -> str | int | float | bool | None:
+            value = trace.get(key)
+            if isinstance(value, bool | int | float) or value is None:
+                return value
+            if isinstance(value, str):
+                return " ".join(value.split())[:240]
+            return None
+
+        summary_keys = (
+            "policy",
+            "segment_threshold",
+            "engine_threshold",
+            "reference_variant_count",
+            "duration_seconds",
+            "successful_segment_count",
+            "empty_segment_count",
+            "selected_episode_id",
+            "selected_episode_title",
+            "selected_score",
+            "selected_vote_count",
+            "selected_score_sum",
+            "runner_up_episode_id",
+            "runner_up_score",
+            "runner_up_vote_count",
+            "supplemental_attempted",
+            "supplemental_segment_count",
+            "supplemental_reason",
+            "subtitle_release_match",
+            "subtitle_release_name",
+            "engine_reason",
+        )
+        summary = {
+            key: value for key in summary_keys if (value := safe_value(key)) is not None
+        }
+        segments = trace.get("segments")
+        if not isinstance(segments, list):
+            segments = []
+        summary["candidate_segment_count"] = len(segments)
+        review_candidates = [
+            candidate
+            for segment in segments
+            if isinstance(segment, dict)
+            for candidate in segment.get("candidate_evaluations", [])
+            if isinstance(candidate, dict)
+            and isinstance(candidate.get("candidate_episode_id"), str)
+            and isinstance(candidate.get("candidate_episode_title"), str)
+            and isinstance(candidate.get("score"), int | float)
+            and not isinstance(candidate.get("score"), bool)
+        ]
+        best_review_candidate = max(
+            review_candidates,
+            key=lambda candidate: float(candidate["score"]),
+            default=None,
+        )
+        if best_review_candidate is not None and isinstance(candidate_series_name, str):
+            cleaned_series_name = " ".join(candidate_series_name.split())[:240]
+            if cleaned_series_name:
+                summary.update({
+                    "candidate_series_name": cleaned_series_name,
+                    "candidate_episode_id": " ".join(
+                        str(best_review_candidate["candidate_episode_id"]).split()
+                    )[:240],
+                    "candidate_episode_title": " ".join(
+                        str(best_review_candidate["candidate_episode_title"]).split()
+                    )[:240],
+                    "best_score": float(best_review_candidate["score"]),
+                })
+        self.record_attempt(
+            (checked_id,),
+            branch="tv-local",
+            disposition="matched" if matched else "review",
+            summary=summary,
+            analysis_run_id=analysis_run_id,
+        )
+
+        selected_episode_id = trace.get("selected_episode_id")
+        for ordinal, segment in enumerate(segments, start=1):
+            if not isinstance(segment, dict):
+                continue
+            phase = f"initial-segment-{ordinal}"
+            segment_summary = {
+                "segment_index": int(segment.get("segment_index", ordinal - 1)),
+                "sample_start_seconds": float(segment.get("sample_start_seconds", 0.0)),
+                "sample_duration_seconds": float(
+                    segment.get("sample_duration_seconds", 0.0)
+                ),
+                "reference_variant_count": int(
+                    segment.get("reference_variant_count", 0)
+                ),
+                "episode_candidate_count": int(
+                    segment.get("episode_candidate_count", 0)
+                ),
+                "qualifying_candidate_count": int(
+                    segment.get("qualifying_candidate_count", 0)
+                ),
+                "best_episode_id": (
+                    " ".join(str(segment.get("best_episode_id")).split())[:240]
+                    if segment.get("best_episode_id") is not None
+                    else None
+                ),
+                "best_score": float(segment.get("best_score", 0.0)),
+                "reason": " ".join(str(segment.get("reason", "unknown")).split())[:240],
+            }
+            status = segment.get("status")
+            self.record_workflow_event(
+                (checked_id,),
+                analysis_run_id=analysis_run_id,
+                phase=phase,
+                disposition=(
+                    "failed"
+                    if status == "failed"
+                    else "review"
+                    if status in {"below_threshold", "unusable_transcript"}
+                    else "completed"
+                ),
+                summary=segment_summary,
+            )
+            evaluations = []
+            raw_evaluations = segment.get("candidate_evaluations")
+            if not isinstance(raw_evaluations, list):
+                raw_evaluations = []
+            for candidate in raw_evaluations:
+                if not isinstance(candidate, dict):
+                    continue
+                candidate_id = candidate.get("candidate_episode_id")
+                qualified = candidate.get("qualified") is True
+                selected = bool(
+                    matched and qualified and candidate_id == selected_episode_id
+                )
+                reason = (
+                    "contributed_to_selected_episode"
+                    if selected
+                    else "below_segment_threshold"
+                    if not qualified
+                    else "different_episode_won"
+                    if candidate_id != selected_episode_id
+                    else "final_engine_decision_required_review"
+                )
+                evaluations.append({
+                    "phase": "initial-six-window",
+                    "segment_index": int(segment.get("segment_index", ordinal - 1)),
+                    "sample_start_seconds": float(
+                        segment.get("sample_start_seconds", 0.0)
+                    ),
+                    "rank": int(candidate.get("rank", len(evaluations) + 1)),
+                    "candidate_episode_id": (
+                        " ".join(str(candidate_id).split())[:240]
+                        if candidate_id is not None
+                        else None
+                    ),
+                    "candidate_episode_title": (
+                        " ".join(str(candidate.get("candidate_episode_title")).split())[
+                            :240
+                        ]
+                        if candidate.get("candidate_episode_title") is not None
+                        else None
+                    ),
+                    "score": float(candidate.get("score", 0.0)),
+                    "segment_threshold": float(candidate.get("segment_threshold", 0.0)),
+                    "qualified": qualified,
+                    "subtitle_release_match": (
+                        " ".join(
+                            str(
+                                candidate.get("subtitle_release_match", "unresolved")
+                            ).split()
+                        )[:240]
+                    ),
+                    "subtitle_release_name": (
+                        " ".join(str(candidate.get("subtitle_release_name")).split())[
+                            :240
+                        ]
+                        if candidate.get("subtitle_release_name") is not None
+                        else None
+                    ),
+                    "disposition": "selected" if selected else "rejected",
+                    "reason": reason,
+                })
+            self.record_candidate_evaluations(
+                checked_id,
+                analysis_run_id=analysis_run_id,
+                branch="tv-local",
+                evaluations=tuple(evaluations),
+            )
+
+        self.record_workflow_event(
+            (checked_id,),
+            analysis_run_id=analysis_run_id,
+            phase="initial-local-matcher",
+            disposition="matched" if matched else "review",
+            summary={
+                "engine_decision": ("matched" if matched else "review"),
+                "engine_reason": safe_value("engine_reason"),
+                "selected_episode_id": safe_value("selected_episode_id"),
+                "selected_score": safe_value("selected_score"),
+                "runner_up_episode_id": safe_value("runner_up_episode_id"),
+                "runner_up_score": safe_value("runner_up_score"),
             },
         )
 
@@ -420,6 +650,66 @@ class IdentificationDossierStore:
             item.get("branch") == branch for item in self.safe_attempts(media_id)
         )
 
+    def load_gemini_review(
+        self, request_digest: str, *, model: str
+    ) -> GeminiReviewPlan | None:
+        if re.fullmatch(r"[0-9a-f]{64}", request_digest) is None:
+            raise PipelineQueueError("Gemini cache digest is invalid")
+        target = self.root / "gemini-review-cache" / f"{request_digest}.private.json"
+        if not target.is_file():
+            return None
+        try:
+            payload = json.loads(target.read_text(encoding="utf-8"))
+            if (
+                payload.get("schema_version") != 1
+                or payload.get("request_digest") != request_digest
+                or payload.get("model") != model
+                or not isinstance(payload.get("matches"), list)
+            ):
+                return None
+            matches = tuple(
+                GeminiMatchResult(
+                    file_id=str(item["file_id"]),
+                    episode_id=(
+                        str(item["episode_id"])
+                        if item.get("episode_id") is not None
+                        else None
+                    ),
+                    confidence=float(item["confidence"]),
+                    evidence=tuple(str(value) for value in item["evidence"]),
+                )
+                for item in payload["matches"]
+            )
+        except (OSError, ValueError, TypeError, KeyError):
+            return None
+        return GeminiReviewPlan("gemini-unmatched-review-plan", model, matches)
+
+    def save_gemini_review(self, request_digest: str, review: GeminiReviewPlan) -> None:
+        if re.fullmatch(r"[0-9a-f]{64}", request_digest) is None:
+            raise PipelineQueueError("Gemini cache digest is invalid")
+        folder = self.root / "gemini-review-cache"
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / f"{request_digest}.private.json"
+        if target.exists():
+            return
+        temporary = folder / f".{request_digest}.{uuid4().hex}.tmp"
+        temporary.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "request_digest": request_digest,
+                    "model": review.model,
+                    "matches": [asdict(match) for match in review.matches],
+                },
+                ensure_ascii=True,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, target)
+
 
 def collect_dossier_evidence(  # noqa: C901 - linear cache/probe/audio guards
     items: tuple[tuple[object, dict], ...],
@@ -585,3 +875,65 @@ def collect_dossier_evidence(  # noqa: C901 - linear cache/probe/audio guards
             )
         )
     return tuple(augmented), dossier
+
+
+def collect_supplemental_dossier_evidence(
+    items: tuple[tuple[object, dict], ...],
+    existing: tuple[UnmatchedFileEvidence, ...],
+    config: Config,
+    asr,
+    contract_root: Path,
+) -> tuple[tuple[UnmatchedFileEvidence, ...], IdentificationDossierStore]:
+    """Add one offset six-window pass for exact sources that remain unresolved."""
+
+    dossier = IdentificationDossierStore(
+        contract_root.parent / "identification-evidence"
+    )
+    existing_by_id = {item.file_id: item for item in existing}
+    ffprobe = resolve_ffprobe_path(config.ffprobe_path)
+    ffmpeg = resolve_ffmpeg_path(config.ffmpeg_path)
+    transcript_items: list[TranscriptBatchItem] = []
+    identities: dict[str, SourceIdentity] = {}
+    for item, payload in items:
+        media_id = getattr(item, "media_id", None)
+        if not isinstance(media_id, str) or media_id not in existing_by_id:
+            raise PipelineQueueError("Supplemental evidence item is invalid")
+        current = existing_by_id[media_id]
+        if len(current.transcript_excerpts) >= 12:
+            continue
+        source = Path(str(payload.get("source_path", "")))
+        identities[media_id] = source_identity(payload, source, config.asr_model_name)
+        inspection = inspect_mkv(ffprobe, source, timeout_seconds=60)
+        if inspection.media.audio_streams:
+            transcript_items.append(
+                TranscriptBatchItem(media_id, source, inspection.media)
+            )
+
+    if transcript_items:
+        result = collect_transcript_batch(
+            tuple(transcript_items),
+            asr,
+            FFmpegSampleExtractor(ffmpeg),
+            model_name=config.asr_model_name,
+            sampling_mode="expanded-offset",
+        )
+        for transcript in result.files:
+            current = existing_by_id[transcript.file_id]
+            added = tuple(
+                window.text[:600]
+                for window in transcript.windows
+                if window.text.strip()
+                and window.text[:600] not in current.transcript_excerpts
+            )
+            combined = UnmatchedFileEvidence(
+                current.file_id,
+                current.duration_seconds,
+                (*current.transcript_excerpts, *added)[:12],
+            )
+            dossier.save_evidence(identities[transcript.file_id], combined)
+            existing_by_id[transcript.file_id] = combined
+
+    return (
+        tuple(existing_by_id[item.media_id] for item, _payload in items),
+        dossier,
+    )

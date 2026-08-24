@@ -1,18 +1,28 @@
+import json
 from dataclasses import dataclass
 from types import SimpleNamespace
+
+from fastapi import HTTPException
 
 from mkv_episode_matcher.backend.automatic_rip import (
     _AUTOMATIC_UNMATCHED_CODES,
     AutomaticRipCoordinator,
+    _automatic_failure_is_retryable,
     _automatic_series_name,
     _has_prior_disc_work,
     _recover_bound_automatic_job,
+    _resolve_automatic_unmatched_disc,
+    automatic_rip_startup_held,
+    observe_automatic_drives,
     run_automatic_drive,
+    set_automatic_rip_startup_hold,
 )
 from mkv_episode_matcher.disc.drive_watcher import (
     DriveStatusSnapshot,
     PublicDriveStatus,
 )
+from mkv_episode_matcher.disc.ripper import RipError
+from mkv_episode_matcher.pipeline_queue import PipelineQueueStore, build_artifact
 
 
 def _snapshot(*loaded: int) -> DriveStatusSnapshot:
@@ -46,9 +56,122 @@ def test_automatic_series_name_recovers_disc_label_without_using_volume_as_seaso
 
 
 def test_failed_all_season_analysis_requires_explicit_retry():
+    assert "episode_match_review" in _AUTOMATIC_UNMATCHED_CODES
     assert "unmatched_disc_analysis_required" in _AUTOMATIC_UNMATCHED_CODES
     assert "all_season_analysis_failed" not in _AUTOMATIC_UNMATCHED_CODES
     assert "all_season_analysis_running" not in _AUTOMATIC_UNMATCHED_CODES
+
+
+def test_episode_reviews_enter_one_disc_level_analysis(tmp_path, monkeypatch):
+    fingerprint = "0123456789abcdef"
+    media_ids = tuple(
+        f"show--disc-01-{fingerprint}-title-{index:03d}" for index in (2, 4, 6)
+    )
+    store = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+    for media_id, title_index in zip(media_ids, (2, 4, 6), strict=True):
+        contract = tmp_path / f"rip-{title_index}.json"
+        contract.write_text(
+            json.dumps({
+                "mode": "verified-rip-contract",
+                "disc_fingerprint": fingerprint,
+                "title_index": title_index,
+                "media_context": {
+                    "content_hint": "tv",
+                    "series_name": "The Office",
+                    "season": 5,
+                },
+            }),
+            encoding="utf-8",
+        )
+        store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+        store.hold_for_review(media_id, "episode_match_review")
+
+    captured = []
+
+    def analyze(selected_store, selected_fingerprint, series_name, *_args, **kwargs):
+        captured.append((selected_store, selected_fingerprint, series_name, kwargs))
+        assert all(
+            selected_store.get(media_id).review_code == "all_season_analysis_running"
+            for media_id in media_ids
+        )
+        return media_ids
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_engine",
+        lambda: SimpleNamespace(asr=object()),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.unmatched_disc_analysis.execute_unmatched_disc_analysis",
+        analyze,
+    )
+
+    _resolve_automatic_unmatched_disc(
+        media_ids,
+        store,
+        SimpleNamespace(automatic_gemini_ambiguity_fallback=False),
+        tmp_path / "contracts",
+    )
+
+    assert len(captured) == 1
+    assert captured[0][1:] == (
+        fingerprint,
+        "The Office",
+        {"season": 5, "allow_gemini": False},
+    )
+
+
+def test_single_episode_review_enters_full_disc_level_analysis(tmp_path, monkeypatch):
+    fingerprint = "0123456789abcdef"
+    media_id = f"show--disc-01-{fingerprint}-title-007"
+    store = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+    contract = tmp_path / "rip-7.json"
+    contract.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "disc_fingerprint": fingerprint,
+            "title_index": 7,
+            "media_context": {
+                "content_hint": "tv",
+                "series_name": "The Office Superfan Episodes",
+                "season": 6,
+            },
+        }),
+        encoding="utf-8",
+    )
+    store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+    store.hold_for_review(media_id, "episode_match_review")
+    captured = []
+
+    def analyze(selected_store, selected_fingerprint, series_name, *_args, **kwargs):
+        captured.append((selected_fingerprint, series_name, kwargs))
+        assert selected_store.get(media_id).review_code == (
+            "all_season_analysis_running"
+        )
+        return (media_id,)
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_engine",
+        lambda: SimpleNamespace(asr=object()),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.unmatched_disc_analysis.execute_unmatched_disc_analysis",
+        analyze,
+    )
+
+    _resolve_automatic_unmatched_disc(
+        (media_id,),
+        store,
+        SimpleNamespace(automatic_gemini_ambiguity_fallback=True),
+        tmp_path / "contracts",
+    )
+
+    assert captured == [
+        (
+            fingerprint,
+            "The Office Superfan Episodes",
+            {"season": 6, "allow_gemini": True},
+        )
+    ]
 
 
 def test_insertions_launch_once_and_removal_rearms_drive(monkeypatch):
@@ -81,7 +204,51 @@ def test_disabled_automation_tracks_loaded_disc_without_launching(monkeypatch):
     assert launched == []
 
 
-def test_unmapped_or_ignored_devices_never_launch_automatic_work(monkeypatch):
+def test_startup_hold_suppresses_observation_and_direct_worker_launch(monkeypatch):
+    observed = []
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.automatic_rip.automatic_rip_coordinator.observe",
+        lambda snapshot, *, enabled: observed.append((snapshot, enabled)),
+    )
+    snapshot = _snapshot(0, 1, 2)
+
+    set_automatic_rip_startup_hold(True)
+    try:
+        assert automatic_rip_startup_held() is True
+        assert observe_automatic_drives(snapshot, enabled=True) is False
+        assert run_automatic_drive(0) is True
+        assert observed == []
+    finally:
+        set_automatic_rip_startup_hold(False)
+
+    assert observe_automatic_drives(snapshot, enabled=True) is True
+    assert observed == [(snapshot, True)]
+
+
+def test_durable_processing_pause_does_not_observe_loaded_discs(monkeypatch):
+    observed = []
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.automatic_rip.automatic_rip_coordinator.observe",
+        lambda snapshot, *, enabled: observed.append((snapshot, enabled)),
+    )
+    snapshot = _snapshot(0)
+
+    assert (
+        observe_automatic_drives(snapshot, enabled=True, processing_paused=True)
+        is False
+    )
+    assert observed == []
+
+    assert (
+        observe_automatic_drives(snapshot, enabled=True, processing_paused=False)
+        is True
+    )
+    assert observed == [(snapshot, True)]
+
+
+def test_unavailable_unmapped_or_ignored_devices_never_launch_automatic_work(
+    monkeypatch,
+):
     launched = []
     coordinator = AutomaticRipCoordinator(launched.append)
     monkeypatch.setattr(
@@ -93,6 +260,7 @@ def test_unmapped_or_ignored_devices_never_launch_automatic_work(monkeypatch):
             PublicDriveStatus(0, True, True, "disc", mapping_status="unmapped"),
             PublicDriveStatus(1, True, True, "disc", mapping_status="ignored"),
             PublicDriveStatus(2, True, True, "disc", mapping_status="trusted"),
+            PublicDriveStatus(3, False, True, "disc", mapping_status="trusted"),
         ),
         refreshed_at="2026-08-10T00:00:00+00:00",
         status="ready",
@@ -146,6 +314,39 @@ def test_transient_worker_failure_rearms_unchanged_loaded_disc(monkeypatch):
     coordinator.observe(_snapshot(1), enabled=True)
 
     assert attempts == 2
+
+
+def test_deterministic_worker_failure_holds_unchanged_loaded_disc(monkeypatch):
+    attempts = 0
+
+    def worker(_drive_index):
+        nonlocal attempts
+        attempts += 1
+        return True
+
+    coordinator = AutomaticRipCoordinator(worker)
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.automatic_rip.threading.Thread.start",
+        lambda thread: thread.run(),
+    )
+
+    coordinator.observe(_snapshot(1), enabled=True)
+    coordinator.observe(_snapshot(1), enabled=True)
+    coordinator.observe(_snapshot(1), enabled=True)
+
+    assert attempts == 1
+
+
+def test_only_low_level_automatic_failures_retry_unchanged_disc():
+    assert _automatic_failure_is_retryable(OSError("temporary device failure")) is True
+    assert (
+        _automatic_failure_is_retryable(
+            HTTPException(status_code=409, detail="review required")
+        )
+        is False
+    )
+    assert _automatic_failure_is_retryable(RipError("durable conflict")) is False
+    assert _automatic_failure_is_retryable(ValueError("invalid result")) is False
 
 
 @dataclass

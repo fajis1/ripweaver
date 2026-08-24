@@ -23,16 +23,36 @@ def _payload(source: str) -> dict:
             "duration": "1320.5",
             "size": "700000000",
             "format_name": "matroska,webm",
-            "tags": {"title": "Private global title"},
+            "bit_rate": "4200000",
+            "tags": {
+                "title": "Private global title",
+                "encoder": "Lavf synthetic",
+            },
         },
         "streams": [
-            {"index": 0, "codec_type": "video", "codec_name": "h264"},
+            {
+                "index": 0,
+                "codec_type": "video",
+                "codec_name": "hevc",
+                "profile": "Main 10",
+                "pix_fmt": "yuv420p10le",
+                "bits_per_raw_sample": "10",
+                "avg_frame_rate": "24000/1001",
+                "bit_rate": "3900000",
+                "color_primaries": "bt2020",
+                "color_transfer": "smpte2084",
+                "color_space": "bt2020nc",
+                "color_range": "tv",
+                "tags": {"ENCODER": "HandBrake synthetic"},
+            },
             {
                 "index": 1,
                 "codec_type": "audio",
                 "codec_name": "ac3",
                 "channels": 6,
                 "channel_layout": "5.1(side)",
+                "bit_rate": "384000",
+                "sample_rate": "48000",
                 "tags": {"language": "eng", "title": "Main Audio"},
                 "disposition": {"default": 1},
             },
@@ -98,6 +118,16 @@ def test_inspection_captures_output_without_shell(tmp_path, monkeypatch):
     assert inspection.return_code == 0
     assert inspection.media.duration_seconds == 1320.5
     assert inspection.media.audio_streams[0].channels == 6
+    assert inspection.media.audio_streams[0].bit_rate == 384000
+    assert inspection.media.audio_streams[0].sample_rate == 48000
+    assert inspection.media.overall_bit_rate == 4200000
+    assert inspection.media.video_bit_rate == 3900000
+    assert inspection.media.video_frame_rate == pytest.approx(24000 / 1001)
+    assert inspection.media.video_profile == "Main 10"
+    assert inspection.media.video_bit_depth == 10
+    assert inspection.media.video_hdr_format == "HDR (PQ / SMPTE ST 2084)"
+    assert inspection.media.video_encoder == "HandBrake synthetic"
+    assert inspection.media.format_encoder == "Lavf synthetic"
     assert str(media.resolve()) not in inspection.stdout
     assert media.name not in inspection.stdout
     _, kwargs = run.call_args
@@ -193,6 +223,10 @@ def test_saved_report_is_replayable_and_drops_source_identity(tmp_path, monkeypa
     assert "Private global title" not in serialized
     assert replayed.duration_seconds == 1320.5
     assert replayed.audio_streams[0].title == "Main Audio"
+    assert replayed.audio_streams[0].bit_rate == 384000
+    assert replayed.video_frame_rate == pytest.approx(24000 / 1001)
+    assert replayed.video_bit_depth == 10
+    assert replayed.video_encoder == "HandBrake synthetic"
 
 
 def test_probe_mkv_cli_uses_ordinal_report_id(tmp_path, monkeypatch):

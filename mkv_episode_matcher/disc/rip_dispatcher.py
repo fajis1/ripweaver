@@ -39,9 +39,12 @@ class BoundRipDispatch:
 @dataclass(frozen=True)
 class DispatchOutcome:
     completed_count: int
+    pipeline_queued_count: int | None = None
+    pipeline_handoff_pending_job_ids: tuple[str, ...] = ()
 
 
 RipExecutor = Callable[[BoundRipDispatch], DispatchOutcome]
+FreshInventoryProvider = Callable[[], list[Path]]
 
 
 def _phase_key(job_id: str, dispatch_key: str, phase: str) -> str:
@@ -65,7 +68,12 @@ class RipDispatcher:
         self.public_store = public_store
         self.private_store = private_store
 
-    def _bind(self, job: OrchestrationJob) -> BoundRipDispatch:  # noqa: C901
+    def _bind(  # noqa: C901
+        self,
+        job: OrchestrationJob,
+        *,
+        fresh_inventory_paths: list[Path] | None = None,
+    ) -> BoundRipDispatch:
         if job.state != "queued":
             raise RipError("Only a queued orchestration job can be dispatched")
         if job.authorization_sha256 is None:
@@ -74,11 +82,15 @@ class RipDispatcher:
         if binding.plan_sha256 != job.plan_sha256:
             raise RipError("Private binding digest does not match the public job")
 
-        fresh_manifest = build_rip_manifest(
-            list(binding.report_paths), binding.media_contexts
+        report_paths = (
+            list(binding.report_paths)
+            if fresh_inventory_paths is None
+            else list(fresh_inventory_paths)
         )
+
+        fresh_manifest = build_rip_manifest(report_paths, binding.media_contexts)
         preview = build_rip_preview(
-            list(binding.report_paths),
+            report_paths,
             binding.media_contexts,
             output_root=binding.output_root,
         )
@@ -102,7 +114,7 @@ class RipDispatcher:
         manifest = fresh_manifest
         batch_plans = bind_fresh_batch_plans(
             manifest,
-            list(binding.report_paths),
+            report_paths,
         )
         if completed_ids:
             remaining_jobs = tuple(
@@ -132,6 +144,7 @@ class RipDispatcher:
         *,
         dispatch_key: str,
         executor: RipExecutor,
+        fresh_inventory_provider: FreshInventoryProvider | None = None,
     ) -> OrchestrationJob:
         """Dispatch once; no physical executor exists unless explicitly injected."""
 
@@ -149,7 +162,13 @@ class RipDispatcher:
                 return retained
             raise RipError("Dispatch key was already claimed and requires state review")
 
-        bound = self._bind(self.public_store.get_job(job_id))
+        fresh_inventory_paths = (
+            fresh_inventory_provider() if fresh_inventory_provider is not None else None
+        )
+        bound = self._bind(
+            self.public_store.get_job(job_id),
+            fresh_inventory_paths=fresh_inventory_paths,
+        )
         self.public_store.claim_for_dispatch(
             job_id,
             idempotency_key=claim_key,
@@ -190,6 +209,10 @@ class RipDispatcher:
                 error_category=category,
                 failed_drive_indexes=failed_drives,
                 completed_job_ids=tuple(item.job_id for item in completed_results),
+                pipeline_queued_count=getattr(exc, "pipeline_queued_count", None),
+                pipeline_handoff_pending_job_ids=getattr(
+                    exc, "pipeline_handoff_pending_job_ids", ()
+                ),
             )
             if isinstance(exc, RipError):
                 raise
@@ -200,4 +223,6 @@ class RipDispatcher:
             job_id,
             idempotency_key=_phase_key(job_id, dispatch_key, "complete"),
             completed_count=outcome.completed_count,
+            pipeline_queued_count=outcome.pipeline_queued_count,
+            pipeline_handoff_pending_job_ids=(outcome.pipeline_handoff_pending_job_ids),
         )

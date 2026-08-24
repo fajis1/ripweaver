@@ -48,6 +48,27 @@ def remap_subtitle_season(subtitles, target_season: int):
     return remapped
 
 
+def _matcher_decision_trace(matcher: object) -> dict[str, object]:
+    trace = getattr(matcher, "last_decision_trace", None)
+    return dict(trace) if isinstance(trace, dict) else {}
+
+
+def _finalize_engine_decision_trace(
+    trace: dict[str, object],
+    *,
+    confidence_threshold: float,
+    decision: str,
+    reason: str,
+) -> dict[str, object]:
+    finalized = dict(trace)
+    finalized.update({
+        "engine_threshold": round(float(confidence_threshold), 6),
+        "engine_decision": decision,
+        "engine_reason": reason,
+    })
+    return finalized
+
+
 class CacheManager:
     """Enhanced caching system with memory bounds and LRU eviction."""
 
@@ -540,6 +561,17 @@ class MatchEngineV2:
                                 reason=f"No subtitles found for {show_name} S{season:02d}",
                                 series_name=show_name,
                                 season=season,
+                                decision_trace={
+                                    "schema_version": 1,
+                                    "policy": "multi_segment_dialogue_v1",
+                                    "engine_threshold": round(
+                                        float(confidence_threshold), 6
+                                    ),
+                                    "engine_decision": "review",
+                                    "engine_reason": "no_subtitle_references",
+                                    "reference_variant_count": 0,
+                                    "segments": [],
+                                },
                             )
                         )
                         files_processed += 1
@@ -560,8 +592,20 @@ class MatchEngineV2:
                         if phase_callback:
                             phase_callback("processing_file", f"🎬 Processing: {video_file.name}")
                         
-                        match = self.matcher.match(video_file, subs, phase_callback=phase_callback)
+                        match = self.matcher.match(
+                            video_file,
+                            subs,
+                            phase_callback=phase_callback,
+                            acceptance_threshold=confidence_threshold,
+                        )
+                        matcher_trace = _matcher_decision_trace(self.matcher)
                         if match and match.confidence >= confidence_threshold:
+                            match.decision_trace = _finalize_engine_decision_trace(
+                                match.decision_trace or matcher_trace,
+                                confidence_threshold=confidence_threshold,
+                                decision="matched",
+                                reason="candidate_met_engine_threshold",
+                            )
                             match.episode_info.series_name = show_name
                             results.append(match)
 
@@ -617,17 +661,49 @@ class MatchEngineV2:
                                     confidence=match.confidence if match else 0.0,
                                     series_name=show_name,
                                     season=season,
+                                    decision_trace=_finalize_engine_decision_trace(
+                                        (
+                                            match.decision_trace
+                                            if match is not None
+                                            else matcher_trace
+                                        ),
+                                        confidence_threshold=confidence_threshold,
+                                        decision="review",
+                                        reason=(
+                                            "candidate_below_engine_threshold"
+                                            if match is not None
+                                            else "matcher_returned_no_candidate"
+                                        ),
+                                    ),
                                 )
                             )
 
                     except Exception as e:
-                        logger.error(f"Error processing {video_file}: {e}")
+                        logger.error(
+                            "Error processing one video: {}", type(e).__name__
+                        )
                         if phase_callback:
                             phase_callback("file_error", f"⚠️ {video_file.name} - Error: {str(e)[:50]}")
                         if not json_output:
                             self.console.print(
                                 f"[red]ERROR[/red] {video_file.name} - Error: {e}"
                             )
+                        from mkv_episode_matcher.core.models import FailedMatch
+
+                        failures.append(
+                            FailedMatch(
+                                original_file=video_file,
+                                reason=f"Matcher error: {type(e).__name__}",
+                                series_name=show_name,
+                                season=season,
+                                decision_trace=_finalize_engine_decision_trace(
+                                    _matcher_decision_trace(self.matcher),
+                                    confidence_threshold=confidence_threshold,
+                                    decision="review",
+                                    reason="matcher_exception",
+                                ),
+                            )
+                        )
 
                     # Update progress after each file
                     files_processed += 1

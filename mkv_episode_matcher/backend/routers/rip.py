@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -35,6 +35,10 @@ from mkv_episode_matcher.backend.dependencies import (
     get_rip_execution_registry,
     get_rip_queue_runner,
     get_special_feature_queue_runner,
+    request_windows_drive_refresh,
+    resume_windows_drive_automatic_discovery,
+    windows_drive_automatic_discovery_status,
+    windows_drive_refresh_deferred,
 )
 from mkv_episode_matcher.backend.gemini_fallback import execute_gemini_fallback
 from mkv_episode_matcher.backend.identification_dossier import (
@@ -43,7 +47,16 @@ from mkv_episode_matcher.backend.identification_dossier import (
 from mkv_episode_matcher.backend.organization_authorization import (
     build_organization_authorization_plan,
 )
-from mkv_episode_matcher.backend.rip_runtime import RipExecutionRegistry
+from mkv_episode_matcher.backend.rip_runtime import (
+    AllDriveDiscoveryDeferredError,
+    AllDriveDiscoveryInProgressError,
+    OpticalWorkLease,
+    RipExecutionRegistry,
+)
+from mkv_episode_matcher.backend.startup_queue_resume import (
+    cancel_startup_queue_resume,
+    startup_queue_resume_seconds,
+)
 from mkv_episode_matcher.backend.transcode_authorization import (
     build_transcode_authorization_plan,
 )
@@ -64,6 +77,7 @@ from mkv_episode_matcher.disc.catalogue_contributions import (
 from mkv_episode_matcher.disc.content_policy import (
     infer_release_name_from_disc_label,
     infer_tv_context_from_disc_label,
+    parse_tv_disc_label_context,
 )
 from mkv_episode_matcher.disc.drive_mapping import DriveMappingError
 from mkv_episode_matcher.disc.drive_watcher import DriveWatcher
@@ -81,12 +95,17 @@ from mkv_episode_matcher.disc.failed_rip_cleanup import (
     plan_failed_rip_cleanup,
 )
 from mkv_episode_matcher.disc.feature_catalog_registry import select_feature_catalog
-from mkv_episode_matcher.disc.orchestration_store import OrchestrationStore
+from mkv_episode_matcher.disc.orchestration_store import (
+    OrchestrationEvent,
+    OrchestrationJob,
+    OrchestrationStore,
+)
 from mkv_episode_matcher.disc.preflight import (
     PreflightError,
     parse_disc_inventory,
     parse_drives,
     resolve_makemkv_path,
+    targeted_inventory_drive,
     write_inventory_report,
 )
 from mkv_episode_matcher.disc.private_bindings import PrivateBindingStore
@@ -143,6 +162,7 @@ from mkv_episode_matcher.media.organizer import (
     add_jellyfin_version_label,
     inspect_episode_destination,
     jellyfin_resolution_label,
+    omit_placeholder_episode_title,
 )
 from mkv_episode_matcher.media.silent_video_review import (
     collect_silent_video_review,
@@ -171,23 +191,116 @@ router = APIRouter(
 )
 
 _prepared_disc_identity_lock = threading.Lock()
-_drive_preparation_locks_guard = threading.Lock()
-_drive_preparation_locks: dict[int, threading.Lock] = {}
+
+_DASHBOARD_ACTIVE_JOB_STATES = frozenset({
+    "authorized",
+    "queued",
+    "running",
+    "pause_requested",
+    "paused",
+})
+_DASHBOARD_ACTIVE_PIPELINE_STATES = frozenset({
+    "queued",
+    "running",
+    "review_required",
+    "failed",
+})
+_DASHBOARD_ATTENTION_PIPELINE_STATES = frozenset({"review_required", "failed"})
 
 
-def _claim_drive_preparation(drive_index: int) -> threading.Lock:
+def _parse_dashboard_disc_fingerprints(value: str | None) -> tuple[str, ...]:
+    """Validate the bounded, path-free disc scope used by routine UI polling."""
+
+    if value is None or not value.strip():
+        return ()
+    fingerprints = tuple(dict.fromkeys(part.strip() for part in value.split(",")))
+    if len(fingerprints) > 16 or any(
+        re.fullmatch(r"[0-9a-f]{16}", fingerprint) is None
+        for fingerprint in fingerprints
+    ):
+        raise HTTPException(status_code=422, detail="Dashboard disc scope is invalid")
+    return fingerprints
+
+
+def _job_has_dashboard_disc(job, disc_fingerprints: tuple[str, ...]) -> bool:
+    if not disc_fingerprints:
+        return False
+    preview_jobs = job.preview.get("jobs", [])
+    if not isinstance(preview_jobs, list):
+        return False
+    return any(
+        isinstance(item, dict)
+        and isinstance(item.get("staging_destination"), str)
+        and any(
+            fingerprint in PurePosixPath(item["staging_destination"]).parts
+            for fingerprint in disc_fingerprints
+        )
+        for item in preview_jobs
+    )
+
+
+def _filter_dashboard_jobs(
+    jobs: tuple,
+    *,
+    scope: Literal["all", "active", "dashboard"],
+    disc_fingerprints: tuple[str, ...],
+) -> tuple:
+    if scope == "all":
+        return jobs
+    if scope == "active":
+        return tuple(job for job in jobs if job.state in _DASHBOARD_ACTIVE_JOB_STATES)
+    return tuple(
+        job
+        for job in jobs
+        if job.state in _DASHBOARD_ACTIVE_JOB_STATES
+        or _job_has_dashboard_disc(job, disc_fingerprints)
+    )
+
+
+def _filter_dashboard_pipeline_items(
+    items: tuple,
+    *,
+    scope: Literal["all", "active", "attention", "dashboard"],
+    disc_fingerprints: tuple[str, ...],
+) -> tuple:
+    if scope == "all":
+        return items
+    if scope == "active":
+        return tuple(
+            item for item in items if item.state in _DASHBOARD_ACTIVE_PIPELINE_STATES
+        )
+    if scope == "attention":
+        return tuple(
+            item for item in items if item.state in _DASHBOARD_ATTENTION_PIPELINE_STATES
+        )
+    if not disc_fingerprints:
+        return tuple(
+            item for item in items if item.state in _DASHBOARD_ACTIVE_PIPELINE_STATES
+        )
+    return tuple(
+        item
+        for item in items
+        if any(fingerprint in item.media_id for fingerprint in disc_fingerprints)
+    )
+
+
+def _claim_drive_preparation(
+    drive_index: int,
+    *,
+    operation: str = "disc preparation scan",
+) -> OpticalWorkLease:
     """Refuse concurrent inventory/planning work for one physical drive."""
 
-    with _drive_preparation_locks_guard:
-        preparation_lock = _drive_preparation_locks.setdefault(
-            drive_index, threading.Lock()
+    try:
+        return get_rip_execution_registry().claim_drive_preparation(
+            drive_index,
+            operation=operation,
         )
-    if not preparation_lock.acquire(blocking=False):
+    except RipError as exc:
         raise HTTPException(
             status_code=409,
-            detail="This optical drive is already being prepared; wait for that scan to finish",
-        )
-    return preparation_lock
+            detail=str(exc),
+        ) from exc
 
 
 def _preview_disc_fingerprint(preview: RipPreview | dict[str, object]) -> str | None:
@@ -206,6 +319,77 @@ def _preview_disc_fingerprint(preview: RipPreview | dict[str, object]) -> str | 
             if re.fullmatch(r"[0-9a-f]{16}", part):
                 return part
     return None
+
+
+def _preview_title_indexes(preview: dict[str, object]) -> frozenset[int]:
+    jobs = preview.get("jobs", [])
+    if not isinstance(jobs, list | tuple):
+        return frozenset()
+    return frozenset(
+        item["title_index"]
+        for item in jobs
+        if isinstance(item, dict) and isinstance(item.get("title_index"), int)
+    )
+
+
+def _failed_rip_title_indexes(
+    store: OrchestrationStore,
+    disc_fingerprint: str,
+) -> frozenset[int]:
+    """Return the acquisition scope of this exact disc's failed attempts.
+
+    Fresh acquisition intentionally selects the complete zero-minimum inventory
+    so MakeMKV can stay open for one ``all`` operation.  A known per-title
+    failure is a recovery workflow instead: re-running the title classifier
+    must retain only the current relevant intersection rather than expanding
+    recovery work to every tiny title in a failed whole-disc batch.
+
+    Titles whose estimated size is zero are menu or navigation tracks that
+    MakeMKV produces no usable output for.  They are excluded from recovery
+    scope so they never appear as missing content requiring a rerip.
+    """
+
+    selected: set[int] = set()
+    for candidate in store.list_jobs(limit=200):
+        if (
+            candidate.state != "failed"
+            or _preview_disc_fingerprint(candidate.preview) != disc_fingerprint
+        ):
+            continue
+        for item in candidate.preview.get("jobs", []):
+            if not isinstance(item, dict):
+                continue
+            title_index = item.get("title_index")
+            if not isinstance(title_index, int):
+                continue
+            # Exclude 0-byte inventory titles (menu/navigation tracks that
+            # MakeMKV never produces usable content for).
+            estimated = item.get("estimated_bytes")
+            if isinstance(estimated, int | float) and estimated <= 0:
+                continue
+            selected.add(title_index)
+    return frozenset(selected)
+
+
+def _newer_completed_job_covering(
+    candidate: OrchestrationJob,
+    jobs: tuple[OrchestrationJob, ...],
+) -> OrchestrationJob | None:
+    """Find a later completed rip that already covers every candidate title."""
+
+    candidate_titles = _preview_title_indexes(candidate.preview)
+    if not candidate_titles:
+        return None
+    return next(
+        (
+            completed
+            for completed in jobs
+            if completed.state == "completed"
+            and completed.created_at > candidate.created_at
+            and candidate_titles <= _preview_title_indexes(completed.preview)
+        ),
+        None,
+    )
 
 
 class MediaContextInput(BaseModel):
@@ -336,6 +520,9 @@ class OrchestrationJobResponse(BaseModel):
     rip_activity_age_seconds: int | None = None
     rip_possibly_stalled: bool = False
     rip_stall_after_seconds: int | None = None
+    pipeline_handoff_status: str = "not_configured"
+    pipeline_queued_title_count: int | None = None
+    pipeline_handoff_pending_title_count: int = 0
 
 
 class OrchestrationEventResponse(BaseModel):
@@ -361,7 +548,12 @@ class DriveStatusResponse(BaseModel):
     error_type: str | None
     error_code: str | None = None
     refresh_in_progress: bool = False
+    refresh_deferred: bool = False
+    automatic_discovery_paused: bool = False
+    automatic_discovery_pause_reason: str | None = None
+    automatic_discovery_timeout_count: int = 0
     busy_drive_indexes: list[int] = Field(default_factory=list)
+    physical_drive_operations: dict[int, str] = Field(default_factory=dict)
     mapping_plan_sha256: str | None = None
     mapping_summary: dict[str, int] = Field(default_factory=dict)
     retired_mapping_count: int = 0
@@ -568,18 +760,22 @@ def set_default_handbrake_profile(
         ) from exc
 
 
-def _drive_status_response(watcher: DriveWatcher) -> dict[str, object]:
+def _drive_status_response(
+    watcher: DriveWatcher, registry: RipExecutionRegistry | None = None
+) -> dict[str, object]:
     from mkv_episode_matcher.backend.automatic_rip import automatic_rip_coordinator
 
     snapshot = watcher.snapshot()
+    registry = registry or get_rip_execution_registry()
     busy_drive_indexes = sorted(
         set(automatic_rip_coordinator.active_drive_indexes())
-        | set(get_rip_execution_registry().active_drive_indexes())
+        | set(registry.busy_drive_indexes())
     )
     summary = {
         status: sum(drive.mapping_status == status for drive in snapshot.drives)
         for status in ("trusted", "ignored", "unmapped")
     }
+    automatic_discovery = windows_drive_automatic_discovery_status()
     return {
         "watcher_attached": True,
         "refresh_mode": "startup-and-events",
@@ -588,7 +784,14 @@ def _drive_status_response(watcher: DriveWatcher) -> dict[str, object]:
         "error_type": snapshot.error_type,
         "error_code": snapshot.error_code,
         "refresh_in_progress": watcher.refresh_in_progress(),
+        "refresh_deferred": windows_drive_refresh_deferred(),
+        "automatic_discovery_paused": automatic_discovery["paused"],
+        "automatic_discovery_pause_reason": automatic_discovery["pause_reason"],
+        "automatic_discovery_timeout_count": automatic_discovery[
+            "consecutive_timeout_count"
+        ],
         "busy_drive_indexes": busy_drive_indexes,
+        "physical_drive_operations": registry.physical_drive_operations(),
         "mapping_plan_sha256": watcher.mapping_plan_sha256(),
         "mapping_summary": summary,
         "drives": [asdict(drive) for drive in snapshot.drives],
@@ -818,6 +1021,7 @@ def get_drive_status(
 def refresh_drive_status(
     request: RefreshDrivesRequest,
     watcher: Annotated[DriveWatcher, Depends(get_drive_watcher)],
+    registry: Annotated[RipExecutionRegistry, Depends(get_rip_execution_registry)],
 ) -> dict[str, object]:
     """Run one explicitly confirmed MakeMKV drive-enumeration info call."""
 
@@ -826,8 +1030,31 @@ def refresh_drive_status(
             status_code=400, detail="Read-only drive refresh confirmation is required"
         )
     try:
+        discovery_lease = registry.claim_all_drive_discovery()
+    except AllDriveDiscoveryDeferredError:
+        if not request_windows_drive_refresh():
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Active optical work blocked all-drive discovery; no MakeMKV "
+                    "refresh was started"
+                ),
+            ) from None
+        response = _drive_status_response(watcher, registry)
+        response["refresh_deferred"] = True
+        return response
+    except AllDriveDiscoveryInProgressError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "A read-only MakeMKV drive discovery is already running. Wait for "
+                "the current refresh to finish; another refresh was not queued."
+            ),
+        ) from exc
+    try:
         config = get_config_manager().load()
         executable = resolve_makemkv_path(config.makemkv_path)
+        resume_windows_drive_automatic_discovery()
         watcher.refresh(executable, timeout_seconds=request.timeout_seconds)
     except PreflightError as exc:
         logger.warning("Read-only drive refresh failed safely: {}", type(exc).__name__)
@@ -835,7 +1062,9 @@ def refresh_drive_status(
             status_code=409,
             detail=_safe_drive_refresh_error(exc),
         ) from exc
-    return _drive_status_response(watcher)
+    finally:
+        discovery_lease.release()
+    return _drive_status_response(watcher, registry)
 
 
 @router.put("/drives/mappings/{mapping_id}", response_model=DriveStatusResponse)
@@ -961,9 +1190,9 @@ def save_drive_mapping_plan(
 
     automatic_requested = False
     if request.continue_automatic_processing:
-        from mkv_episode_matcher.backend.automatic_rip import automatic_rip_coordinator
+        from mkv_episode_matcher.backend.automatic_rip import observe_automatic_drives
 
-        automatic_rip_coordinator.observe(snapshot, enabled=True)
+        observe_automatic_drives(snapshot, enabled=True)
         automatic_requested = True
     logger.info(
         "Saved optical-drive map: {} trusted, {} ignored, {} retired; "
@@ -1036,30 +1265,37 @@ def eject_drive(  # noqa: C901
                 idempotency_key=f"eject-review-{drive_index}-{job.job_id}",
             )
     try:
-        device_name = watcher.device_name(drive_index)
-        if device_name is None:
-            config = get_config_manager().load()
-            executable = resolve_makemkv_path(config.makemkv_path)
-            result = inventory_runner(
-                executable,
-                f"disc:{drive_index}",
-                minimum_length=0,
-                timeout_seconds=request.timeout_seconds,
-            )
-            drive = next(
-                (
-                    item
-                    for item in parse_drives(result.stdout)
-                    if item.index == drive_index
-                ),
-                None,
-            )
-            if drive is None or not drive.has_disc:
-                raise DiscEjectError(
-                    "The selected optical drive does not contain a disc"
+        with registry.claim_drive_preparation(
+            drive_index,
+            operation="manual eject check",
+        ):
+            device_name = watcher.device_name(drive_index)
+            if device_name is None:
+                config = get_config_manager().load()
+                executable = resolve_makemkv_path(config.makemkv_path)
+                result = inventory_runner(
+                    executable,
+                    f"disc:{drive_index}",
+                    minimum_length=0,
+                    timeout_seconds=request.timeout_seconds,
                 )
-            device_name = drive.device_name
-        eject_optical_drive(device_name)
+                drive = next(
+                    (
+                        item
+                        for item in parse_drives(result.stdout)
+                        if item.index == drive_index
+                    ),
+                    None,
+                )
+                if drive is None or not drive.has_disc:
+                    raise DiscEjectError(
+                        "The selected optical drive does not contain a disc"
+                    )
+                device_name = drive.device_name
+            eject_optical_drive(device_name)
+            watcher.record_successful_eject(drive_index)
+    except RipError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (DiscEjectError, PreflightError, OSError) as exc:
         raise HTTPException(
             status_code=409,
@@ -1078,6 +1314,8 @@ def _auto_eject_completed_job_drives(
     inventory_runner: Callable,
     executable: Path,
     timeout_seconds: int,
+    registry: RipExecutionRegistry,
+    watcher: DriveWatcher,
 ) -> None:
     """Best-effort eject completed drives without changing rip success state."""
 
@@ -1101,26 +1339,183 @@ def _auto_eject_completed_job_drives(
             )
             continue
         try:
-            result = inventory_runner(
-                executable,
-                f"disc:{drive_index}",
-                minimum_length=0,
-                timeout_seconds=min(timeout_seconds, 120),
-            )
-            physical_drive = next(
-                (
-                    item
-                    for item in parse_drives(result.stdout)
-                    if item.index == drive_index
-                ),
-                None,
-            )
-            if physical_drive is None or not physical_drive.has_disc:
-                raise DiscEjectError("Completed drive no longer contains a disc")
-            eject_optical_drive(physical_drive.device_name)
+            with registry.claim_drive_preparation(
+                drive_index,
+                operation="automatic eject check",
+            ):
+                result = inventory_runner(
+                    executable,
+                    f"disc:{drive_index}",
+                    minimum_length=0,
+                    timeout_seconds=min(timeout_seconds, 120),
+                )
+                physical_drive = next(
+                    (
+                        item
+                        for item in parse_drives(result.stdout)
+                        if item.index == drive_index
+                    ),
+                    None,
+                )
+                if physical_drive is None or not physical_drive.has_disc:
+                    raise DiscEjectError("Completed drive no longer contains a disc")
+                eject_optical_drive(physical_drive.device_name)
+                watcher.record_successful_eject(drive_index)
             logger.info("Automatically ejected one successfully completed rip drive")
-        except (DiscEjectError, PreflightError, OSError) as exc:
+        except (DiscEjectError, PreflightError, RipError, OSError) as exc:
             logger.warning("Automatic disc eject failed safely: {}", type(exc).__name__)
+
+
+def _existing_rip_recovery_media_id(candidate) -> str:
+    """Return a stable queue-safe ID without changing the recovered basename."""
+
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", Path(candidate.basename).stem)
+    stem = stem.strip("._-")[:96] or "recovered-mkv"
+    return f"{stem}-recovery-{candidate.candidate_id[:16]}"
+
+
+def _auto_admit_staged_disc_if_complete(  # noqa: C901 - auto-admit verification isolation
+    manifest_jobs,
+    disc_fingerprint: str,
+    output_root: Path,
+    matching_scope: frozenset[int],
+    preview: RipPreview,
+    report_path: Path,
+    disc_id: str,
+    context: MediaContext,
+    public_store: OrchestrationStore,
+    private_store: PrivateBindingStore,
+    pipeline_store: PipelineQueueStore,
+    contract_root: Path,
+    idempotency_key: str,
+) -> OrchestrationJob | None:
+    """Auto-admit verified staging files when all relevant titles are already ripped."""
+
+    if not output_root.is_dir():
+        return None
+    staged_plan = discover_existing_rips(output_root, manifest_jobs)
+    if not staged_plan.candidates:
+        return None
+    required_title_indexes = (
+        matching_scope
+        if matching_scope
+        else frozenset(job.title_index for job in manifest_jobs)
+    )
+    library_title_indexes = frozenset(
+        item.title_index
+        for item in preview.jobs
+        if item.prior_library_status == "present"
+    )
+    skipped_title_indexes = frozenset(
+        item["title_index"]
+        for item in preview.skipped_titles
+        if isinstance(item.get("title_index"), int)
+    )
+    needed_title_indexes = required_title_indexes - (
+        library_title_indexes | skipped_title_indexes
+    )
+    if not needed_title_indexes:
+        return None
+    candidate_by_title = {c.title_index: c for c in staged_plan.candidates}
+    if not needed_title_indexes <= set(candidate_by_title):
+        return None
+    selected_candidates = tuple(
+        candidate_by_title[title_index] for title_index in sorted(needed_title_indexes)
+    )
+    recovered = recovered_jobs(
+        tuple(job for job in manifest_jobs if job.title_index in needed_title_indexes),
+        replace(staged_plan, candidates=selected_candidates),
+    )
+    inspector = get_ffprobe_inspector()
+    config = get_config_manager().load()
+    if not config.ffprobe_path:
+        return None
+    executable = resolve_ffprobe_path(config.ffprobe_path)
+    verified_jobs = []
+    verified_candidates = []
+    results = []
+    now = datetime.now(UTC).isoformat()
+    candidates_by_job = {c.job_id: c for c in selected_candidates}
+    for job in recovered:
+        candidate = candidates_by_job.get(job.job_id)
+        if candidate is None:
+            return None
+        source = output_root / candidate.relative_parent / candidate.basename
+        try:
+            inspection = inspector(executable, source, timeout_seconds=30)
+            valid = (
+                inspection.media.duration_seconds > 0
+                and source.stat().st_size == candidate.size_bytes
+            )
+        except (FFprobeError, OSError):
+            valid = False
+        if not valid:
+            return None
+        verified_jobs.append(job)
+        verified_candidates.append(candidate)
+        results.append(
+            RipResult(
+                job_id=job.job_id,
+                return_code=0,
+                output_count=1,
+                output_bytes=candidate.size_bytes,
+                warning_count=0,
+                started_at=now,
+                finished_at=datetime.now(UTC).isoformat(),
+            )
+        )
+    if len(verified_jobs) != len(needed_title_indexes):
+        return None
+    contract_root.mkdir(parents=True, exist_ok=True)
+    enqueue_verified_rip_results(
+        pipeline_store,
+        jobs=tuple(verified_jobs),
+        results=results,
+        output_root=output_root,
+        contract_root=contract_root,
+        media_contexts={disc_id: context},
+        identity_overrides={
+            job.job_id: (disc_fingerprint, job.title_index)
+            for job in verified_jobs
+        },
+        repair_recovered_identity=True,
+        media_id_overrides={
+            job.job_id: _existing_rip_recovery_media_id(candidate)
+            for job, candidate in zip(verified_jobs, verified_candidates, strict=True)
+        },
+    )
+    admit_preview = (
+        replace(preview, requires_review=False) if preview.requires_review else preview
+    )
+    job = public_store.create_job(admit_preview, idempotency_key=idempotency_key)
+    public_store.authorize(
+        job.job_id,
+        expected_plan_sha256=job.plan_sha256,
+        idempotency_key=f"auth-{idempotency_key}",
+    )
+    public_store.queue(job.job_id, idempotency_key=f"queue-{idempotency_key}")
+    public_store.claim_for_dispatch(
+        job.job_id, idempotency_key=f"claim-{idempotency_key}"
+    )
+    completed_job = public_store.complete(
+        job.job_id,
+        idempotency_key=f"comp-{idempotency_key}",
+        completed_count=len(verified_jobs),
+        pipeline_queued_count=len(verified_jobs),
+    )
+    private_store.bind(
+        job_id=job.job_id,
+        plan_sha256=job.plan_sha256,
+        report_paths=[report_path],
+        output_root=output_root,
+        media_contexts={disc_id: context},
+    )
+    logger.info(
+        "Automatically admitted {} verified staged MKVs for completed disc {}",
+        len(verified_jobs),
+        disc_fingerprint,
+    )
+    return completed_job
 
 
 @router.post(
@@ -1190,13 +1585,12 @@ def prepare_drive_pipeline(  # noqa: C901
             minimum_length=0,
             timeout_seconds=request.timeout_seconds,
         )
-        matching_drive = next(
-            (
-                item
-                for item in parse_drives(result.stdout)
-                if item.index == request.drive_index
-            ),
-            None,
+        matching_drive = targeted_inventory_drive(
+            result.stdout,
+            requested_index=request.drive_index,
+            cached_device_name=watcher.device_name(request.drive_index),
+            cached_drive_name=selected.display_name,
+            cached_disc_name=selected.disc_label,
         )
         if matching_drive is None or not matching_drive.has_disc:
             raise PreflightError("Selected disc disappeared during inventory")
@@ -1301,7 +1695,12 @@ def prepare_drive_pipeline(  # noqa: C901
         report_path, _robot_path = write_inventory_report(
             report_dir, inventory, result, minimum_length_seconds=0
         )
-        explicit_tv_context = infer_tv_context_from_disc_label(matching_drive.disc_name)
+        structured_tv_context = parse_tv_disc_label_context(matching_drive.disc_name)
+        explicit_tv_context = (
+            (structured_tv_context.series_hint, structured_tv_context.season)
+            if structured_tv_context
+            else infer_tv_context_from_disc_label(matching_drive.disc_name)
+        )
         release_name = infer_release_name_from_disc_label(matching_drive.disc_name)
         disc_id = "disc-01"
         episode_plan = load_title_plan(report_path, report_id=disc_id)
@@ -1320,6 +1719,18 @@ def prepare_drive_pipeline(  # noqa: C901
         )
         selected_title_indexes = tuple(
             decision.title.index for decision in planned_titles
+        )
+        downstream_skip_title_indexes = (
+            tuple(
+                sorted(
+                    decision.title.index
+                    for decision in episode_plan.decisions
+                    if decision.classification in {"extra", "combined"}
+                )
+            )
+            if explicit_tv_context is not None
+            and request.content_hint not in {"movie", "extras", "mixed"}
+            else ()
         )
         if request.content_hint not in {"movie", "extras"}:
             selected_title_indexes = tuple(
@@ -1388,6 +1799,36 @@ def prepare_drive_pipeline(  # noqa: C901
                     for job in diagnostic.jobs
                 )
         disc_fingerprint = inventory_fingerprint_from_report(report_path)
+        # Acquisition may expand to every zero-minimum MakeMKV title below,
+        # but disc-aware episode reasoning must retain the classifier-derived
+        # relevant scope calculated above.
+        pipeline_store.remember_disc_matching_scope(
+            disc_fingerprint, tuple(sorted(set(selected_title_indexes)))
+        )
+        failed_title_indexes = _failed_rip_title_indexes(
+            public_store,
+            disc_fingerprint,
+        )
+        # Normal fresh acquisition mirrors MakeMKV's per-drive GUI mode:
+        # authorize every title in the zero-minimum inventory so the executor
+        # can keep one ``mkv ... all`` process open for this disc.  A known
+        # failed attempt is different: preserve the classifier-selected
+        # relevant set calculated above so neither legacy per-title recovery
+        # nor a partial whole-disc batch is expanded to tiny/non-content titles.
+        if failed_title_indexes:
+            selected_title_indexes = tuple(
+                title_index
+                for title_index in selected_title_indexes
+                if title_index in failed_title_indexes
+            )
+            if not selected_title_indexes:
+                raise RipError(
+                    "The failed rip no longer contains a verifiable relevant title"
+                )
+        else:
+            selected_title_indexes = tuple(
+                sorted(title.index for title in inventory.titles)
+            )
         dispositions = pipeline_store.title_dispositions(disc_fingerprint)
         skipped_title_dispositions = tuple(
             {
@@ -1448,6 +1889,11 @@ def prepare_drive_pipeline(  # noqa: C901
                 if explicit_tv_context
                 else None
             ),
+            disc_number=(
+                structured_tv_context.disc_number
+                if structured_tv_context is not None
+                else None
+            ),
             tmdb_id=(disc_resolution.tmdb_id if trusted_discdb_match else None),
             content_hint=request.content_hint
             or (
@@ -1468,6 +1914,7 @@ def prepare_drive_pipeline(  # noqa: C901
             handbrake_profile_id=request.handbrake_profile_id,
             staging_attempt=f"attempt-{uuid4().hex[:12]}",
             selected_title_indexes=selected_title_indexes,
+            downstream_skip_title_indexes=downstream_skip_title_indexes,
             special_feature_catalog_id=catalog_id,
             special_feature_release_id=release_id,
             special_feature_library_title=library_title,
@@ -1502,30 +1949,104 @@ def prepare_drive_pipeline(  # noqa: C901
         if preview_fingerprint != disc_fingerprint:
             raise RipError("Prepared disc identity is unavailable")
         with _prepared_disc_identity_lock:
-            active_states = {
+            reusable_states = {
                 "awaiting_review",
                 "authorized",
                 "queued",
                 "running",
                 "pause_requested",
                 "paused",
+                "completed",
             }
             matching_jobs = tuple(
                 candidate
                 for candidate in public_store.list_jobs(limit=200)
-                if candidate.state in active_states
+                if candidate.state in reusable_states
                 and _preview_disc_fingerprint(candidate.preview) == disc_fingerprint
             )
+            drive_matching_jobs = tuple(
+                candidate
+                for candidate in matching_jobs
+                if any(
+                    isinstance(item, dict)
+                    and item.get("drive_index") == request.drive_index
+                    for item in candidate.preview.get("drives", [])
+                )
+            )
+            prepared_title_indexes = _preview_title_indexes(asdict(preview))
+            prepared_library_title_indexes = frozenset(
+                item.title_index
+                for item in preview.jobs
+                if item.prior_library_status == "present"
+            )
+            skipped_title_indexes = frozenset(
+                item["title_index"]
+                for item in skipped_title_dispositions
+                if isinstance(item.get("title_index"), int)
+            )
+            completed_title_indexes = frozenset().union(
+                *(
+                    _preview_title_indexes(candidate.preview)
+                    for candidate in drive_matching_jobs
+                    if candidate.state == "completed"
+                )
+            )
+            # Titles outside the classifier-derived relevant scope (menus,
+            # navigation tracks, non-content titles) don't need to be present
+            # in a completed rip for the disc to be considered done.
+            matching_scope = frozenset(
+                pipeline_store.disc_matching_scope(disc_fingerprint) or ()
+            )
+            non_episode_title_indexes = (
+                prepared_title_indexes - matching_scope
+                if matching_scope
+                else frozenset()
+            )
+            completed_history_covers_prepared = prepared_title_indexes <= (
+                prepared_library_title_indexes
+                | skipped_title_indexes
+                | completed_title_indexes
+                | non_episode_title_indexes
+            )
+            superseded_job_ids: set[str] = set()
+            for candidate in drive_matching_jobs:
+                if (
+                    candidate.state not in {"authorized", "queued", "paused"}
+                    or candidate.executor_attached
+                ):
+                    continue
+                completed = _newer_completed_job_covering(
+                    candidate, drive_matching_jobs
+                )
+                if completed is None:
+                    continue
+                public_store.cancel(
+                    candidate.job_id,
+                    idempotency_key=f"superseded-{candidate.job_id}",
+                )
+                superseded_job_ids.add(candidate.job_id)
+            drive_matching_jobs = tuple(
+                candidate
+                for candidate in drive_matching_jobs
+                if candidate.job_id not in superseded_job_ids
+            )
+            # A newer completed rip can safely retire an older duplicate queue
+            # entry. A genuinely newer queued recovery still wins over older
+            # completed history so startup observation can attach its executor.
             existing = next(
                 (
                     candidate
-                    for candidate in matching_jobs
-                    if candidate.state != "awaiting_review"
-                    if any(
-                        isinstance(item, dict)
-                        and item.get("drive_index") == request.drive_index
-                        for item in candidate.preview.get("drives", [])
+                    for state in (
+                        "running",
+                        "pause_requested",
+                        "queued",
+                        "authorized",
+                        "paused",
+                        "completed",
                     )
+                    for candidate in drive_matching_jobs
+                    if candidate.state == state
+                    and (state != "completed" or completed_history_covers_prepared)
                 ),
                 None,
             )
@@ -1534,11 +2055,38 @@ def prepare_drive_pipeline(  # noqa: C901
                     request.drive_index, existing.job_id, disc_fingerprint
                 )
                 return _job_response(existing, public_store)
+            manifest = build_rip_manifest([report_path], {disc_id: context})
+            contract_root = get_pipeline_contract_root()
+            auto_admitted = _auto_admit_staged_disc_if_complete(
+                manifest_jobs=manifest.jobs,
+                disc_fingerprint=disc_fingerprint,
+                output_root=config.rip_output_root,
+                matching_scope=matching_scope,
+                preview=preview,
+                report_path=report_path,
+                disc_id=disc_id,
+                context=context,
+                public_store=public_store,
+                private_store=private_store,
+                pipeline_store=pipeline_store,
+                contract_root=contract_root,
+                idempotency_key=idempotency_key,
+            )
+            if auto_admitted is not None:
+                watcher.bind_current_job(
+                    request.drive_index, auto_admitted.job_id, disc_fingerprint
+                )
+                return _job_response(auto_admitted, public_store)
             stale_review = next(
                 (
                     candidate
                     for candidate in matching_jobs
                     if candidate.state == "awaiting_review"
+                    and (
+                        not failed_title_indexes
+                        or _preview_title_indexes(candidate.preview)
+                        == prepared_title_indexes
+                    )
                 ),
                 None,
             )
@@ -1749,7 +2297,10 @@ def forget_drive_disc_identity(
             status_code=400,
             detail="Explicit disc-identity reset confirmation is required",
         )
-    preparation_lock = _claim_drive_preparation(drive_index)
+    preparation_lock = _claim_drive_preparation(
+        drive_index,
+        operation="disc identity reset",
+    )
     try:
         _current_forgettable_disc(
             watcher, drive_index, request.expected_disc_fingerprint
@@ -1965,6 +2516,7 @@ class PipelineItemResponse(BaseModel):
     artifact_sha256: str
     disc_fingerprint: str | None = None
     title_index: int | None = None
+    series_name: str | None = None
     display_name: str | None = None
     match_summary: str | None = None
     location_label: str
@@ -2004,6 +2556,7 @@ class DiscTitleDispositionResponse(BaseModel):
 
 class PipelineQueueResponse(BaseModel):
     paused: bool
+    startup_resume_in_seconds: int | None = None
     downstream_worker_limit: int
     automatic_processing_enabled: bool
     automatic_organization_enabled: bool
@@ -2179,6 +2732,64 @@ class ResolveLibraryCollisionRequest(BaseModel):
     confirm_resolution: bool = False
 
 
+class InspectLibraryCollisionRequest(BaseModel):
+    expected_artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    confirm_media_read: bool = False
+
+
+class PlayLibraryCollisionFileRequest(BaseModel):
+    target: str = Field(pattern=r"^(new-encode|existing-jellyfin)$")
+    expected_artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    confirm_play: bool = False
+
+
+class CollisionAudioTrackDetails(BaseModel):
+    index: int
+    codec: str | None
+    language: str | None
+    title: str | None
+    channels: int | None
+    channel_layout: str | None
+    bitrate_bps: int | None
+    sample_rate_hz: int | None
+    default: bool
+    commentary: bool
+
+
+class CollisionFileDetails(BaseModel):
+    modified_at: str
+    size_bytes: int
+    container: str | None
+    video_codec: str | None
+    audio_codecs: list[str]
+    width: int | None
+    height: int | None
+    field_order: str | None
+    duration_seconds: float
+    overall_bitrate_bps: int | None
+    overall_bitrate_source: str | None
+    video_bitrate_bps: int | None
+    frame_rate_fps: float | None
+    video_profile: str | None
+    pixel_format: str | None
+    bit_depth: int | None
+    hdr_format: str | None
+    color_primaries: str | None
+    color_transfer: str | None
+    color_space: str | None
+    color_range: str | None
+    video_encoder: str | None
+    format_encoder: str | None
+    audio_tracks: list[CollisionAudioTrackDetails]
+
+
+class LibraryCollisionComparisonResponse(BaseModel):
+    media_id: str
+    new_pipeline_file: CollisionFileDetails
+    existing_jellyfin_file: CollisionFileDetails
+    size_difference_bytes: int
+
+
 def _pipeline_item_display_name(item) -> str | None:
     """Read only a safe matched basename from the current private contract."""
 
@@ -2190,7 +2801,10 @@ def _pipeline_item_display_name(item) -> str | None:
     if isinstance(relative, str) and relative.strip():
         parts = tuple(part for part in relative.replace("\\", "/").split("/") if part)
         if parts and not any(part in {".", ".."} for part in parts):
-            name = parts[-1]
+            safe_relative = omit_placeholder_episode_title(
+                PurePosixPath(*parts), payload.get("episode_id")
+            )
+            name = safe_relative.name
             if name.casefold().endswith(".mkv"):
                 name = name[:-4]
             return name.strip() or None
@@ -2225,13 +2839,108 @@ def _pipeline_item_display_name(item) -> str | None:
     return None
 
 
-def _pipeline_item_match_summary(item) -> str | None:
-    """Read a bounded provider summary from one matched feature assignment."""
+def _pipeline_item_series_name(item) -> str | None:
+    """Read a bounded canonical series label from the current contract."""
 
     try:
         payload = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+    context = payload.get("media_context")
+    if not isinstance(context, dict):
+        return None
+    series_name = context.get("series_name")
+    if not isinstance(series_name, str):
+        return None
+    cleaned = " ".join(series_name.split())[:240]
+    return cleaned or None
+
+
+def _pipeline_identification_attempts(
+    item, dossier: IdentificationDossierStore | None
+) -> list[dict[str, object]]:
+    """Return concise attempts and one actionable candidate for legacy holds."""
+
+    if dossier is None:
+        return []
+    attempts = [
+        {
+            "branch": attempt["branch"],
+            "disposition": attempt["disposition"],
+            "summary": dict(attempt["summary"]),
+        }
+        for attempt in dossier.safe_attempts(item.media_id)
+    ]
+    if item.review_code not in {
+        "episode_match_review",
+        "independent_episode_evidence_required",
+    } or any(
+        isinstance(attempt["summary"].get("candidate_episode_id"), str)
+        for attempt in attempts
+    ):
+        return attempts
+    try:
+        candidate_events = [
+            event
+            for event in dossier.audit_events(item.media_id)
+            if event.get("event_kind") == "candidate"
+            and event.get("branch") in {"tv-local", "tv-opensubtitles", "tv-gemini"}
+            and isinstance(event.get("summary"), dict)
+            and isinstance(event["summary"].get("candidate_episode_id"), str)
+            and isinstance(event["summary"].get("candidate_episode_title"), str)
+            and isinstance(event["summary"].get("score"), int | float)
+            and not isinstance(event["summary"].get("score"), bool)
+        ]
+    except PipelineQueueError:
+        return attempts
+    if not candidate_events:
+        return attempts
+    latest_run_id = candidate_events[-1].get("analysis_run_id")
+    latest_candidates = [
+        event
+        for event in candidate_events
+        if event.get("analysis_run_id") == latest_run_id
+    ]
+    best = max(
+        latest_candidates,
+        key=lambda event: float(event["summary"]["score"]),
+    )
+    series_name = _pipeline_item_series_name(item)
+    if series_name is None:
+        return attempts
+    candidate_summary = best["summary"]
+    concise_candidate = {
+        "candidate_series_name": series_name,
+        "candidate_episode_id": candidate_summary["candidate_episode_id"],
+        "candidate_episode_title": candidate_summary["candidate_episode_title"],
+        "best_score": float(candidate_summary["score"]),
+        "reason": "candidate_requires_human_playback_review",
+    }
+    branch = str(best["branch"])
+    for attempt in reversed(attempts):
+        if attempt["branch"] == branch and attempt["disposition"] == "review":
+            attempt["summary"].update(concise_candidate)
+            return attempts
+    attempts.append({
+        "branch": branch,
+        "disposition": "review",
+        "summary": concise_candidate,
+    })
+    return attempts
+
+
+def _pipeline_item_match_summary(item) -> str | None:
+    """Read a bounded provider/release summary from the current contract."""
+
+    try:
+        payload = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    direct_summary = payload.get("match_summary")
+    if isinstance(direct_summary, str):
+        cleaned = " ".join(direct_summary.split())[:320]
+        if cleaned:
+            return cleaned
     context = payload.get("media_context")
     title_index = payload.get("title_index")
     if not isinstance(context, dict) or not isinstance(title_index, int):
@@ -2560,6 +3269,7 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
         "artifact_sha256": item.artifact.contract_sha256,
         "disc_fingerprint": disc_fingerprint,
         "title_index": title_index,
+        "series_name": _pipeline_item_series_name(item),
         "display_name": _pipeline_item_display_name(item),
         "match_summary": _pipeline_item_match_summary(item),
         "catalogue_candidate_help": _pipeline_catalogue_candidate_help(item),
@@ -2585,18 +3295,7 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
         "visual_review_code": visual_review_code,
         "likely_removable": visual_review_code
         in {"likely_warning_screen", "likely_disc_menu"},
-        "identification_attempts": (
-            [
-                {
-                    "branch": attempt["branch"],
-                    "disposition": attempt["disposition"],
-                    "summary": attempt["summary"],
-                }
-                for attempt in dossier.safe_attempts(item.media_id)
-            ]
-            if dossier is not None
-            else []
-        ),
+        "identification_attempts": _pipeline_identification_attempts(item, dossier),
     }
     response.update(
         _pipeline_activity_snapshot(
@@ -2777,6 +3476,63 @@ def _aggregate_rip_progress(job, events) -> dict[str, int | str | None]:
     return fields
 
 
+def _pipeline_handoff_response(
+    events: tuple[OrchestrationEvent, ...],
+) -> dict[str, object]:
+    latest_by_scope = {}
+    for event in events:
+        if event.event_type not in {
+            "rip_pipeline_queued",
+            "rip_pipeline_handoff_failed",
+        }:
+            continue
+        scope = event.details.get("scope")
+        if isinstance(scope, str):
+            latest_by_scope[scope] = event.event_type
+    queued_count = sum(
+        event_type == "rip_pipeline_queued" for event_type in latest_by_scope.values()
+    )
+    pending_count = sum(
+        event_type == "rip_pipeline_handoff_failed"
+        for event_type in latest_by_scope.values()
+    )
+    fields: dict[str, object] = {}
+    if latest_by_scope:
+        fields.update({
+            "pipeline_handoff_status": (
+                "attention_required" if pending_count else "streaming"
+            ),
+            "pipeline_queued_title_count": queued_count,
+            "pipeline_handoff_pending_title_count": pending_count,
+        })
+    terminal = next(
+        (
+            event
+            for event in reversed(events)
+            if event.event_type in {"job_completed", "job_failed"}
+        ),
+        None,
+    )
+    if terminal is None:
+        return fields
+    terminal_queued_count = terminal.details.get("pipeline_queued_count")
+    pending_ids = terminal.details.get("pipeline_handoff_pending_job_ids", [])
+    fields.update({
+        "pipeline_handoff_status": terminal.details.get(
+            "pipeline_handoff_status", "not_configured"
+        ),
+        "pipeline_queued_title_count": (
+            int(terminal_queued_count)
+            if isinstance(terminal_queued_count, int)
+            else None
+        ),
+        "pipeline_handoff_pending_title_count": (
+            len(pending_ids) if isinstance(pending_ids, list) else 0
+        ),
+    })
+    return fields
+
+
 def _job_response(job, store: OrchestrationStore | None = None) -> dict[str, object]:
     response = asdict(job)
     response.update({
@@ -2796,9 +3552,13 @@ def _job_response(job, store: OrchestrationStore | None = None) -> dict[str, obj
         "rip_activity_age_seconds": None,
         "rip_possibly_stalled": False,
         "rip_stall_after_seconds": None,
+        "pipeline_handoff_status": "not_configured",
+        "pipeline_queued_title_count": None,
+        "pipeline_handoff_pending_title_count": 0,
     })
     if store is not None:
         events = store.list_events(job.job_id)
+        response.update(_pipeline_handoff_response(events))
         samples = [event for event in events if event.event_type == "rip_progress"]
         response.update(_aggregate_rip_progress(job, events))
         throughput = next(
@@ -3180,16 +3940,24 @@ def select_rip_titles(
 @router.get("/jobs", response_model=OrchestrationJobListResponse)
 def list_rip_jobs(
     store: Annotated[OrchestrationStore, Depends(get_orchestration_store)],
+    scope: Literal["all", "active", "dashboard"] = "all",
+    disc_fingerprints: str | None = None,
 ) -> dict[str, object]:
-    """Return recent redacted jobs; this endpoint never discovers drives."""
+    """Return recent redacted jobs; optional scopes reduce routine UI work."""
 
     from mkv_episode_matcher.core.config_manager import get_config_manager
 
     automatic = get_config_manager().load().automatic_processing_enabled
+    fingerprints = _parse_dashboard_disc_fingerprints(disc_fingerprints)
+    jobs = _filter_dashboard_jobs(
+        store.list_jobs(),
+        scope=scope,
+        disc_fingerprints=fingerprints,
+    )
     return {
         "automatic_processing_enabled": automatic,
         "watcher_attached": False,
-        "jobs": [_job_response(job, store) for job in store.list_jobs()],
+        "jobs": [_job_response(job, store) for job in jobs],
     }
 
 
@@ -3395,6 +4163,221 @@ def _verified_rip_handoff_scope(
     }
 
 
+def _rip_recovery_media_id(job: RipJob) -> str:
+    """Derive a stable queue ID for a new isolated copy of the same title."""
+
+    stem = re.sub(
+        r"[^A-Za-z0-9._-]+", "-", Path(job.output_basename or job.job_id).stem
+    )
+    stem = stem.strip("._-")[:96] or "recovered-mkv"
+    attempt_digest = hashlib.sha256(
+        f"{job.job_id}\0{job.relative_output_dir}\0{job.output_basename or ''}".encode()
+    ).hexdigest()[:16]
+    return f"{stem}-recovery-{attempt_digest}"
+
+
+def _enqueue_completed_rip_results(  # noqa: C901
+    *,
+    orchestration_job_id: str,
+    full_preview: dict[str, object],
+    bound: BoundRipDispatch,
+    results: list[RipResult],
+    store: OrchestrationStore,
+    pipeline_store: PipelineQueueStore,
+    contract_root: Path,
+) -> None:
+    """Admit verified outputs while keeping failures separate from MakeMKV."""
+
+    try:
+        contract_root.mkdir(parents=True, exist_ok=True)
+        settings = store.get_pipeline_settings(orchestration_job_id)
+        content_hint = settings["content_hint"]
+        handbrake_profile_id = settings["handbrake_profile_id"]
+        contexts = {
+            context.disc_id: replace(
+                context,
+                content_hint=content_hint or context.content_hint,
+                handbrake_profile_id=(
+                    handbrake_profile_id or context.handbrake_profile_id
+                ),
+            )
+            for context in bound.manifest.media_contexts
+        }
+        completed_jobs, expected_title_indexes_by_disc = _verified_rip_handoff_scope(
+            bound, results, full_preview, pipeline_store
+        )
+        enqueue_arguments = {
+            "jobs": completed_jobs,
+            "results": results,
+            "output_root": bound.output_root,
+            "contract_root": contract_root,
+            "media_contexts": contexts,
+            "expected_title_indexes_by_disc": expected_title_indexes_by_disc,
+        }
+        try:
+            enqueue_verified_rip_results(pipeline_store, **enqueue_arguments)
+        except PipelineQueueError as exc:
+            if "media ID has a different artifact" not in str(exc):
+                raise
+            enqueue_verified_rip_results(
+                pipeline_store,
+                **enqueue_arguments,
+                media_id_overrides={
+                    completed_job.job_id: _rip_recovery_media_id(completed_job)
+                    for completed_job in completed_jobs
+                },
+            )
+    except (OSError, PipelineQueueError) as exc:
+        for result in results:
+            try:
+                store.record_pipeline_handoff(
+                    orchestration_job_id,
+                    result.job_id,
+                    queued=False,
+                    error_type=type(exc).__name__,
+                )
+            except RipError:
+                pass
+        raise RipError(
+            f"Verified rip queue handoff failed: {type(exc).__name__}"
+        ) from exc
+    for result in results:
+        try:
+            store.record_pipeline_handoff(
+                orchestration_job_id, result.job_id, queued=True
+            )
+        except RipError:
+            # Admission already succeeded. A dashboard audit event must not
+            # turn that completed handoff into a retry.
+            pass
+
+
+def _execution_drive_indexes(job: OrchestrationJob) -> tuple[int, ...]:
+    """Return the exact ordered drive scope retained by an authorized preview."""
+
+    raw_drives = job.preview.get("drives", [])
+    if not isinstance(raw_drives, list) or not raw_drives:
+        raise RipError("Authorized job has no physical drive scope")
+    drive_indexes: list[int] = []
+    for drive in raw_drives:
+        drive_index = drive.get("drive_index") if isinstance(drive, dict) else None
+        if (
+            not isinstance(drive_index, int)
+            or isinstance(drive_index, bool)
+            or not 0 <= drive_index <= 99
+            or drive_index in drive_indexes
+        ):
+            raise RipError("Authorized job has an invalid physical drive scope")
+        drive_indexes.append(drive_index)
+
+    preview_job_drives = {
+        item.get("drive_index")
+        for item in job.preview.get("jobs", [])
+        if isinstance(item, dict)
+    }
+    if preview_job_drives != set(drive_indexes):
+        raise RipError("Authorized title and drive scopes do not match")
+    return tuple(drive_indexes)
+
+
+def _prepare_execution_inventory_and_attach(
+    *,
+    job_id: str,
+    run_directory: Path,
+    drive_indexes: tuple[int, ...],
+    executable: Path,
+    inventory_runner: Callable,
+    registry: RipExecutionRegistry,
+    watcher: DriveWatcher,
+    cache_dir: Path,
+    timeout_seconds: int,
+) -> list[Path]:
+    """Rescan exact drives, retain private reports, then atomically claim ripping."""
+
+    leases: list[OpticalWorkLease] = []
+    try:
+        for drive_index in drive_indexes:
+            leases.append(
+                registry.claim_drive_preparation(
+                    drive_index,
+                    operation="execution inventory",
+                )
+            )
+
+        report_directory = (
+            cache_dir.parent
+            / "orchestration"
+            / "execution-inventories"
+            / f"{job_id}-{uuid4().hex}"
+        )
+        report_directory.mkdir(parents=True, exist_ok=False)
+        report_paths: list[Path] = []
+        cached_drives = {
+            drive.drive_index: drive for drive in watcher.snapshot().drives
+        }
+        for drive_index in drive_indexes:
+            result = inventory_runner(
+                executable,
+                f"disc:{drive_index}",
+                minimum_length=0,
+                timeout_seconds=min(timeout_seconds, 300),
+            )
+            if result.return_code != 0:
+                raise PreflightError(
+                    "MakeMKV execution inventory did not complete successfully"
+                )
+            cached_drive = cached_drives.get(drive_index)
+            matching_drive = targeted_inventory_drive(
+                result.stdout,
+                requested_index=drive_index,
+                cached_device_name=watcher.device_name(drive_index),
+                cached_drive_name=(
+                    cached_drive.display_name if cached_drive is not None else None
+                ),
+                cached_disc_name=(
+                    cached_drive.disc_label if cached_drive is not None else None
+                ),
+            )
+            if matching_drive is None or not matching_drive.has_disc:
+                raise PreflightError(
+                    "Authorized disc disappeared during execution inventory"
+                )
+            inventory = parse_disc_inventory(result, matching_drive)
+            if not inventory.titles:
+                raise PreflightError(
+                    "MakeMKV execution inventory returned no disc titles"
+                )
+            report_path, _robot_path = write_inventory_report(
+                report_directory,
+                inventory,
+                result,
+                minimum_length_seconds=0,
+            )
+            report_paths.append(report_path)
+
+        registry.promote_drive_preparations(
+            job_id,
+            run_directory,
+            tuple(leases),
+        )
+        logger.info(
+            "Verified and retained {} execution-time disc inventory report(s)",
+            len(report_paths),
+        )
+        return report_paths
+    except (OSError, PreflightError) as exc:
+        logger.warning(
+            "Execution-time disc inventory failed safely: {}",
+            type(exc).__name__,
+        )
+        raise RipError(
+            f"Execution-time disc inventory failed safely: {type(exc).__name__}"
+        ) from exc
+    finally:
+        for lease in leases:
+            lease.release()
+
+
 @router.post("/jobs/{job_id}/execute", response_model=OrchestrationJobResponse)
 def execute_rip_job(
     job_id: str,
@@ -3416,6 +4399,7 @@ def execute_rip_job(
     ],
     contract_root: Annotated[Path, Depends(get_pipeline_contract_root)],
     inventory_runner: Annotated[Callable, Depends(get_disc_inventory_runner)],
+    watcher: Annotated[DriveWatcher, Depends(get_drive_watcher)],
 ) -> dict[str, object]:
     """Synchronously dispatch one exactly authorized queued rip job."""
 
@@ -3433,39 +4417,15 @@ def execute_rip_job(
         _apply_requested_failed_cleanup(request, job_id, registry, private_store)
 
         def enqueue_results(bound, results) -> None:
-            try:
-                contract_root.mkdir(parents=True, exist_ok=True)
-                settings = store.get_pipeline_settings(job_id)
-                content_hint = settings["content_hint"]
-                handbrake_profile_id = settings["handbrake_profile_id"]
-                contexts = {
-                    context.disc_id: replace(
-                        context,
-                        content_hint=content_hint or context.content_hint,
-                        handbrake_profile_id=(
-                            handbrake_profile_id or context.handbrake_profile_id
-                        ),
-                    )
-                    for context in bound.manifest.media_contexts
-                }
-                completed_jobs, expected_title_indexes_by_disc = (
-                    _verified_rip_handoff_scope(
-                        bound, results, job.preview, pipeline_store
-                    )
-                )
-                enqueue_verified_rip_results(
-                    pipeline_store,
-                    jobs=completed_jobs,
-                    results=results,
-                    output_root=bound.output_root,
-                    contract_root=contract_root,
-                    media_contexts=contexts,
-                    expected_title_indexes_by_disc=expected_title_indexes_by_disc,
-                )
-            except (OSError, PipelineQueueError) as exc:
-                raise RipError(
-                    f"Verified rip queue handoff failed: {type(exc).__name__}"
-                ) from exc
+            _enqueue_completed_rip_results(
+                orchestration_job_id=job_id,
+                full_preview=job.preview,
+                bound=bound,
+                results=results,
+                store=store,
+                pipeline_store=pipeline_store,
+                contract_root=contract_root,
+            )
 
         config = get_config_manager().load()
         executable = resolve_makemkv_path(
@@ -3487,6 +4447,10 @@ def execute_rip_job(
                 run_directory=run_directory,
                 timeout_seconds=request.timeout_seconds,
                 max_drives=request.max_drives,
+                # Physical execution remains behind this exact-digest,
+                # exact-count, separately confirmed API boundary. The queue
+                # chooses one single-open operation per eligible drive.
+                physical_disc_execution_enabled=True,
             ),
             queue_runner=queue_runner,
             completion_sink=enqueue_results,
@@ -3494,29 +4458,48 @@ def execute_rip_job(
                 job_id, kind, message
             ),
         )
-        drive_indexes = frozenset(
-            int(drive["drive_index"])
-            for drive in job.preview.get("drives", [])
-            if isinstance(drive, dict)
-            and isinstance(drive.get("drive_index"), int)
-            and not isinstance(drive.get("drive_index"), bool)
-        )
-        registry.attach(job_id, run_directory, drive_indexes)
+        drive_indexes = _execution_drive_indexes(job)
+        executor_attached = False
+
+        def prepare_fresh_inventory() -> list[Path]:
+            nonlocal executor_attached
+            report_paths = _prepare_execution_inventory_and_attach(
+                job_id=job_id,
+                run_directory=run_directory,
+                drive_indexes=drive_indexes,
+                executable=executable,
+                inventory_runner=inventory_runner,
+                registry=registry,
+                watcher=watcher,
+                cache_dir=config.cache_dir,
+                timeout_seconds=request.timeout_seconds,
+            )
+            executor_attached = True
+            return report_paths
+
         try:
             completed = RipDispatcher(store, private_store).dispatch(
                 job_id,
                 dispatch_key=idempotency_key,
                 executor=executor,
+                fresh_inventory_provider=prepare_fresh_inventory,
             )
         finally:
-            registry.detach(job_id)
-        if config.automatic_eject_after_rip and completed.state == "completed":
+            if executor_attached:
+                registry.detach(job_id)
+        if (
+            executor_attached
+            and config.automatic_eject_after_rip
+            and completed.state == "completed"
+        ):
             _auto_eject_completed_job_drives(
                 completed,
                 store,
                 inventory_runner,
                 executable,
                 request.timeout_seconds,
+                registry,
+                watcher,
             )
         return _job_response(completed, store)
     except RipError as exc:
@@ -3613,9 +4596,17 @@ def execute_special_feature_job(
 @router.get("/pipeline/items", response_model=PipelineQueueResponse)
 def get_pipeline_items(
     store: Annotated[PipelineQueueStore, Depends(get_pipeline_queue_store)],
+    scope: Literal["all", "active", "attention", "dashboard"] = "all",
+    disc_fingerprints: str | None = None,
 ) -> dict[str, object]:
-    """Return path-redacted downstream queue state."""
+    """Return path-redacted queue state, optionally scoped for a visible view."""
 
+    fingerprints = _parse_dashboard_disc_fingerprints(disc_fingerprints)
+    items = _filter_dashboard_pipeline_items(
+        store.list_items(),
+        scope=scope,
+        disc_fingerprints=fingerprints,
+    )
     dossier = IdentificationDossierStore(
         get_pipeline_contract_root().parent / "identification-evidence"
     )
@@ -3623,13 +4614,18 @@ def get_pipeline_items(
     config = get_config_manager().load()
     return {
         "paused": store.is_paused(),
+        "startup_resume_in_seconds": startup_queue_resume_seconds(),
         "downstream_worker_limit": 1,
         "automatic_processing_enabled": config.automatic_processing_enabled,
         "automatic_organization_enabled": config.automatic_organization_enabled,
-        "title_dispositions": list(store.list_title_dispositions()),
+        "title_dispositions": [
+            disposition
+            for disposition in store.list_title_dispositions()
+            if not fingerprints or disposition["disc_fingerprint"] in fingerprints
+        ],
         "items": [
             _pipeline_item_response(item, dossier, visual_reviews.get(item.media_id))
-            for item in store.list_items()
+            for item in items
         ],
     }
 
@@ -3992,6 +4988,7 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
             or item.review_code
             not in {
                 "missing_season_context",
+                "episode_match_review",
                 "unmatched_disc_analysis_required",
                 "all_season_analysis_failed",
                 "all_season_series_not_found",
@@ -4133,6 +5130,7 @@ def classify_unmatched_disc(
             or item.review_code
             not in {
                 "missing_season_context",
+                "episode_match_review",
                 "unmatched_disc_analysis_required",
                 "all_season_analysis_failed",
                 "all_season_sequence_review_required",
@@ -4374,10 +5372,12 @@ def apply_manual_episode_identification(  # noqa: C901 - guarded review boundary
             or item.review_code
             not in {
                 "missing_season_context",
+                "episode_match_review",
                 "unmatched_disc_analysis_required",
                 "all_season_analysis_failed",
                 "all_season_sequence_review_required",
                 "independent_episode_evidence_required",
+                "gemini_analysis_failed",
                 "special_feature_manual_assignment_required",
                 "gemini_descriptive_review_required",
                 "catalogue_candidate_help_available",
@@ -5380,20 +6380,14 @@ def verify_existing_rip_candidates(  # noqa: C901 - per-file recovery isolation
             "The selected MKV verified, but its recovery record conflicts with an "
             "earlier queue contract. Refresh the recovery choices and try again."
             if isinstance(exc, PipelineQueueError)
+            else str(exc)
+            if isinstance(exc, RipError)
             else f"Existing-rip verification failed safely ({type(exc).__name__})"
         )
         raise HTTPException(
             status_code=409,
             detail=detail,
         ) from exc
-
-
-def _existing_rip_recovery_media_id(candidate) -> str:
-    """Return a stable queue-safe ID without changing the recovered basename."""
-
-    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", Path(candidate.basename).stem)
-    stem = stem.strip("._-")[:96] or "recovered-mkv"
-    return f"{stem}-recovery-{candidate.candidate_id[:16]}"
 
 
 @router.post("/jobs/{job_id}/restart-existing-pipeline")
@@ -5490,6 +6484,7 @@ def pause_pipeline(
         raise HTTPException(
             status_code=400, detail="Pipeline pause confirmation is required"
         )
+    cancel_startup_queue_resume()
     store.set_paused(True)
     return get_pipeline_items(store)
 
@@ -5704,12 +6699,21 @@ def authorize_organization_batch(
 def resume_pipeline(
     request: PipelineControlRequest,
     store: Annotated[PipelineQueueStore, Depends(get_pipeline_queue_store)],
+    watcher: Annotated[DriveWatcher, Depends(get_drive_watcher)],
 ) -> dict[str, object]:
     if request.confirm_control is not True:
         raise HTTPException(
             status_code=400, detail="Pipeline resume confirmation is required"
         )
+    cancel_startup_queue_resume()
     store.set_paused(False)
+    config = get_config_manager().load()
+    if config.automatic_processing_enabled:
+        from mkv_episode_matcher.backend.automatic_rip import observe_automatic_drives
+
+        observe_automatic_drives(
+            watcher.snapshot(), enabled=True, processing_paused=False
+        )
     return get_pipeline_items(store)
 
 
@@ -5845,6 +6849,194 @@ def _dismiss_duplicate_title_lineage(
     if siblings:
         store.dismiss_items(tuple(siblings))
     return len(siblings)
+
+
+def _collision_file_details(path: Path, inspection) -> CollisionFileDetails:
+    stat = path.stat()
+    media = inspection.media
+    overall_bitrate = media.overall_bit_rate
+    overall_bitrate_source = "reported" if overall_bitrate is not None else None
+    if overall_bitrate is None and media.duration_seconds > 0:
+        overall_bitrate = round((stat.st_size * 8) / media.duration_seconds)
+        overall_bitrate_source = "size-duration"
+    return CollisionFileDetails(
+        modified_at=datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(),
+        size_bytes=stat.st_size,
+        container=media.container,
+        video_codec=media.video_codec,
+        audio_codecs=sorted({
+            stream.codec for stream in media.audio_streams if stream.codec
+        }),
+        width=media.video_width,
+        height=media.video_height,
+        field_order=media.video_field_order,
+        duration_seconds=media.duration_seconds,
+        overall_bitrate_bps=overall_bitrate,
+        overall_bitrate_source=overall_bitrate_source,
+        video_bitrate_bps=media.video_bit_rate,
+        frame_rate_fps=media.video_frame_rate,
+        video_profile=media.video_profile,
+        pixel_format=media.video_pixel_format,
+        bit_depth=media.video_bit_depth,
+        hdr_format=media.video_hdr_format,
+        color_primaries=media.video_color_primaries,
+        color_transfer=media.video_color_transfer,
+        color_space=media.video_color_space,
+        color_range=media.video_color_range,
+        video_encoder=media.video_encoder,
+        format_encoder=media.format_encoder,
+        audio_tracks=[
+            CollisionAudioTrackDetails(
+                index=stream.index,
+                codec=stream.codec,
+                language=stream.language,
+                title=stream.title,
+                channels=stream.channels,
+                channel_layout=stream.channel_layout,
+                bitrate_bps=stream.bit_rate,
+                sample_rate_hz=stream.sample_rate,
+                default=stream.is_default,
+                commentary=stream.is_commentary,
+            )
+            for stream in media.audio_streams
+        ],
+    )
+
+
+def _held_library_collision_paths(
+    store: PipelineQueueStore,
+    media_id: str,
+    expected_artifact_sha256: str,
+) -> tuple[Path, Path, object]:
+    item = store.get(media_id)
+    if (
+        item.state != "review_required"
+        or item.review_code != "library_collision"
+        or item.artifact.contract_sha256 != expected_artifact_sha256
+    ):
+        raise PipelineQueueError("Held collision changed; review it again")
+    if item.stage != "organize":
+        raise PipelineQueueError(
+            "File review is available after the new encode is verified"
+        )
+    payload = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
+    encoded = Path(str(payload["encoded_path"])).resolve()
+    expected_size = int(payload["encoded_size_bytes"])
+    if not encoded.is_file() or encoded.stat().st_size != expected_size:
+        raise PipelineQueueError("Verified encode is missing or changed")
+
+    config = get_config_manager().load()
+    root, planned = _collision_destination(payload, config)
+    episode_id = payload.get("episode_id")
+    if isinstance(episode_id, str):
+        status, names = inspect_episode_destination(
+            planned.parent, planned.name, episode_id
+        )
+        if (
+            status
+            not in {
+                "review-existing-destination",
+                "review-existing-episode",
+            }
+            or len(names) != 1
+        ):
+            raise PipelineQueueError(
+                "The Jellyfin collision changed or requires manual review"
+            )
+        existing = (planned.parent / names[0]).resolve()
+    else:
+        existing = planned
+    existing.relative_to(root)
+    if not existing.is_file():
+        raise PipelineQueueError("The reviewed Jellyfin file no longer exists")
+    return encoded, existing, config
+
+
+@router.post("/pipeline/items/{media_id}/play-library-collision")
+def play_pipeline_library_collision_file(
+    media_id: str,
+    request: PlayLibraryCollisionFileRequest,
+    store: Annotated[PipelineQueueStore, Depends(get_pipeline_queue_store)],
+) -> dict[str, object]:
+    """Open one explicitly selected side of a held collision for review."""
+
+    if not request.confirm_play:
+        raise HTTPException(status_code=400, detail="Playback confirmation is required")
+    try:
+        encoded, existing, _config = _held_library_collision_paths(
+            store, media_id, request.expected_artifact_sha256
+        )
+        source = encoded if request.target == "new-encode" else existing
+        if os.name != "nt":
+            raise PipelineQueueError(
+                "Default-player review is available only on Windows"
+            )
+        os.startfile(source)  # type: ignore[attr-defined]  # noqa: S606
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        json.JSONDecodeError,
+        PipelineQueueError,
+    ) as exc:
+        raise HTTPException(
+            status_code=409, detail="Collision playback could not start"
+        ) from exc
+    return {"started": True, "media_id": media_id, "target": request.target}
+
+
+@router.post(
+    "/pipeline/items/{media_id}/library-collision-comparison",
+    response_model=LibraryCollisionComparisonResponse,
+)
+def inspect_pipeline_library_collision(
+    media_id: str,
+    request: InspectLibraryCollisionRequest,
+    store: Annotated[PipelineQueueStore, Depends(get_pipeline_queue_store)],
+    inspector: Annotated[Callable, Depends(get_ffprobe_inspector)],
+) -> LibraryCollisionComparisonResponse:
+    """Read metadata for the exact two files in one held collision."""
+
+    if not request.confirm_media_read:
+        raise HTTPException(
+            status_code=400,
+            detail="Exact collision media-read confirmation is required",
+        )
+    try:
+        encoded, existing, config = _held_library_collision_paths(
+            store, media_id, request.expected_artifact_sha256
+        )
+
+        ffprobe = resolve_ffprobe_path(config.ffprobe_path)
+        before = [
+            (path.stat().st_size, path.stat().st_mtime_ns)
+            for path in (encoded, existing)
+        ]
+        new_inspection = inspector(ffprobe, encoded, timeout_seconds=60)
+        old_inspection = inspector(ffprobe, existing, timeout_seconds=60)
+        after = [
+            (path.stat().st_size, path.stat().st_mtime_ns)
+            for path in (encoded, existing)
+        ]
+        if before != after:
+            raise PipelineQueueError("A compared file changed during inspection")
+        new_details = _collision_file_details(encoded, new_inspection)
+        old_details = _collision_file_details(existing, old_inspection)
+        return LibraryCollisionComparisonResponse(
+            media_id=media_id,
+            new_pipeline_file=new_details,
+            existing_jellyfin_file=old_details,
+            size_difference_bytes=new_details.size_bytes - old_details.size_bytes,
+        )
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        json.JSONDecodeError,
+        FFprobeError,
+        PipelineQueueError,
+    ) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post(

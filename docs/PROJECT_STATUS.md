@@ -1,5 +1,372 @@
 # Project Status
 
+> [!CAUTION]
+> **FRONTEND CODE LOSS ALERT (2026-08-23)**
+> Approximately 1,200 lines of uncommitted frontend changes (implementing the "Existing rip recovery" UI) in `mkv_episode_matcher/frontend/src/components/RipPipelineView.tsx` were accidentally wiped out via a `git checkout` command. 
+> 
+> **Any agent attempting to work on the UI or RipPipelineView.tsx MUST first read `FRONTEND_RECOVERY_GUIDE.md`** at the root of the project to understand the state of the code, where the surviving logic is located (in the compiled Vite output), and where the exact recovered source lines are stored. Do not attempt to rebuild the file blindly without reading the guide.
+> 
+> *Note: A full snapshot of all uncommitted files as of 2026-08-23 has been safely saved to the local branch `emergency-backup-20260823`. If you accidentally destroy the working tree, you can recover from that branch.*
+
+
+## 2026-08-23 - Automatic Staged MKV Admission, Safe Basename Extension, and UI Job Priority
+
+### Safe MKV Basename Validation with Parentheses and Special Characters
+
+MakeMKV names batch output files directly from the disc volume label, which
+frequently includes parentheses, spaces, apostrophes, and commas (e.g.
+`The Office- Superfan Episodes  Season Eight (Disc 1)_t01.mkv`).
+- Updated `validate_job` in `disc/ripper.py` to allow standard filesystem
+  characters: `[A-Za-z0-9._ ()',-]{1,240}` while strictly preserving directory
+  traversal protections (`/`, `\`, `..`).
+- Eliminates 409 rejection of valid staged files during batch recovery and
+  auto-admission.
+
+### Complete Metadata Binding During Auto-Admission
+
+When `_auto_admit_staged_disc_if_complete` validates staged files on disk:
+- `identity_overrides` directly assigns `(disc_fingerprint, job.title_index)`
+  for every admitted job, ensuring `{media_id}.verified-rip.json` contracts and
+  `pipeline_items` carry exact title indices and disc fingerprints.
+- Downstream endpoints (`/rip/pipeline/items`) and the frontend correctly
+  recognize all admitted titles as safely present (`safelyPresentTitleIndexes`),
+  preventing false "0 of N titles safely present" recovery warnings.
+
+### Frontend Drive-to-Job Matching and Stale Attempt Retirement
+
+- Updated `latestJobForDrive` in `RipPipelineView.tsx` so that when a drive is
+  bound to a `completed` job, it returns that completed job immediately.
+- Added `awaiting_review` and `failed` to the `superseded` filter: when all
+  titles from an older failed/review attempt are satisfied by a completed job,
+  the older attempt is treated as superseded and hidden.
+- Rebuilt the frontend production assets bundle (`npm run build`).
+
+## 2026-08-22 - Graceful 0-byte batch handling and classifier-scoped rip completion
+
+### Whole-disc 0-byte MakeMKV menu tracks treated as graceful skips
+
+During single-open whole-disc ripping (`mkv disc:N all --minlength=0`), MakeMKV
+frequently writes 0-byte files for menu or navigation tracks with no stream
+content. Previously, `verify_single_open_batch_outputs` raised a `RipError` for
+any file under 1,000,000 bytes, causing successful multi-episode whole-disc rips
+to be marked as failed simply because 0-byte menu placeholders were present.
+
+The batch pipeline now handles these cleanly:
+- `verify_single_open_batch_outputs` treats exactly 0-byte outputs as graceful
+  MakeMKV skips with `output_bytes=0`. Non-zero truncated outputs (between 1 and
+  999,999 bytes, or under 50% of positive estimated size) remain strict errors.
+- `run_single_open_batch` skips file movement/distribution for 0-byte items and
+  records a `RipResult` with `output_count=0` and `output_bytes=0`. Real content
+  episodes are finalized into the flat season staging folder normally.
+
+### Recovery scope and completion check use classifier-derived matching scope
+
+- `_failed_rip_title_indexes` in `backend/routers/rip.py` now filters out titles
+  with `estimated_bytes <= 0`. When a whole-disc batch fails or is inspected for
+  recovery, 0-byte menu tracks are excluded from the recovery title candidate set
+  rather than appearing in the Web UI as "relevant missing titles" needing rerip.
+- `prepare_drive_pipeline`'s `completed_history_covers_prepared` check now
+  queries `pipeline_store.disc_matching_scope(disc_fingerprint)` and treats
+  non-episode/non-content titles outside the classifier scope as satisfied. This
+  prevents inventory-only menu suffixes from creating false 409 conflict loops
+  when a completed disc is re-observed or reconciled.
+
+### Automatic discovery and auto-admission of complete staged MKVs
+
+When a disc is inserted or observed by RipWeaver:
+- `prepare_drive_pipeline` automatically checks the staging root for existing,
+  valid MKVs matching all required content titles for the disc.
+- If all required content titles are already present in staging, RipWeaver runs
+  read-only FFprobe inspection on each candidate, admits and enqueues the
+  verified items directly into the `pipeline_store` identification queue, marks
+  the orchestration job `completed`, and triggers the automatic drive eject flow.
+- No unnecessary MakeMKV physical disc re-ripping is performed, and no manual
+  button clicks in the Web UI are required.
+
+## 2026-08-20 - failed-disc recovery retains reviewed relevant scope
+
+### Relevant completion and complete result visibility
+
+Failed-disc recovery now keeps three sets deliberately separate:
+
+- The refreshed recovery plan is the authoritative **relevant acquisition
+  set**. When every title in that set is staged, organized, already present in
+  the library, or explicitly skipped, the physical rip is complete. Old
+  zero-minimum inventory-only suffixes do not make that rip incomplete.
+- Downstream identification and organization state remains visible but does
+  not turn a safely acquired title back into missing rip work. The dashboard
+  may therefore report `rip complete · identification needs attention`; this
+  means MakeMKV has no more relevant work, not that all processing is finished.
+- The complete fingerprint result history supplies the **disc results view**.
+  A narrowed recovery plan must never hide previously ripped titles. The drive
+  card shows one latest result per title, including its current name and
+  identify/transcode/organize state, and opens that list automatically for a
+  completed or failed-recovery disc.
+- A missing index is not itself a recommendation to rip. When the saved
+  recovery plan predates the latest failure, the dashboard labels its remaining
+  indexes as unverified candidates, explicitly recommends that they not be
+  ripped yet, and offers only the read-only refresh. After refresh, each
+  remaining selected title is shown individually as `RIP`, with its estimated
+  size and the explicit reason that the current classifier still considers it
+  relevant and no safe copy exists. Force-ignored titles are separately labeled
+  `do not rip` unless the user intentionally restores one for another test.
+- A downstream-skipped title must not be rendered as `Not identified ·
+  completed`. That wording falsely implies matching still needs to run. Disc
+  results now render the durable disposition directly, for example `Excluded
+  from episode matching · not an episode · intentionally skipped`. A real
+  `episode_match_review` instead states that matching did run and, when the
+  safe audit provides it, shows the best candidate, score, automatic threshold,
+  and qualifying-window count. The action is review/retry identification, not
+  reripping.
+
+This distinction is generic for every exact disc fingerprint. Recovery scope
+controls what may be reripped; it does not redefine which safe files belong to
+the disc or erase their visible matching outcomes.
+
+### Whole-disc acquisition is not the episode-matching scope
+
+The single-open whole-disc strategy intentionally acquires every MakeMKV title,
+but that complete physical inventory must never become the participant or
+readiness set for disc-aware episode identification. Verified-rip handoff now
+subtracts `downstream_skip_title_indexes` before writing
+`disc_expected_title_indexes` into identification contracts. Menus, extras,
+combined/non-episode representations, and other automatically skipped titles
+remain preserved on disk but cannot block the disc coordinator, establish a
+same-disc anchor, consume an episode candidate, or influence residual/range
+reasoning.
+
+For contracts written before this split, the downstream worker also subtracts
+the exact fingerprint's durable `skip` dispositions from the readiness set.
+Actual episode-relevant titles still must settle before disc-wide analysis, so
+this compatibility rule does not weaken the wait for a real unfinished episode
+rip. Synthetic tests cover both new contract creation and legacy readiness.
+
+Read-only drive preparation now also persists a path-free, exact-fingerprint
+`disc_matching_scopes` record containing the classifier-derived relevant title
+indexes *before* fresh acquisition expands to every MakeMKV title. This is the
+authoritative scope for coordinator readiness and episode-range title counts.
+It lets a newly refreshed legacy failed disc replace broad historical contract
+expectations without force-ignoring every omitted inventory title. Forgetting a
+disc removes this scope with its other matching history.
+The effective scope also unions every concrete title already admitted for that
+fingerprint, then subtracts explicit non-episode dispositions. This prevents a
+later metadata-only heuristic from dropping an already matched episode or a
+held episode candidate while still excluding preserved menus and extras.
+
+The review UI must not infer that exhaustive matching is active merely because
+automatic processing is enabled. Only the durable
+`all_season_analysis_running` state may hide manual controls behind an
+intermediate-progress notice. A settled `episode_match_review` always exposes
+playback, reviewed naming, explicit all-season analysis, alternate content
+classification, retry, and hold/removal controls; this is especially important
+when the automatic coordinator is waiting for unresolved relevant rip scope.
+
+- Fresh discs still authorize the complete zero-minimum inventory for one
+  single-open MakeMKV `all` operation. When the exact disc already has an
+  executed per-title failure, preparation now intersects the current
+  classifier-selected relevant titles with the durable title scope of those
+  failed jobs. A newer whole-disc review can no longer expand legacy recovery
+  work to tiny or previously non-relevant inventory entries.
+- A stale whole-disc awaiting-review job is not rebound over the newly narrowed
+  failed-disc plan. The dashboard also prefers that current recovery plan over
+  an older review merely containing more titles. Existing verified staging and
+  Jellyfin outcomes continue to remove completed titles, leaving only the exact
+  relevant unfinished title or titles for authorization.
+- Synthetic regression coverage proves that a fresh three-title acquisition
+  remains whole-disc while a later one-title per-title failure prepares only
+  that exact title. No MakeMKV executable, optical drive, or media was accessed
+  during validation.
+
+### Why this boundary exists
+
+The single-open physical default and failed-disc recovery solve different
+problems and must not share one title-selection rule:
+
+- A genuinely fresh disc deliberately selects every title reported by the
+  zero-minimum inventory. That complete set is what permits one stable
+  `mkv disc:N all --minlength=0` child instead of repeatedly opening and closing
+  MakeMKV against the same drive.
+- A known failed per-title disc already has a reviewed recovery scope. Replacing
+  that scope with a new complete inventory can manufacture "missing" work from
+  tiny menu/control entries that were never relevant files. It can also force a
+  per-title fallback when saved exclusions make the new complete set impossible
+  to express as one exact cutoff.
+- Recovery therefore uses the exact fingerprint's durable failed per-title
+  scopes, intersects them with the current title classifier's relevant set, and
+  lets exact staged/Jellyfin evidence remove work already completed. One actual
+  relevant failure should consequently produce a one-title recovery plan.
+
+### Stale-plan incident and repair
+
+Two Office Superfan legacy recovery discs exposed the migration bug. Older
+per-title failures were followed by complete zero-minimum review plans. The
+dashboard selected the review containing the most inventory titles, displayed
+three tiny/unverified suffix indexes as missing, and allowed the stale set to be
+submitted to the per-title executor. The first extremely small MakeMKV output
+failed the one-MKV/minimum-size verifier, so the same-drive sequential worker
+correctly stopped before later indexes. This was not evidence that all displayed
+indexes were real episodes or that the physical disc had three relevant read
+failures.
+
+The repair has two halves:
+
+1. Backend preparation detects an exact-fingerprint executed per-title failure,
+   preserves the union of its durable reviewed title scopes, intersects that
+   with current relevant classification, and refuses to rebind a stale
+   whole-disc awaiting-review plan over the narrowed result. Fresh discs still
+   retain the complete single-open behavior.
+2. The dashboard prefers the current prepared failed-disc plan. It filters old
+   failed-job unfinished indexes through that authoritative expected set and no
+   longer reports excluded stale suffixes as either rerip work or unavailable
+   current-inventory titles. If the available plan predates the latest failure,
+   the action is `Refresh failed-disc recovery`, not `Rerip N missing titles`.
+
+`Refresh failed-disc recovery` performs only a confirmed read-only MakeMKV
+inventory. The button displays an active refreshing state, reports that the
+drive is being read, disables duplicate clicks, surfaces preparation failure,
+and replaces the saved review on success. It never authorizes or starts a rip.
+The user must separately review and authorize the exact refreshed missing set.
+
+### Safe diagnosis checklist
+
+When a failed-disc card still appears to offer every inventory suffix:
+
+1. Compare creation times of the latest exact-fingerprint `awaiting_review` and
+   `failed` jobs. A review older than the latest failure is stale.
+2. Inspect only path-redacted preview fields: state, title indexes, drive
+   strategy, selection mode, and event categories. Do not inspect media content
+   or expose private bindings merely to diagnose the selection scope.
+3. Confirm whether a new review was created after the refresh. A successful
+   refresh may take time because it runs a real read-only inventory; absence of
+   a newer job means the request did not complete.
+4. Treat the newly prepared relevant title set as authoritative. Do not union it
+   with older complete-inventory or failed-job suffixes in the UI.
+5. Keep the same-drive process claim and stop-on-failure behavior intact. The
+   correction belongs in planning and stale-plan selection, not in weakening
+   MakeMKV process isolation or automatically continuing after arbitrary output
+   verification failures.
+
+Focused validation for this repair includes drive-preparation regression tests,
+rip API/runtime tests, Ruff, frontend ESLint, TypeScript compilation, and the
+production frontend build. Validation used synthetic inventories and durable
+path-redacted state only; it did not access an optical disc or modify media.
+
+## 2026-08-19 - single-open physical default and hard per-drive process claims
+
+- RipWeaver's production executor again uses direct physical MakeMKV ripping;
+  whole-disc image acquisition remains a separately authorized recovery option,
+  not a prerequisite for the normal workflow.
+- Fresh Web UI preparation authorizes every title in the zero-minimum inventory
+  except an explicit saved future-rip skip. A normal multi-title disc therefore
+  binds to one `mkv disc:N all --minlength=0` process, matching MakeMKV's
+  stable per-drive GUI behavior. Unwanted-title classification happens after
+  verification, and RipWeaver does not automatically delete those files.
+- Reviewed exclusions and inventories that cannot be represented by one exact
+  cutoff retain the per-title recovery strategy. Titles remain sequential on
+  that drive; a failed single-open operation is never silently retried per
+  title in the same run, and every partial is preserved for review.
+- The exclusive MakeMKV process boundary now derives a physical scope before
+  creating a child. It atomically refuses a second child on the same drive,
+  permits children on different ordinal drives, and treats `info disc:9999` as
+  an all-drive barrier that cannot overlap any per-drive child. Unscoped
+  physical `dev:` commands fail closed.
+- Hardware claims survive orchestration exceptions and are released only after
+  the child has a proven exit status. Windows Job Object kill-on-close remains
+  the crash boundary. Explicit per-drive info and rip commands now add
+  `--noscan`, preventing MakeMKV's normal preliminary media scan from touching
+  the other loaded drives.
+- Synthetic tests cover scope parsing, different-drive concurrency,
+  same-drive rejection, all-drive exclusion, exit-proven claim release,
+  targeted `--noscan` construction, single-open execution, and the guarded
+  production adapter. The complete synthetic suite passes all 1,025 tests;
+  focused Ruff lint/format and diff checks also pass. No MakeMKV executable,
+  optical drive, or media file was accessed while implementing or validating
+  these changes.
+
+## 2026-08-18 - visible locked drives and slow Windows identity recovery
+
+- The Disc Dashboard now renders every drive slot returned by discovery. A
+  detected but untrusted, ignored, or identity-unavailable device remains
+  visible as a locked card instead of collapsing the dashboard into a misleading
+  "No trusted optical drives" empty state.
+- Locked cards expose no rip or preparation controls. They explain whether the
+  device needs approval, was ignored, or is waiting for Windows identity
+  confirmation; backend trust checks remain authoritative.
+- The bounded `Win32_CDROMDrive` identity query now allows 30 seconds instead of
+  15. A five-drive Windows query on the affected system completed in about 20
+  seconds without invoking MakeMKV or reading disc media, confirming that the
+  old cutoff—not missing drives—caused all current identities to be unavailable.
+- Focused drive-mapping tests, frontend lint, the TypeScript production build,
+  and focused Ruff checks passed.
+- Windows tray ejection now retains a bounded diagnostic from both attempted
+  mechanisms: the storage-control access/stage and Win32 error number, plus the
+  MCI open/door stage and MCI error number. The public error contains no drive
+  letter, device path, hardware identity, process detail, or media label.
+- A failed automatic eject keeps that exact safe diagnostic on the completed
+  drive card instead of replacing it with a generic refusal. Synthetic adapter
+  and API tests cover diagnostic propagation; no physical tray was operated.
+
+## 2026-08-17 - exclusive MakeMKV startup cleanup and child containment
+
+- RipWeaver now acquires a Windows named single-instance mutex before any
+  startup drive discovery. A second backend instance fails closed instead of
+  terminating MakeMKV work owned by the first instance.
+- Startup enumerates every `makemkvcon.exe` and `makemkvcon64.exe` process,
+  terminates each survivor, and requires two empty verification snapshots
+  before reconciliation or optical-drive discovery begins. Failure to enumerate,
+  terminate, wait for, or verify the process set aborts backend startup.
+- The startup scope is intentionally exclusive and includes manually launched
+  MakeMKV CLI processes. It does not target the MakeMKV GUI executable. Logs
+  retain only cleared-process counts and redacted error types, never PIDs,
+  command lines, executable paths, environments, or drive details.
+- Read-only MakeMKV info calls, per-title rips, and single-open batch rips now
+  share a process-wide Windows Job Object configured with kill-on-close. If a
+  child cannot be assigned, RipWeaver settles it immediately and refuses the
+  operation plus every later launch until restart. Standalone RipWeaver CLI
+  operations acquire the same machine-wide mutex lazily, so they cannot start
+  beside an active backend. Closing or crashing the RipWeaver process therefore
+  asks Windows to terminate every contained MakeMKV child rather than leaving
+  an orphan to continue seeking on a drive.
+- Synthetic process snapshots, terminators, leases, and child handles cover the
+  kill switch, two-pass verification, mutex ordering, idempotent startup,
+  Job Object assignment, and fail-closed child settlement. No real process was
+  terminated, and no MakeMKV executable, optical drive, or media file was
+  accessed while implementing or testing this boundary.
+- Automatic media-change discovery failures no longer retry after only the
+  normal debounce. They back off for 5 seconds, 15 seconds, 60 seconds, and then
+  300 seconds between later attempts while remaining armed for recovery. This
+  prevents a fast persistent failure from becoming a tight CLI launch loop.
+- Focused process-control, discovery, ripper, batch, and runtime coverage passed
+  67 tests; the complete synthetic suite passed 955 tests. Focused Ruff,
+  formatting, and diff checks passed.
+
+## 2026-08-16 - independent parallel ripping and streaming queue handoff
+
+- Physical ripping and downstream processing now have an explicit producer /
+  consumer boundary. MakeMKV continues to run one independent worker per
+  physical drive, with titles sequential only within that drive.
+- A verified per-title MKV is offered immediately to a dedicated handoff worker;
+  contract creation and pipeline SQLite admission never run on a MakeMKV drive
+  thread. The single-open batch strategy publishes titles only after its exact
+  isolated output set passes verification.
+- A later title failure on one drive now retains every earlier verified title
+  from that same drive, while other drive workers continue unaffected.
+- Pipeline admission is retried once. A persistent queue/contract failure no
+  longer relabels a successful physical rip as a MakeMKV failure: the rip job
+  completes with a path-free `attention_required` handoff status, the staged
+  MKV remains preserved, and the dashboard directs recovery through the
+  existing missing-item workflow.
+- A newly verified rerip whose normal media ID belongs to an older retained
+  artifact receives a deterministic `-recovery-<digest>` queue lineage. Neither
+  the older queue record nor either staged MKV is overwritten.
+- The drive card reports how many completed MKVs have already entered the
+  processing queue while other titles and drives continue ripping.
+- Focused concurrency, adapter, dispatcher, store, and API composition coverage
+  passed (`45 passed`); the full suite passed (`943 passed`). Focused Ruff and
+  format checks, frontend ESLint, TypeScript, and the production build passed.
+  Verification is synthetic only; no MakeMKV, HandBrake, disc, or media command
+  was invoked for this change.
+
 ## 2026-08-05 - live pipeline settings during automatic ripping
 
 - Disc content hints and HandBrake profile choices now persist per orchestration
@@ -2491,6 +2858,36 @@ and the WebUI provides one batch action for every held placeholder title.
 Failed all-season identification cards also expose `Play staged rip for
 review`; it opens only the exact preserved MKV in the Windows default player
 and does not change pipeline or media state.
+
+Downstream queue claims are now stage-aware. Identification, transcode, and
+organization each retain a one-item stage limit, but an organization move may
+run while an unrelated title is transcoding. Per-item stage order is unchanged,
+and organization still refuses an existing destination. This prevents a fully
+verified encode from displaying `organize · queued` solely because HandBrake is
+working on a different title.
+
+Automatic disc-aware matching now revisits a
+`gemini_descriptive_review_required` title after another title on the exact disc
+becomes identified. The prior coordinator excluded that review code and
+suppressed every later attempt by fingerprint alone, so newly settled siblings
+could not unlock residual elimination. Attempt suppression now includes the
+resolved same-disc title-index set: changed matching evidence permits one new
+analysis, while unchanged evidence remains held without a retry loop.
+
+Failed single-open whole-disc batches now re-enter preparation through the same
+classifier-derived recovery boundary as failed per-title attempts. A failed
+batch's complete zero-minimum acquisition inventory no longer turns tiny menu
+or control titles into rerip requirements. Preserved exact staged candidates are
+shown before a rerip can be authorized; after read-only verification, only
+unrecovered relevant titles remain. When every relevant title is safely staged,
+already in Jellyfin, or skipped, acquisition is complete and automatic eject is
+eligible even though identification/transcode work may continue.
+
+The failed-batch finder now preserves original MakeMKV output ordinals when a
+recovery plan is narrowed. For example, relevant titles 1, 3, and 4 recover
+from `_t01`, `_t03`, and `_t04`, rather than being incorrectly searched as
+`_t00`, `_t01`, and `_t02`. Exact batch-cohort discovery also runs before the
+broad staging-tree basename scan, avoiding a long UI fallback to zero results.
 The same card accepts a reviewed TV basename in
 `Series - SXXEYY - Episode Title` form without an extension. RipWeaver retains
 the immutable staged basename, adds `.mkv` to the planned output, queues a
@@ -3518,3 +3915,221 @@ for review rather than forcing a TV identity.
   that no media has moved and requires a separate explicit confirmation before
   the existing verified encode may be placed in Jellyfin. Synthetic tests
   verify both elimination and byte preservation.
+
+## Opt-in Jellyfin collision comparison (2026-08-16)
+
+- Organize-stage `library_collision` cards now offer an explicit **Inspect file
+  differences** action. After confirmation, RipWeaver reads only the exact
+  verified pipeline encode and the single conflicting Jellyfin file with local
+  FFprobe; it does not rename, move, overwrite, delete, or transcode either
+  file.
+- The comparison is path-redacted and displays each file's modified time, size,
+  resolution and scan type, video codec, audio codecs, and container. The
+  request is bound to the held artifact digest and stops if the collision or
+  either file changes during inspection.
+- The same card offers separate **Play new encode** and **Play existing
+  Jellyfin file** controls. Each requires its own confirmation, revalidates the
+  held artifact and exact single collision, and opens only the selected file in
+  the Windows default media player without modifying it.
+- Pre-encode collisions remain held without this comparison because there is no
+  verified new encode to compare yet. Corrected identifications still proceed
+  through their separate placement confirmation and will expose this comparison
+  if placement discovers an actual library collision.
+- Implementation tests use synthetic files and an injected FFprobe result. No
+  optical drive or real media file was read while adding the feature.
+
+## Structured season/disc label context and Gemini coherence (2026-08-16)
+
+- Disc preparation now recognizes explicit television shorthand including
+  `S4`, `S04`, `Season 4`, `D3`, `D03`, `Disc 3`, `Disk 3`, `DVD3`, and joined
+  forms such as `S04D03`. Season and disc numbers are stored separately from
+  the release/series hint and survive later TMDb or Gemini canonical-series
+  resolution.
+- A parsed season is a hard automatic candidate boundary: OpenSubtitles,
+  advisory local scoring, and Gemini receive only that season. RipWeaver does
+  not silently widen a parsed `S4` disc to the complete series after weak
+  subtitle evidence.
+- A parsed disc ordinal only reorders the complete in-season candidate set
+  toward the corresponding later-season area. It never removes candidates,
+  assumes MakeMKV title order, or supplies episode identity evidence.
+- Before accepting explicit-season Gemini assignments, RipWeaver validates the
+  entire provider-only set. Assignments must be unique, remain in the requested
+  season, and fit in a compact episode window no wider than the known title
+  count. The observed six-title `E12,E11,E01,E02,E03,E04` split is therefore
+  held for review even when two Gemini passes agree individually.
+- Regression coverage uses synthetic labels, catalogues, and provider results;
+  no optical drive, media file, or live provider was accessed.
+### Extended-cut subtitle retry and season-boundary exit (2026-08-16)
+
+- TV identification initially collects six evenly distributed Whisper windows.
+  When an episode remains unresolved after the in-season OpenSubtitles pass,
+  RipWeaver collects one additional offset set of up to six windows and reruns
+  the same full-subtitle search. This is intended for extended/reconstructed
+  cuts whose inserted dialogue or shifted scenes weaken the first sample set.
+- The retry keeps the original confidence and multi-window consensus rules; an
+  unmatched inserted scene is neutral and cannot lower a candidate into a
+  match, while at least two independently qualifying anchors are still needed.
+- The retry is cached against the exact verified source and sampling version,
+  is limited to twelve total private excerpts, and cannot repeat indefinitely.
+- An explicit season such as `S4` remains the automatic-assignment boundary.
+  Only after the in-season subtitle retry and bounded Gemini checks fail may
+  the local OpenSubtitles matcher inspect other seasons. Any such result is
+  logged and exposed as an `outside-S04-review-only` candidate, is never
+  assigned automatically, and consumes no additional Gemini request.
+- All expected disc titles must be admitted and no title may still be queued or
+  running in identification before automatic disc analysis starts. Local
+  OpenSubtitles matches, the offset retry, and narrowed elimination therefore
+  finish before external episode ranking begins.
+- Up to twelve private Whisper windows remain available locally. Gemini receives
+  at most the six strongest non-duplicate excerpts plus at most six bounded
+  Whisper/subtitle passage pairs drawn from the three strongest local episode
+  candidates; entire subtitle files are never transmitted.
+- Every unresolved title on the disc is sent in one proposal request rather
+  than four-title chunks. One confirmation request then audits the complete
+  proposed one-to-one assignment map. Normal successful operation therefore
+  uses zero Gemini calls when local evidence succeeds and at most two calls for
+  episode ranking regardless of whether the disc has five or more misses.
+- The exact path-free request body is SHA-256 keyed to a private response cache.
+  An unchanged model, evidence set, candidate set, reviewer note, and matching
+  context reuse the prior structured response after restart instead of spending
+  credits again. Changed evidence or candidates produce a new digest.
+
+### Release-aware subtitle variants (2026-08-16)
+
+- Subtitle lookup now separates canonical series identity from release edition.
+  `The Office Superfan Episodes` produces a `superfan` release profile plus the
+  canonical fallback query `The Office`; equivalent support exists for generic
+  extended/uncut labels.
+- A recognized edition performs one edition-bearing OpenSubtitles search and
+  one canonical/TMDb fallback search. Provider metadata is ranked as `exact`,
+  `compatible`, or `generic`. An unrecognized edition remains `unresolved` and
+  must not be described as an exact regular-edition match.
+- RipWeaver retains at most two distinct provider releases per episode. This
+  exposes alternatives without downloading every upload returned by the
+  provider. Exact Superfan metadata ranks ahead of Peacock/PCOK/extended
+  compatibility and regular broadcast fallbacks.
+- Transcript comparison, not the release label, makes the episode decision.
+  Every Whisper window compares against the retained variants and keeps only
+  the strongest variant for each episode. Multiple uploads of one episode
+  therefore contribute only one episode vote and cannot defeat another episode
+  merely because more subtitle releases were available.
+- Cache filenames and the season manifest retain the release classification and
+  profile without source paths. Existing schema-1 subtitle caches are treated
+  as unresolved and receive one release-aware refresh; completed schema-2
+  caches restore variant classifications after restart.
+- OpenSubtitles attempts record the requested edition and counts of exact,
+  compatible, generic, and unresolved references. The dashboard evidence panel
+  labels those counts, and a successful local match reports its selected
+  reference-edition class.
+- `episode_match_review` now enters the same automatic disc-level fallback as
+  other unresolved TV outcomes. This closes the routing gap observed on the
+  six-title season-5 disc, where the first matcher stopped before release-aware
+  retry, range fencing, or batched Gemini could run.
+- Tests use only synthetic provider records, subtitle text, and ASR scores. No
+  optical disc, staged media, OpenSubtitles, Gemini, or other live provider was
+  accessed while implementing this behavior.
+
+### Disc ordinal candidate window (2026-08-16)
+
+- A parsed disc ordinal now combines with the number of episode-like titles to
+  order the initial candidate catalogue. For `D2` with six titles, `E07-E12`
+  are considered first; `D4` with six titles considers `E19-E24` first.
+- This expected window is advisory only. It removes no aired episodes, cannot
+  assign an episode, and does not assume MakeMKV title order. Dialogue evidence
+  still decides matches, while two independently supported same-disc matches
+  may establish the stricter evidence-derived range fence.
+
+### Durable initial-matcher decision trace (2026-08-16)
+
+- The first local subtitle matcher now records a path- and dialogue-redacted
+  trace for successful matches and review outcomes. Each sampled window retains
+  its time position, transcript metrics, subtitle-variant count, every episode's
+  best version-collapsed score, threshold result, release class, and rejection
+  reason.
+- The final record retains the selected episode, runner-up, score, window votes,
+  segment and engine thresholds, and the explicit acceptance or review reason.
+  Successful titles therefore remain explainable after transcoding and
+  organization instead of retaining only their final filename.
+- Complete candidate events use the existing append-only identification audit
+  outside routine dashboard polling. Each title card has an on-demand
+  `Load complete matching log` control; older runs without this evidence are
+  labelled as such and require an identification retry to populate it.
+- Process logs also emit one safe summary per sampled window and one final
+  matcher decision. They contain episode IDs and scores but no transcript text,
+  source paths, subtitle paths, credentials, or provider responses.
+- Synthetic tests cover successful and held first-pass decisions, alternative
+  subtitle releases, candidate rejection reasons, restart persistence, and
+  dialogue/path redaction. No live media or provider was accessed.
+
+### View-scoped adaptive dashboard polling (2026-08-16)
+
+- Routine dashboard refreshes no longer serialize every historical pipeline
+  item and rip job every three seconds. The disc dashboard requests the loaded
+  and explicitly selected disc fingerprints plus any globally active rip jobs;
+  the queue requests actionable work, and the attention view requests only
+  failures and review holds. Existing unscoped API behavior remains available
+  for explicit one-time refreshes and compatibility.
+- Active visible work retains a three-second refresh cadence. An idle visible
+  view backs off to twelve seconds, matching-performance history refreshes at
+  most once per minute, and a hidden browser tab suspends dashboard polling.
+  Returning to the tab triggers an immediate refresh.
+- Queue and attention pages do not poll optical-drive status that they do not
+  display. The redundant two-second selected-job poll was folded into the
+  scoped dashboard snapshot, while button actions continue to update from
+  their direct responses.
+- Pipeline item listing now decodes its SQLite rows in one query rather than
+  opening one database connection per historical item. View scopes are bounded
+  to sixteen validated path-free disc fingerprints and do not change worker,
+  matching, ripping, transcoding, organization, or authorization behavior.
+- Synthetic tests cover scope validation, active jobs outside the selected
+  disc, selected-disc terminal history, attention-only items, and empty-disc
+  fallback behavior. No optical drive, media file, or external provider was
+  accessed.
+
+### Restart-safe unresolved-disc coordination (2026-08-16)
+
+- The background downstream coordinator now uses the same automatic unresolved
+  review-code policy as the immediate post-rip path. In particular,
+  `episode_match_review` triggers the completed-disc analysis instead of
+  remaining held indefinitely after a restart.
+- The durable queue now permits that review state to enter
+  `all_season_analysis_running`. Previously, the coordinator selected the disc
+  correctly but the transition validator rejected the batch before any media
+  evidence was read, leaving the cards unchanged.
+- Before deciding whether a disc is ready, the coordinator collapses duplicate
+  original and `-recovery-...` queue records by inventory fingerprint and title
+  index. Only the most recently updated lineage represents that physical title;
+  stale records can no longer inflate the settled-title count, keep a disc
+  falsely pending, or enter the analysis batch alongside their replacement.
+- The coordinator still waits until every expected title has a current queue
+  record and none of those current identify records is queued or running. This
+  does not weaken the independent-evidence policy and does not let title order
+  or sequence position name an episode.
+- Regression coverage recreates a disc containing old review records, newer
+  recovery records, and an in-progress recovery. It verifies that analysis
+  waits for the current recovery and then receives only the newest title
+  lineages. A queue-level and resolver-level handoff test also verifies the
+  `episode_match_review` transition. No optical drive, media file, or provider
+  was accessed by the tests.
+
+### Exhaustive bounded TV-identification fallback (2026-08-20)
+
+- An unresolved per-title dialogue pass now always receives one six-window
+  offset retry when the initial six produce no qualifying candidate, only one
+  independent vote, or a consensus whose best score remains below the final
+  engine threshold. The retry reason and sampled-window count are retained in
+  the redacted identification audit.
+- The completed-disc coordinator now accepts one remaining unresolved title.
+  That title proceeds through the existing timestamp-independent whole-subtitle
+  search, cached offset Whisper evidence, sibling-history range fence, residual
+  matching, and configured two-pass Gemini/content fallbacks before returning
+  to review. MakeMKV title order remains non-evidence and no threshold is
+  lowered.
+- Independent-evidence holds enter the local disc cascade even when Gemini is
+  disabled; external fallback remains controlled by its existing setting. The
+  manual unmatched-TV boundary also accepts one explicitly confirmed MKV.
+- Regression coverage includes zero-candidate initial passes, below-engine
+  initial consensus, singleton automatic coordination, singleton resolver
+  handoff, and a one-file manual unmatched request. The full suite passes with
+  synthetic/saved data only; no optical drive, staged media, or live provider
+  was accessed.

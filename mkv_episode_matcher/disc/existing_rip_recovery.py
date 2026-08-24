@@ -132,23 +132,31 @@ def _failed_batch_cohorts(  # noqa: C901 - linear identity and prefix guards
         or any(match is None for match in identities)
         or len(fingerprints) != 1
         or any(
-            job.estimated_bytes is None or job.estimated_bytes <= 0
-            for job in ordered
+            job.estimated_bytes is None or job.estimated_bytes <= 0 for job in ordered
         )
     ):
         return ()
     fingerprint = next(iter(fingerprints))
     grouped: dict[tuple[Path, str], dict[int, Path]] = {}
-    for path in root.glob(
-        f".staging/disc-??/attempt-*/{fingerprint}/title-*/*.mkv"
-    ):
+    for path in root.glob(f".staging/disc-??/attempt-*/{fingerprint}/title-*/*.mkv"):
         if not path.is_file():
             continue
         match = _BATCH_BASENAME.fullmatch(path.name)
         if match is None:
             continue
         ordinal = int(match.group("ordinal"))
-        if ordinal >= len(ordered):
+        parent_match = re.fullmatch(r"title-(\d{3})", path.parent.name)
+        first_title_index = int(parent_match.group(1)) if parent_match else None
+        largest_possible_ordinal = len(ordered) - 1
+        if (
+            first_title_index is not None
+            and first_title_index != ordered[0].title_index
+        ):
+            largest_possible_ordinal = max(
+                largest_possible_ordinal,
+                max(job.title_index for job in ordered) - first_title_index,
+            )
+        if ordinal > largest_possible_ordinal:
             continue
         key = (path.parent.resolve(), match.group("prefix"))
         if ordinal in grouped.setdefault(key, {}):
@@ -157,24 +165,50 @@ def _failed_batch_cohorts(  # noqa: C901 - linear identity and prefix guards
         grouped[key][ordinal] = path.resolve()
 
     cohorts = []
-    for ordinal_paths in grouped.values():
-        recovered: dict[int, Path] = {}
-        accepted_ratios: list[float] = []
-        for ordinal, job in enumerate(ordered):
-            path = ordinal_paths.get(ordinal)
-            if path is None:
-                break
-            ratio = path.stat().st_size / job.estimated_bytes
-            if not _BATCH_ESTIMATE_RATIO_MIN <= ratio <= _BATCH_ESTIMATE_RATIO_MAX:
-                break
-            if accepted_ratios:
-                baseline = median(accepted_ratios)
-                if abs(ratio - baseline) / baseline > _BATCH_COHORT_RATIO_TOLERANCE:
+    seen_cohorts: set[tuple[tuple[int, Path], ...]] = set()
+    for (parent, _prefix), ordinal_paths in grouped.items():
+        parent_match = re.fullmatch(r"title-(\d{3})", parent.name)
+        first_title_index = int(parent_match.group(1)) if parent_match else None
+        ordinal_maps = [
+            {job.title_index: ordinal for ordinal, job in enumerate(ordered)}
+        ]
+        if (
+            first_title_index is not None
+            and first_title_index != ordered[0].title_index
+            and all(job.title_index >= first_title_index for job in ordered)
+        ):
+            # Fresh whole-disc acquisition selects every title in index order.
+            # A later failed-disc plan may contain only relevant titles, but
+            # MakeMKV's preserved _tNN suffixes still use the original batch
+            # ordinals. The isolated batch directory identifies the first
+            # original title, allowing that narrowed plan to recover _t01,
+            # _t03, etc. without treating its first relevant title as _t00.
+            ordinal_maps = [
+                {
+                    job.title_index: job.title_index - first_title_index
+                    for job in ordered
+                }
+            ]
+        for ordinal_map in ordinal_maps:
+            recovered: dict[int, Path] = {}
+            accepted_ratios: list[float] = []
+            for job in ordered:
+                path = ordinal_paths.get(ordinal_map[job.title_index])
+                if path is None:
                     break
-            recovered[job.title_index] = path
-            accepted_ratios.append(ratio)
-        if recovered:
-            cohorts.append(recovered)
+                ratio = path.stat().st_size / job.estimated_bytes
+                if not _BATCH_ESTIMATE_RATIO_MIN <= ratio <= _BATCH_ESTIMATE_RATIO_MAX:
+                    break
+                if accepted_ratios:
+                    baseline = median(accepted_ratios)
+                    if abs(ratio - baseline) / baseline > _BATCH_COHORT_RATIO_TOLERANCE:
+                        break
+                recovered[job.title_index] = path
+                accepted_ratios.append(ratio)
+            identity = tuple(sorted(recovered.items()))
+            if recovered and identity not in seen_cohorts:
+                cohorts.append(recovered)
+                seen_cohorts.add(identity)
     return tuple(cohorts)
 
 
@@ -235,13 +269,19 @@ def discover_existing_rips(  # noqa: C901 - ordered recovery precedence guards
     candidates: list[ExistingRipCandidate] = []
     missing: list[int] = []
     ambiguous: list[int] = []
-    special_cohorts = _complete_special_cohorts(root, jobs)
     batch_cohorts = _failed_batch_cohorts(root, jobs)
+    special_cohorts: tuple[dict[int, Path], ...] | None = None
     for job in jobs:
         if not job.output_basename:
             missing.append(job.title_index)
             continue
-        matches = _normal_matches(root, job.output_basename)
+        matches = [
+            cohort[job.title_index]
+            for cohort in batch_cohorts
+            if job.title_index in cohort
+        ]
+        if not matches:
+            matches = _normal_matches(root, job.output_basename)
         exact_matches = [path for path in matches if path.name == job.output_basename]
         if len(exact_matches) == 1:
             # The reviewed plan's complete basename includes its current ordinal.
@@ -249,16 +289,14 @@ def discover_existing_rips(  # noqa: C901 - ordered recovery precedence guards
             # session-local ordinal also exist. Multiple exact copies in
             # different directories remain ambiguous.
             matches = exact_matches
-        if not matches and len(special_cohorts) == 1:
+        if not matches and special_cohorts is None:
+            special_cohorts = _complete_special_cohorts(root, jobs)
+        if not matches and len(special_cohorts or ()) == 1:
+            assert special_cohorts is not None
             matches = [special_cohorts[0][job.title_index]]
-        elif not matches and len(special_cohorts) > 1:
+        elif not matches and len(special_cohorts or ()) > 1:
+            assert special_cohorts is not None
             matches = [cohort[job.title_index] for cohort in special_cohorts]
-        if not matches:
-            matches = [
-                cohort[job.title_index]
-                for cohort in batch_cohorts
-                if job.title_index in cohort
-            ]
         if not matches:
             missing.append(job.title_index)
             continue

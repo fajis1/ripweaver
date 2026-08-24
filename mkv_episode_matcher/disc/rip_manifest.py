@@ -44,6 +44,7 @@ class MediaContext:
     handbrake_profile_id: str | None = None
     staging_attempt: str | None = None
     selected_title_indexes: tuple[int, ...] | None = None
+    downstream_skip_title_indexes: tuple[int, ...] = ()
     special_feature_catalog_id: str | None = None
     special_feature_release_id: str | None = None
     special_feature_library_title: str | None = None
@@ -66,6 +67,13 @@ def media_context_from_dict(value: dict[str, object]) -> MediaContext:
         if not isinstance(indexes, list | tuple):
             raise RipError("Media context selected title indexes are invalid")
         normalized["selected_title_indexes"] = tuple(indexes)
+    skip_indexes = normalized.get("downstream_skip_title_indexes", ())
+    if not isinstance(skip_indexes, list | tuple) or any(
+        isinstance(index, bool) or not isinstance(index, int) or index < 0
+        for index in skip_indexes
+    ):
+        raise RipError("Media context downstream skip indexes are invalid")
+    normalized["downstream_skip_title_indexes"] = tuple(skip_indexes)
     assignments = normalized.get("special_feature_assignments", ())
     if not isinstance(assignments, list | tuple) or not all(
         isinstance(item, dict) for item in assignments

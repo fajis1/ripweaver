@@ -14,6 +14,7 @@ from mkv_episode_matcher.media.organizer import (
     inspect_episode_destination,
     inspect_episode_version_destination,
     jellyfin_resolution_label,
+    omit_placeholder_episode_title,
 )
 from mkv_episode_matcher.pipeline_queue import PipelineQueueError, PipelineQueueStore
 
@@ -76,6 +77,7 @@ def _destination(payload: dict, config: Config) -> tuple[Path, PurePosixPath, st
     if root is None or not root.is_dir():
         raise PipelineQueueError(f"Configured Jellyfin {kind} root is unavailable")
     try:
+        relative = omit_placeholder_episode_title(relative, payload.get("episode_id"))
         relative = add_jellyfin_version_label(
             relative,
             jellyfin_resolution_label(

@@ -38,6 +38,36 @@ and documentation must not contain drive serial numbers, personal paths,
 credentials, or unnecessary media-library details. Do not assume that
 `--dry-run` is safe without tracing the entire call path.
 
+## Git Checkpoints
+
+The owner authorizes repository agents to create and push safety checkpoints
+only to the owner-controlled `origin/wip/test` and `origin/wip/main` branches by
+running `scripts/checkpoint_worktree.ps1`. This standing authorization does not
+permit pushes to `upstream`, force pushes, branch deletion, ordinary feature
+commits, pull requests, merges, releases, or changes to `main`.
+
+- Use `-Channel test` on every non-main development or test branch. Use
+  `-Channel main` only when the current checked-out branch is actually `main`.
+- Run a preview first, then push the checkpoint after each meaningful completed
+  implementation milestone and at the end of every agent task that leaves
+  meaningful uncommitted changes.
+- Create a checkpoint before bulk rewrites, generated-build replacement,
+  deletion, branch switching, or another risky operation whenever the current
+  meaningful state is newer than the remote checkpoint.
+- The checkpoint script must leave the current branch, real Git index, and
+  worktree unchanged. If its secret, path, size, remote, or Git validation
+  refuses a checkpoint, do not bypass the refusal; report it to the owner.
+- Never treat `git stash`, reflog-only objects, ignored files, copied working
+  directories, or the local `.git` directory as the sole backup of useful work.
+- Never add `.env`, credentials, media, private transcripts, logs, pytest
+  scratch directories, coverage output, or ad-hoc local repair scripts to a
+  public checkpoint.
+- Checkpoint history is recovery-only. Finished changes still use the normal
+  reviewed feature-branch and pull-request workflow, normally squash-merging
+  WIP history before `main`.
+
+See `docs/GIT_CHECKPOINTS.md` for commands and recovery guidance.
+
 ## Repository Layout
 
 - `mkv_episode_matcher/cli.py`: Typer CLI entry point.
@@ -131,6 +161,32 @@ work and cleanup is authorized.
 `info` action only and saves reports under the ignored `.mkv-preflight/`
 directory.
 
+`disc/makemkv_process_control.py` is the exclusive Windows MakeMKV process
+boundary. Backend startup must acquire its named single-instance mutex before
+touching MakeMKV, terminate every surviving `makemkvcon.exe` or
+`makemkvcon64.exe`, verify two empty process snapshots, and abort startup if
+cleanup cannot be proven. This intentionally includes CLI processes started
+outside RipWeaver; the MakeMKV GUI executable itself is outside the kill scope.
+Every MakeMKV info or rip child launched by RipWeaver must be assigned to the
+process-wide Windows Job Object with kill-on-close enabled. Standalone CLI
+launches must acquire the same machine-wide exclusivity gate lazily, so they
+cannot compete with an active backend. Assignment failure must settle the child
+and poison further launches until restart. Startup/process logs may report
+counts and error types only, never PIDs, command lines, executable paths, drive
+details, or environments. Tests must use injected synthetic process snapshots,
+terminators, and child handles; implementation approval is not authorization to
+terminate a real process or access a physical disc during validation.
+The same process-control boundary must classify every ordinal `disc:N` child
+before process creation. At most one live child may own a physical drive; an
+`info disc:9999` child is an all-drive barrier and may overlap no per-drive
+child. Different explicitly bound drives may run concurrently. The claim is
+released only after process exit is proven, and an unscoped `dev:` physical
+command is refused. Explicit per-drive info and rip commands use `--noscan` so
+MakeMKV does not perform its normal media prescan against the other drives.
+Failed automatic drive refreshes remain armed but must use the bounded
+5-second, 15-second, 60-second, then 300-second retry backoff. A fast MakeMKV
+failure must never become a tight discovery loop against the drives.
+
 `mkv-match plan-titles <report.json> [<report.json> ...]` reads only saved JSON
 reports. It classifies episode candidates, combined titles, extras, and review
 items; ranks diagnostic audio streams; and produces no execution command.
@@ -215,6 +271,61 @@ set in isolated staging; only then may the already-authorized manifest
 finalization place unique files in the flat season folder. All final collisions
 must be detected before MakeMKV starts.
 
+Fresh Web UI drive preparation now selects every title in the complete
+zero-minimum inventory by default. Except for explicit saved future-rip skips,
+this makes one targeted `mkv disc:N all --minlength=0` child the normal physical
+strategy. Classification and unwanted-title review happen after the verified
+batch; nothing is deleted automatically. A reviewed exclusion or inventory that
+cannot form one safe exact batch retains per-title recovery. Recovery titles
+remain sequential on that drive, and the process-control claim must prove the
+previous child exited before the next child can start. A failed batch is never
+silently retried per title in the same run; preserved partials require review
+and a newly authorized attempt. Whole-disc image acquisition remains an
+available recovery path rather than a prerequisite for normal physical ripping.
+
+Whole-disc acquisition scope and disc-aware episode-matching scope are distinct.
+The former may contain every zero-minimum MakeMKV title; the latter must exclude
+every durable or context-classified downstream skip. Non-episodes may be
+preserved for review but must never block disc-level analysis, establish an
+episode-range anchor, consume an episode candidate, or participate in residual
+elimination. Older contracts carrying broad inventory expectations must be
+narrowed by exact-fingerprint durable skip dispositions at coordination time.
+Read-only preparation must persist the latest path-free classifier-derived
+relevant index set separately from acquisition manifests; that exact-fingerprint
+scope is authoritative for disc-coordinator readiness and range title counts,
+and forgetting the disc must remove it.
+
+Do not apply that fresh-disc whole-inventory rule to an exact disc that already
+has an executed per-title or single-open batch failure. Failed-disc preparation
+is a recovery workflow: intersect the current classifier-selected relevant
+titles with the durable acquisition scope of the exact fingerprint's failed
+jobs, then
+remove titles already verified in staging or present in Jellyfin. A newer
+zero-minimum inventory or an older full-disc awaiting-review job must never
+expand legacy recovery to tiny, menu/control, or otherwise inventory-only
+titles. The Web UI must treat a recovery plan created before the latest failure
+as stale: it may offer a read-only `Refresh failed-disc recovery`, but it must
+not execute the stale missing-title set. After refresh, the newly prepared
+relevant scope is authoritative; do not fall back to unfinished indexes from an
+older failed job when those indexes are outside that scope. The refresh must
+show visible in-progress and failure feedback because it may spend substantial
+time in a read-only MakeMKV inventory. This recovery preparation is not rip
+authorization.
+
+Preserved outputs from a failed single-open batch must be offered for exact
+read-only verification before any rerip. MakeMKV 0-byte menu and navigation
+outputs are treated as graceful skips (with zero output bytes and no file
+distribution) rather than batch errors. Inventory-only titles outside the
+classifier-derived matching scope must not appear as missing recovery work. Once
+every relevant title is verified in staging/Jellyfin or explicitly skipped, the
+disc counts as acquisition-complete and the configured automatic-eject flow may
+run while downstream identification and transcoding continue.
+When recovery narrows an original whole-inventory batch, preserved MakeMKV
+`_tNN` suffixes retain their original batch ordinals; they must not be
+renumbered against the smaller relevant-title subset. The isolated batch
+directory's first-title index may anchor this mapping only for the fresh
+whole-inventory strategy, with the normal size/cohort verification retained.
+
 `POST /rip/preview` and `disc/rip_preview.py` are the saved-report-only web
 planning boundary. They read only the explicit preflight JSON paths submitted
 by the caller, build the plan in memory, rebind those same reports, optionally
@@ -291,13 +402,15 @@ runner and its existence is not authorization for any stage.
 
 `pipeline_queue.py` is the private durable item scheduler. Verified MakeMKV
 results enter `identify`; successful items then advance to `transcode` and
-`organize`. SQLite claiming permits only one globally running downstream item,
-so identification, Whisper/OCR/provider fallback, HandBrake, and organization
-cannot overlap by default. MakeMKV's separately bounded one-worker-per-drive
-parallelism is unchanged. Failed and review-required items release the global
-worker so unrelated items continue. Restart reconciliation returns a running
-downstream item to the beginning of its current stage. Public queue responses
-and events must never expose private artifact or media paths.
+`organize`. SQLite claiming permits only one running item per downstream stage.
+Different stages may overlap, so organization must not wait for an unrelated
+HandBrake transcode, while identification, transcode, and organization each
+remain serialized within their own stage. Per-item stage order and all
+collision/refusal checks remain mandatory. MakeMKV's separately bounded
+one-worker-per-drive parallelism is unchanged. Failed and review-required items
+release their stage claim so unrelated items continue. Restart reconciliation
+returns a running downstream item to the beginning of its current stage. Public
+queue responses and events must never expose private artifact or media paths.
 
 All-season identification also keeps a private append-only per-title audit
 under the identification-evidence root. Each analysis retry has a fresh opaque
@@ -447,6 +560,14 @@ already assigned confidently on that same disc and may identify the only
 remaining plausible candidate when its own evidence meets the residual-match
 rules; this must not assume that MakeMKV title indexes are chronological.
 
+An unresolved TV title held at `gemini_descriptive_review_required` remains an
+automatic disc-analysis candidate. The coordinator must retry it when the set
+of identified same-disc title indexes changes, because new independent sibling
+assignments may make residual elimination conclusive. Retry suppression must be
+keyed by the exact fingerprint plus that resolved-index set, not by fingerprint
+alone, so unchanged evidence cannot form a loop and ordinary transcode or
+organization state changes cannot retrigger matching.
+
 Automatic all-season TV assignments use identification-policy version 4. A
 normal OpenSubtitles assignment requires two qualifying independent windows at
 the configured threshold with a hard 70-percent floor, plus the normal margin
@@ -580,7 +701,8 @@ is intended to make the file eligible for a later standard Season 0X scan; it
 is not itself an episode identification.
 
 `mkv-match plan-rip <fresh-report.json>... --manifest-out <new.json>` creates a
-path-redacted manifest and excludes discs containing unresolved review titles.
+path-redacted manifest for every nonempty inventory title; classification may
+remain unresolved until after ripping.
 It does not access discs or media. `mkv-match execute-rip <manifest.json>
 --output-root <existing-directory> --confirm-rip` is the only authorized rip
 boundary. It runs one title at a time, creates a new unique staging directory,

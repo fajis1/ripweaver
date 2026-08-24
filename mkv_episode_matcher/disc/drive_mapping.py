@@ -136,7 +136,7 @@ def parse_windows_optical_devices(payload: str) -> tuple[NativeOpticalDevice, ..
 
 
 def discover_windows_optical_devices(
-    *, timeout_seconds: int = 15
+    *, timeout_seconds: int = 30
 ) -> tuple[NativeOpticalDevice, ...]:
     """Return hashed Windows optical identities without reading disc media."""
 

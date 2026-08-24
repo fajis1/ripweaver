@@ -46,7 +46,7 @@ class MatchResponse(BaseModel):
 
 
 class UnmatchedMatchRequest(BaseModel):
-    files: list[str] = Field(min_length=2, max_length=999)
+    files: list[str] = Field(min_length=1, max_length=999)
     series_name: str = Field(min_length=1, max_length=160)
     season: int | None = Field(default=None, ge=0, le=99)
     confirm_media_read: bool = False

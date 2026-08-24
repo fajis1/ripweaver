@@ -7,10 +7,15 @@ from mkv_episode_matcher.backend import identification_dossier as dossier_module
 from mkv_episode_matcher.backend.identification_dossier import (
     IdentificationDossierStore,
     collect_dossier_evidence,
+    collect_supplemental_dossier_evidence,
     source_identity,
 )
 from mkv_episode_matcher.core.models import Config
-from mkv_episode_matcher.media.gemini_matcher import UnmatchedFileEvidence
+from mkv_episode_matcher.media.gemini_matcher import (
+    GeminiMatchResult,
+    GeminiReviewPlan,
+    UnmatchedFileEvidence,
+)
 from mkv_episode_matcher.pipeline_queue import PipelineQueueError
 
 
@@ -93,6 +98,54 @@ def test_collect_reuses_cache_without_reinvoking_media_tools(tmp_path, monkeypat
     )
 
     assert evidence[0].transcript_excerpts == ("cached evidence",)
+
+
+def test_supplemental_collection_merges_one_offset_pass(tmp_path, monkeypatch):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    payload = _payload(source)
+    item = SimpleNamespace(media_id="media-1")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    media = SimpleNamespace(duration_seconds=1200, audio_streams=(object(),))
+    monkeypatch.setattr(dossier_module, "resolve_ffprobe_path", lambda _path: "ffprobe")
+    monkeypatch.setattr(dossier_module, "resolve_ffmpeg_path", lambda _path: "ffmpeg")
+    monkeypatch.setattr(
+        dossier_module,
+        "inspect_mkv",
+        lambda *_args, **_kwargs: SimpleNamespace(media=media),
+    )
+
+    def collect(items, *_args, **kwargs):
+        assert kwargs["sampling_mode"] == "expanded-offset"
+        return SimpleNamespace(
+            files=(
+                SimpleNamespace(
+                    file_id=items[0].file_id,
+                    windows=tuple(
+                        SimpleNamespace(text=f"new dialogue {index}")
+                        for index in range(6)
+                    ),
+                ),
+            )
+        )
+
+    monkeypatch.setattr(dossier_module, "collect_transcript_batch", collect)
+    existing = UnmatchedFileEvidence(
+        "media-1", 1200, tuple(f"old dialogue {index}" for index in range(6))
+    )
+
+    evidence, store = collect_supplemental_dossier_evidence(
+        ((item, payload),),
+        (existing,),
+        Config(asr_model_name="small"),
+        object(),
+        contracts,
+    )
+
+    assert len(evidence[0].transcript_excerpts) == 12
+    identity = source_identity(payload, source, "small")
+    assert store.load_evidence("media-1", identity) == evidence[0]
 
 
 def test_gemini_evidence_adds_bounded_on_screen_ocr_text(tmp_path, monkeypatch):
@@ -333,6 +386,96 @@ def test_complete_identification_audit_survives_restart_outside_polled_summary(
     assert str(source) not in str(audit)
 
 
+def test_initial_match_trace_records_every_window_candidate_without_dialogue(
+    tmp_path,
+):
+    root = tmp_path / "private"
+    store = IdentificationDossierStore(root)
+    trace = {
+        "schema_version": 1,
+        "policy": "multi_segment_dialogue_v1",
+        "segment_threshold": 0.6,
+        "engine_threshold": 0.7,
+        "engine_decision": "matched",
+        "engine_reason": "candidate_met_engine_threshold",
+        "selected_episode_id": "S05E08",
+        "selected_episode_title": "The Winner",
+        "selected_score": 0.91,
+        "selected_vote_count": 2,
+        "runner_up_episode_id": "S05E09",
+        "runner_up_score": 0.68,
+        "runner_up_vote_count": 1,
+        "segments": [
+            {
+                "segment_index": 0,
+                "sample_start_seconds": 300.0,
+                "sample_duration_seconds": 30,
+                "reference_variant_count": 4,
+                "status": "qualified",
+                "reason": "candidate_exceeded_segment_threshold",
+                "episode_candidate_count": 2,
+                "qualifying_candidate_count": 2,
+                "best_episode_id": "S05E08",
+                "best_score": 0.91,
+                "candidate_evaluations": [
+                    {
+                        "rank": 1,
+                        "candidate_episode_id": "S05E08",
+                        "candidate_episode_title": "The Winner",
+                        "score": 0.91,
+                        "segment_threshold": 0.6,
+                        "qualified": True,
+                        "subtitle_release_match": "exact",
+                        "subtitle_release_name": "Superfan",
+                    },
+                    {
+                        "rank": 2,
+                        "candidate_episode_id": "S05E09",
+                        "candidate_episode_title": "The Runner Up",
+                        "score": 0.68,
+                        "segment_threshold": 0.6,
+                        "qualified": True,
+                        "subtitle_release_match": "generic",
+                        "subtitle_release_name": "Broadcast",
+                    },
+                ],
+            }
+        ],
+    }
+
+    store.record_initial_match_trace(
+        "media-1", trace, candidate_series_name="Example Series"
+    )
+
+    attempts = store.safe_attempts("media-1")
+    audit = store.audit_events("media-1")
+    candidates = [event for event in audit if event["event_kind"] == "candidate"]
+    assert attempts[0]["disposition"] == "matched"
+    assert attempts[0]["summary"]["runner_up_episode_id"] == "S05E09"
+    assert attempts[0]["summary"]["candidate_series_name"] == "Example Series"
+    assert attempts[0]["summary"]["candidate_episode_id"] == "S05E08"
+    assert attempts[0]["summary"]["candidate_episode_title"] == "The Winner"
+    assert attempts[0]["summary"]["best_score"] == 0.91
+    assert [event["summary"]["candidate_episode_id"] for event in candidates] == [
+        "S05E08",
+        "S05E09",
+    ]
+    assert [event["summary"]["reason"] for event in candidates] == [
+        "contributed_to_selected_episode",
+        "different_episode_won",
+    ]
+    assert "private transcript text" not in str(audit).casefold()
+    assert str(tmp_path) not in str(audit)
+
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    identity = source_identity(_payload(source), source, "small")
+    store.save_evidence(identity, UnmatchedFileEvidence("media-1", 1200, ("private",)))
+    assert (
+        store.safe_attempts("media-1")[0]["summary"]["selected_episode_id"] == "S05E08"
+    )
+
+
 def test_play_all_attempt_retains_bounded_component_episode_ids(tmp_path):
     source = tmp_path / "source.mkv"
     source.write_bytes(b"synthetic")
@@ -353,3 +496,19 @@ def test_play_all_attempt_retains_bounded_component_episode_ids(tmp_path):
     attempt = store.safe_attempts("media-1")[-1]
     assert attempt["branch"] == "tv-play-all"
     assert attempt["summary"]["component_episode_ids"] == ["S01E01", "S01E02"]
+
+
+def test_private_gemini_review_cache_reuses_exact_request_digest(tmp_path):
+    store = IdentificationDossierStore(tmp_path / "private")
+    digest = "a" * 64
+    review = GeminiReviewPlan(
+        "gemini-unmatched-review-plan",
+        "gemini-test",
+        (GeminiMatchResult("media-1", "S04E11", 0.91, ("paired scenes",)),),
+    )
+
+    store.save_gemini_review(digest, review)
+    restored = store.load_gemini_review(digest, model="gemini-test")
+
+    assert restored == review
+    assert store.load_gemini_review(digest, model="different-model") is None
