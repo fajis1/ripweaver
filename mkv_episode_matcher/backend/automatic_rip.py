@@ -12,6 +12,9 @@ from uuid import uuid4
 from fastapi import HTTPException
 from loguru import logger
 
+from mkv_episode_matcher.core.tv_identification_policy import (
+    AUTOMATIC_TV_DISC_RETRY_CODES,
+)
 from mkv_episode_matcher.disc.content_policy import infer_release_name_from_disc_label
 from mkv_episode_matcher.disc.drive_watcher import DriveStatusSnapshot
 from mkv_episode_matcher.disc.ripper import RipError
@@ -26,11 +29,7 @@ _AUTOMATIC_UNMATCHED_CODES = frozenset({
     "all_season_sequence_review_required",
     "independent_episode_evidence_required",
 })
-_AUTOMATIC_DISC_RETRY_CODES = frozenset({
-    "all_season_analysis_failed",
-    "gemini_analysis_interrupted",
-    "gemini_analysis_failed",
-})
+_AUTOMATIC_DISC_RETRY_CODES = AUTOMATIC_TV_DISC_RETRY_CODES
 
 
 def set_automatic_rip_startup_hold(enabled: bool) -> None:

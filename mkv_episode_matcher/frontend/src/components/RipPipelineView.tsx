@@ -172,6 +172,21 @@ const episodeSequenceReviewCodes = new Set([
   'whole_disc_coherence_review_required',
 ]);
 
+const tvEpisodeProviderReviewCodes = new Set([
+  'gemini_descriptive_review_required',
+  'gemini_analysis_interrupted',
+  'gemini_analysis_failed',
+  'gemini_audio_evidence_insufficient',
+  'gemini_catalog_unavailable',
+  'gemini_provider_failed',
+  'gemini_credential_rejected',
+  'gemini_rate_limited',
+  'gemini_provider_unavailable',
+  'gemini_request_rejected',
+  'gemini_network_failed',
+  'gemini_response_invalid',
+]);
+
 interface ExistingRipRecoveryPlan {
   plan_sha256: string;
   candidates: Array<{ job_id: string; title_index: number; basename: string; size_bytes: number; candidate_id: string }>;
@@ -403,6 +418,15 @@ interface PipelineQueue {
   }>;
 }
 
+const requiresDiscWideTvRecovery = (item: PipelineQueueItem): boolean => {
+  const reviewCode = item.review_code || '';
+  if (episodeSequenceReviewCodes.has(reviewCode)) return true;
+  if (!item.disc_fingerprint || !tvEpisodeProviderReviewCodes.has(reviewCode)) return false;
+  return (item.identification_attempts ?? []).some((attempt) => (
+    ['tv-local', 'tv-opensubtitles', 'tv-gemini', 'tv-disc-range'].includes(attempt.branch)
+  ));
+};
+
 const episodeReviewCandidates = (item: PipelineQueueItem): Array<{ name: string; source: string; score: number | null; margin: number | null }> => {
   const attempts = item.identification_attempts ?? [];
   const rangeScope = [...attempts].reverse().find((attempt) => (
@@ -627,6 +651,11 @@ const evidenceLabels: Record<string, string> = {
   supplemental_attempted: 'Offset-window retry used',
   supplemental_segment_count: 'Additional windows sampled',
   supplemental_reason: 'Offset-window retry reason',
+  subtitle_reference_pass: 'Subtitle matching pass',
+  initial_reference_variant_count: 'Initial subtitle versions',
+  alternate_reference_variant_count: 'Alternate subtitle versions',
+  alternate_lookup_attempted: 'Alternate-release lookup attempted',
+  initial_engine_reason: 'Initial-pass result',
   engine_reason: 'Final decision reason',
   sample_start_seconds: 'Sample position (seconds)',
   sample_duration_seconds: 'Sample length (seconds)',
@@ -2477,17 +2506,11 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
     const allSeasonReady = Boolean(
       selectedDiscFingerprint
       && suggestedUnmatchedSeries
-      && visiblePipelineItems.some((item) => item.stage === 'identify' && item.state === 'review_required' && [
-        'missing_season_context',
-        'unmatched_disc_analysis_required',
-        'all_season_analysis_failed',
-        'all_season_series_not_found',
-        'all_season_evidence_failed',
-        'all_season_catalog_unavailable',
-        'all_season_sequence_review_required',
-        'independent_episode_evidence_required',
-        'whole_disc_coherence_review_required',
-      ].includes(item.review_code || '')),
+      && visiblePipelineItems.some((item) => (
+        item.stage === 'identify'
+        && item.state === 'review_required'
+        && requiresDiscWideTvRecovery(item)
+      )),
     );
     const confirmation = allSeasonReady
       ? `Restart matching for ${scope} and automatically analyze the complete disc as “${suggestedUnmatchedSeries}”? This reads short MKV audio samples locally and queries episode metadata.${automaticGeminiFallback ? ' If local results remain ambiguous, the configured Gemini fallback may receive bounded evidence and candidate episode metadata.' : ''} It does not read the optical disc, rerip, rename, overwrite, delete, or transcode media.`
@@ -3041,7 +3064,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
         seriesResolutionRecoveryByDisc.set(recoveryKey, item.media_id);
       }
     }
-    if (!item.disc_fingerprint || !episodeSequenceReviewCodes.has(item.review_code || '')) continue;
+    if (!item.disc_fingerprint || !requiresDiscWideTvRecovery(item)) continue;
     const recovery = sequenceRecoveryByDisc.get(item.disc_fingerprint);
     if (recovery) recovery.itemCount += 1;
     else sequenceRecoveryByDisc.set(item.disc_fingerprint, { firstMediaId: item.media_id, itemCount: 1 });
@@ -3058,7 +3081,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
   const existingRipsNeedAnalysis = visiblePipelineItems.some((item) =>
     item.stage === 'identify'
     && item.state === 'review_required'
-    && ['missing_season_context', 'unmatched_disc_analysis_required', 'all_season_analysis_failed', 'all_season_series_not_found', 'all_season_evidence_failed', 'all_season_catalog_unavailable', 'all_season_sequence_review_required', 'independent_episode_evidence_required', 'whole_disc_coherence_review_required'].includes(item.review_code || '')
+    && requiresDiscWideTvRecovery(item)
   );
   const existingRipsInPipeline = existingRipsRestarted || visiblePipelineItems.some(
     (item) => item.disc_fingerprint === selectedDiscFingerprint && item.media_id.includes('-recovery-'),
@@ -3810,6 +3833,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
               const failedRipTitleIsSkipped = failedRipTitleIndex !== null && skippedTitleIndexes.has(failedRipTitleIndex);
               const identificationReviewItems = latestDrivePipelineItems.filter((item) => item.stage === 'identify' && ['failed', 'review_required'].includes(item.state));
               const identificationNeedsAttention = identificationReviewItems.length > 0;
+              const identificationActiveItems = latestDrivePipelineItems.filter((item) => item.stage === 'identify' && ['queued', 'running'].includes(item.state));
               const identificationAwaitingFirstAttempt = identificationReviewItems.some((item) => (
                 item.state === 'review_required'
                 && ['missing_season_context', 'unmatched_disc_analysis_required'].includes(item.review_code || '')
@@ -3817,6 +3841,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
               ));
               const identificationReviewTarget = identificationReviewItems[0];
               const outstandingDiscReviewItems = latestDrivePipelineItems.filter((item) => item.state === 'review_required');
+              const outstandingDiscDownstreamItems = latestDrivePipelineItems.filter((item) => !['completed', 'discarded'].includes(item.state));
               const discardedIdentificationRemains = drivePipelineItems.some((item) => item.stage === 'identify' && item.state === 'discarded' && item.staged_source_available);
               const driveFailed = Boolean(reripJob) || (job?.state === 'failed' && (job.failed_drive_indexes?.length === 0 || job.failed_drive_indexes?.includes(drive.drive_index)));
               const driveAlreadyComplete = job?.state === 'awaiting_review' && allKnownTitlesAlreadyInLibrary(job.preview);
@@ -3838,6 +3863,8 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                     ? identificationAwaitingFirstAttempt
                       ? 'rip complete · matching waiting to start'
                       : 'rip complete · identification needs attention'
+                    : identificationActiveItems.length > 0
+                      ? `rip complete · identification ${identificationActiveItems.some((item) => item.state === 'running') ? 'running' : 'queued'}`
                     : outstandingDiscReviewItems.length > 0
                       ? `rip complete · ${outstandingDiscReviewItems.length} saved ${outstandingDiscReviewItems.length === 1 ? 'result needs' : 'results need'} review`
                       : skippedDiscTitles.length > 0
@@ -3878,7 +3905,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                 ? 'text-red-300'
                 : driveRipping
                   ? 'text-blue-300'
-                  : drivePreparing || discIdentityNeedsVerification || identificationNeedsAttention || outstandingDiscReviewItems.length > 0 || skippedDiscTitles.length > 0
+                  : drivePreparing || discIdentityNeedsVerification || identificationNeedsAttention || outstandingDiscDownstreamItems.length > 0 || skippedDiscTitles.length > 0
                     ? 'text-amber-300'
                     : driveRipComplete
                       ? 'text-green-300'
@@ -3890,7 +3917,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                   ? 'border-red-500/60 bg-red-500/10'
                   : driveRipping
                     ? 'border-blue-400/60 bg-blue-500/10'
-                  : drivePreparing || discIdentityNeedsVerification || outstandingDiscReviewItems.length > 0 || skippedDiscTitles.length > 0
+                  : drivePreparing || discIdentityNeedsVerification || identificationNeedsAttention || outstandingDiscDownstreamItems.length > 0 || skippedDiscTitles.length > 0
                     ? 'border-amber-400/60 bg-amber-500/10'
                   : driveRipComplete
                     ? 'border-green-400/60 bg-green-500/10'
@@ -3905,7 +3932,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                         <span>Optical drive {drive.drive_index + 1}{drive.display_name ? ` · ${drive.display_name}` : ''}{drive.disc_label ? ` — ${drive.disc_label}` : ''}</span>
                         {skippedDiscTitles.length > 0 && <span className="rounded-full border border-amber-300/50 bg-amber-400/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-200">⚠ {skippedDiscTitles.length} force-ignored {skippedDiscTitles.length === 1 ? 'title' : 'titles'}</span>}
                       </div>
-                      <div className={`text-xs font-bold uppercase ${driveNeedsAction || driveFailed ? 'text-red-300' : driveRipping ? 'text-blue-200' : drivePreparing || discIdentityNeedsVerification || identificationNeedsAttention || outstandingDiscReviewItems.length > 0 || skippedDiscTitles.length > 0 ? 'text-amber-300' : driveRipComplete ? 'text-green-300' : drive.has_disc ? 'text-blue-300' : 'text-slate-400'}`}>{drive.has_disc ? driveStatus : 'empty tray'}</div>
+                      <div className={`text-xs font-bold uppercase ${driveNeedsAction || driveFailed ? 'text-red-300' : driveRipping ? 'text-blue-200' : drivePreparing || discIdentityNeedsVerification || identificationNeedsAttention || outstandingDiscDownstreamItems.length > 0 || skippedDiscTitles.length > 0 ? 'text-amber-300' : driveRipComplete ? 'text-green-300' : drive.has_disc ? 'text-blue-300' : 'text-slate-400'}`}>{drive.has_disc ? driveStatus : 'empty tray'}</div>
                     </div>
                   </div>
                   {drive.has_disc && <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -4138,8 +4165,8 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                       <div className="font-semibold">Disc content is safely present</div>
                       <div className="text-xs text-green-100/80">
                         All {completedDiscTitleCount} substantial content {completedDiscTitleCount === 1 ? 'title is' : 'titles are'} safely present in staging or Jellyfin, or explicitly skipped. No additional MakeMKV rip is needed.
-                        {outstandingDiscReviewItems.length > 0
-                          ? ` ${outstandingDiscReviewItems.length} additional saved ${outstandingDiscReviewItems.length === 1 ? 'result still requires' : 'results still require'} review.`
+                        {outstandingDiscDownstreamItems.length > 0
+                          ? ` ${outstandingDiscDownstreamItems.length} saved ${outstandingDiscDownstreamItems.length === 1 ? 'title still has' : 'titles still have'} identification, transcoding, organization, or review work remaining.`
                           : ' No downstream work remains for this disc.'}
                       </div>
                       {completeAutoEjectSeconds !== null && (
@@ -4496,7 +4523,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
               </div>
             </details>
           )}
-          {!queueOnly && !attentionOnly && visiblePipelineItems.some((item) => ['missing_season_context', 'unmatched_disc_analysis_required', 'all_season_analysis_failed', 'all_season_series_not_found', 'all_season_evidence_failed', 'all_season_catalog_unavailable', 'all_season_sequence_review_required', 'independent_episode_evidence_required', 'whole_disc_coherence_review_required'].includes(item.review_code || '')) && (
+          {!queueOnly && !attentionOnly && visiblePipelineItems.some(requiresDiscWideTvRecovery) && (
             <div className="rounded-lg border border-indigo-400/30 bg-indigo-400/10 p-3 text-sm text-indigo-100 space-y-2">
               <div className="font-semibold">{suggestedSeason === null ? 'Run general all-season episode matching' : `Run Season ${suggestedSeason} episode matching`}</div>
               <p>{suggestedSeason === null ? 'The disc has no reliable season context. The matcher will compare each title independently against aired episodes for the reviewed series.' : `The disc label explicitly identifies Season ${suggestedSeason}. The matcher will restrict candidates to that season.`} A consecutive sequence can suggest what to inspect next, but it cannot name an episode or skip subtitle and Gemini checks.</p>
@@ -4669,7 +4696,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
           {visiblePipelineItems.some((item) => item.state === 'review_required' && item.review_code !== 'all_season_analysis_running') && (
             <div className="rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-sm text-amber-100 space-y-2">
               <div className="font-semibold">Review choices required</div>
-              {visiblePipelineItems.some((item) => ['missing_season_context', 'unmatched_disc_analysis_required', 'all_season_analysis_failed', 'all_season_series_not_found', 'all_season_evidence_failed', 'all_season_catalog_unavailable', 'all_season_sequence_review_required', 'independent_episode_evidence_required', 'whole_disc_coherence_review_required'].includes(item.review_code || '')) && (
+              {visiblePipelineItems.some(requiresDiscWideTvRecovery) && (
                 <div>Episode identification needs a series/season analysis choice. Use the analysis panel above.</div>
               )}
               {visiblePipelineItems.some((item) => item.review_code === 'library_collision') && (
@@ -4949,9 +4976,13 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                         <div className="mt-1">The initial six-window pass was inconclusive. RipWeaver will run the offset transcript windows, whole-season subtitle matching, same-disc residual checks, and the configured final fallback before presenting a human review choice.</div>
                         <div className="mt-2">No action is required. This is an intermediate fallback state, not a completed identification failure.</div>
                       </div>
-                    ) : episodeSequenceReviewCodes.has(item.review_code || '') ? (
+                    ) : requiresDiscWideTvRecovery(item) ? (
                       <div className="max-w-md rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-100">
-                        <div>{item.review_code === 'episode_match_review' ? 'Initial episode matching could not safely approve a title. Review the suggested match or retry the entire disc with exhaustive matching.' : 'This title needs episode-sequence analysis before it can continue.'}</div>
+                        <div>{item.review_code === 'episode_match_review'
+                          ? 'Initial episode matching could not safely approve a title. Review the suggested match or retry the entire disc with exhaustive matching.'
+                          : tvEpisodeProviderReviewCodes.has(item.review_code || '')
+                            ? 'A later provider or content fallback stopped after TV matching. Retry the complete disc so normal, supplemental, and alternate-release subtitle evidence runs again before Gemini.'
+                            : 'This title needs episode-sequence analysis before it can continue.'}</div>
                         {!item.identification_attempts?.length && <div className="mt-2">No matcher attempt is recorded for this preserved title. Run the disc-wide identification retry once; this reads the existing staged MKV and does not rerip the disc.</div>}
                         {item.review_code === 'all_season_catalog_unavailable' && <div className="mt-2">TMDb did not return an aired episode catalogue for the reviewed series name. Open the disc dashboard, confirm the canonical series name, and retry.</div>}
                         {item.review_code === 'all_season_series_not_found' && <div className="mt-2">No TV series could be validated from the supplied name. When automatic Gemini fallback is enabled, inexact labels are sent to Gemini before this review is shown.</div>}

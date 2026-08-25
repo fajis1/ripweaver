@@ -142,14 +142,12 @@ def _rank_episode_release_options(
         for option in select_subtitle_release_options(
             by_episode[episode], profile, maximum=maximum_per_episode
         ):
-            selected.append(
-                (
-                    episode,
-                    option.candidate,
-                    option.release_name,
-                    option.release_match,
-                )
-            )
+            selected.append((
+                episode,
+                option.candidate,
+                option.release_name,
+                option.release_match,
+            ))
     return tuple(selected)
 
 
@@ -164,8 +162,7 @@ def _subtitle_cache_target(
     digest = hashlib.sha256(release_name.encode("utf-8")).hexdigest()[:10]
     cache_name = safe_cache_component(show_name)
     return cache_dir / (
-        f"{cache_name} - S{season:02d}E{episode:02d} - "
-        f"{release_match}-{digest}.srt"
+        f"{cache_name} - S{season:02d}E{episode:02d} - {release_match}-{digest}.srt"
     )
 
 
@@ -586,7 +583,10 @@ class OpenSubtitlesProvider(SubtitleProvider):
                         "season_number": season,
                         "type": "episode",
                     })
-                elif release_profile.canonical_series_name.casefold() != show_name.casefold():
+                elif (
+                    release_profile.canonical_series_name.casefold()
+                    != show_name.casefold()
+                ):
                     search_specs.append({
                         "query": release_profile_query(release_profile, season),
                         "season_number": season,
@@ -691,7 +691,9 @@ class OpenSubtitlesProvider(SubtitleProvider):
                 )
                 expected_targets.add(target_path)
                 if target_path.is_file():
-                    if not any(item.path == target_path for item in downloaded_subtitles):
+                    if not any(
+                        item.path == target_path for item in downloaded_subtitles
+                    ):
                         downloaded_subtitles.append(
                             SubtitleFile(
                                 path=target_path,
@@ -709,8 +711,7 @@ class OpenSubtitlesProvider(SubtitleProvider):
                     continue
                 try:
                     logger.info(
-                        "Downloading subtitle for S{:02d}E{:02d} "
-                        "(release_match={})",
+                        "Downloading subtitle for S{:02d}E{:02d} (release_match={})",
                         season,
                         ep_num,
                         release_match,
@@ -886,4 +887,32 @@ class CompositeSubtitleProvider(SubtitleProvider):
                     )
                     break
 
+        return results
+
+    def get_alternate_subtitles(
+        self,
+        show_name: str,
+        season: int,
+        video_files: list[Path] = None,
+        tmdb_id: int | None = None,
+    ) -> list[SubtitleFile]:
+        """Collect bounded untested releases from capable providers only."""
+
+        results: list[SubtitleFile] = []
+        seen: set[tuple[str, int | None, int | None]] = set()
+        for provider in self.providers:
+            getter = getattr(provider, "get_alternate_subtitles", None)
+            if not callable(getter):
+                continue
+            for subtitle in getter(show_name, season, video_files, tmdb_id):
+                episode = subtitle.episode_info
+                signature = (
+                    str(subtitle.path),
+                    episode.season if episode is not None else None,
+                    episode.episode if episode is not None else None,
+                )
+                if signature in seen:
+                    continue
+                seen.add(signature)
+                results.append(subtitle)
         return results

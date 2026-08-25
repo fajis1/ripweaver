@@ -5,7 +5,10 @@ import pytest
 
 from mkv_episode_matcher.core.matcher import MultiSegmentMatcher
 from mkv_episode_matcher.core.models import EpisodeInfo, MatchCandidate, SubtitleFile
-from mkv_episode_matcher.core.providers.subtitles import OpenSubtitlesProvider
+from mkv_episode_matcher.core.providers.subtitles import (
+    CompositeSubtitleProvider,
+    OpenSubtitlesProvider,
+)
 from mkv_episode_matcher.core.subtitle_releases import (
     alternate_release_queries,
     classify_subtitle_release,
@@ -169,19 +172,41 @@ def test_provider_failover_downloads_only_previously_untested_release(tmp_path):
     initial = provider.get_subtitles("The Office Superfan Episodes", 5, [])
     initial_search_count = len(searches)
 
-    alternates = provider.get_alternate_subtitles(
-        "The Office Superfan Episodes", 5, []
-    )
+    alternates = provider.get_alternate_subtitles("The Office Superfan Episodes", 5, [])
 
     assert {item.release_match for item in initial} == {"exact", "compatible"}
     assert len(alternates) == 1
     assert alternates[0].release_match == "generic"
-    failover_queries = [
-        str(spec["query"]) for spec in searches[initial_search_count:]
-    ]
+    failover_queries = [str(spec["query"]) for spec in searches[initial_search_count:]]
     assert 1 <= len(failover_queries) <= 6
     assert any("Supercut" in query for query in failover_queries)
     assert any("Unrated" in query for query in failover_queries)
+
+
+def test_composite_provider_exposes_deduplicated_alternate_releases(tmp_path):
+    shared = SubtitleFile(
+        path=tmp_path / "shared.srt",
+        episode_info=EpisodeInfo(series_name="Example", season=1, episode=1),
+    )
+    unique = SubtitleFile(
+        path=tmp_path / "unique.srt",
+        episode_info=EpisodeInfo(series_name="Example", season=1, episode=2),
+    )
+
+    class _AlternateProvider:
+        def __init__(self, subtitles):
+            self.subtitles = subtitles
+
+        def get_alternate_subtitles(self, *_args):
+            return self.subtitles
+
+    provider = CompositeSubtitleProvider([
+        SimpleNamespace(),
+        _AlternateProvider([shared]),
+        _AlternateProvider([shared, unique]),
+    ])
+
+    assert provider.get_alternate_subtitles("Example", 1, []) == [shared, unique]
 
 
 def test_matcher_collapses_release_variants_to_one_vote_per_episode(

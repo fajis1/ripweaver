@@ -177,13 +177,14 @@ def test_automatic_analysis_retries_failed_only_disc_once_per_restart(
     for title_index, review_code in (
         (3, "all_season_analysis_failed"),
         (4, "gemini_analysis_failed"),
+        (5, "gemini_provider_failed"),
     ):
         contract = tmp_path / f"failed-{title_index}.json"
         contract.write_text(
             json.dumps({
                 "disc_fingerprint": fingerprint,
                 "title_index": title_index,
-                "disc_expected_title_indexes": [3, 4],
+                "disc_expected_title_indexes": [3, 4, 5],
                 "media_context": {"series_name": "The Office", "season": 7},
             }),
             encoding="utf-8",
@@ -200,7 +201,7 @@ def test_automatic_analysis_retries_failed_only_disc_once_per_restart(
     store = SimpleNamespace(
         list_items=lambda: items,
         silent_video_review_flags=lambda: {},
-        disc_matching_scope=lambda _fingerprint: (3, 4),
+        disc_matching_scope=lambda _fingerprint: (3, 4, 5),
     )
     worker = DownstreamWorker(
         SimpleNamespace(store=store), allowed_stages=("identify",)
@@ -223,7 +224,7 @@ def test_automatic_analysis_retries_failed_only_disc_once_per_restart(
 
     assert worker._apply_automatic_disc_analysis() is True
     assert worker._apply_automatic_disc_analysis() is False
-    assert captured == [(items[0].media_id, items[1].media_id)]
+    assert captured == [tuple(item.media_id for item in items)]
 
 
 def test_automatic_analysis_runs_for_one_remaining_unresolved_title(

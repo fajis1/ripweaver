@@ -72,6 +72,7 @@ from mkv_episode_matcher.core.credentials import store_credential
 from mkv_episode_matcher.core.environment import load_environment_settings
 from mkv_episode_matcher.core.tv_identification_policy import (
     AUTOMATIC_TV_IDENTIFICATION_POLICY_VERSION,
+    TV_DISC_ANALYSIS_REVIEW_CODES,
 )
 from mkv_episode_matcher.disc.catalogue_contributions import (
     CatalogueContributionError,
@@ -5240,32 +5241,7 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
             or isinstance(title_index, bool)
             or item.stage != "identify"
             or item.state != "review_required"
-            or item.review_code
-            not in {
-                "missing_season_context",
-                "episode_match_review",
-                "unmatched_disc_analysis_required",
-                "all_season_analysis_failed",
-                "all_season_series_not_found",
-                "all_season_evidence_failed",
-                "all_season_catalog_unavailable",
-                "all_season_sequence_review_required",
-                "independent_episode_evidence_required",
-                "whole_disc_coherence_review_required",
-                "gemini_descriptive_review_required",
-                "gemini_analysis_interrupted",
-                "gemini_analysis_failed",
-                "gemini_audio_evidence_insufficient",
-                "gemini_catalog_unavailable",
-                "gemini_provider_failed",
-                "gemini_credential_rejected",
-                "gemini_rate_limited",
-                "gemini_provider_unavailable",
-                "gemini_request_rejected",
-                "gemini_network_failed",
-                "gemini_response_invalid",
-                "gemini_series_resolution_uncertain",
-            }
+            or item.review_code not in TV_DISC_ANALYSIS_REVIEW_CODES
         ):
             continue
         previous = selected_by_title.get(title_index)

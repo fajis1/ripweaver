@@ -65,6 +65,12 @@ def test_failed_all_season_analysis_is_a_bounded_restart_retry():
         "all_season_analysis_failed",
         "gemini_analysis_interrupted",
         "gemini_analysis_failed",
+        "gemini_audio_evidence_insufficient",
+        "gemini_catalog_unavailable",
+        "gemini_provider_failed",
+        "gemini_provider_unavailable",
+        "gemini_network_failed",
+        "gemini_response_invalid",
     }
 
 

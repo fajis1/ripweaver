@@ -406,6 +406,12 @@ def test_initial_match_trace_records_every_window_candidate_without_dialogue(
         "runner_up_episode_id": "S05E09",
         "runner_up_score": 0.68,
         "runner_up_vote_count": 1,
+        "subtitle_reference_pass": "alternate-release-failover",
+        "subtitle_release_profile": "superfan",
+        "initial_reference_variant_count": 2,
+        "alternate_reference_variant_count": 2,
+        "alternate_lookup_attempted": True,
+        "initial_engine_reason": "no_candidate_exceeded_segment_threshold",
         "segments": [
             {
                 "segment_index": 0,
@@ -457,6 +463,12 @@ def test_initial_match_trace_records_every_window_candidate_without_dialogue(
     assert attempts[0]["summary"]["candidate_episode_id"] == "S05E08"
     assert attempts[0]["summary"]["candidate_episode_title"] == "The Winner"
     assert attempts[0]["summary"]["best_score"] == 0.91
+    assert attempts[0]["summary"]["subtitle_reference_pass"] == (
+        "alternate-release-failover"
+    )
+    assert attempts[0]["summary"]["subtitle_release_profile"] == "superfan"
+    assert attempts[0]["summary"]["alternate_reference_variant_count"] == 2
+    assert attempts[0]["summary"]["alternate_lookup_attempted"] is True
     assert [event["summary"]["candidate_episode_id"] for event in candidates] == [
         "S05E08",
         "S05E09",
