@@ -4188,3 +4188,32 @@ for review rather than forcing a TV identity.
   handoff, and a one-file manual unmatched request. The full suite passes with
   synthetic/saved data only; no optical drive, staged media, or live provider
   was accessed.
+
+### Reviewed episode scope and edition-aware subtitle handoff (2026-08-25)
+
+- A saved-data audit of one five-title Superfan disc showed that Whisper had
+  retained up to twelve usable windows per unresolved title, but all 67
+  OpenSubtitles references were classified as an unresolved release. The disc
+  contracts still retained the `Superfan` edition marker; the disc coordinator
+  lost it when it correctly replaced the packaging label with the canonical
+  TMDb series name before subtitle lookup.
+- Disc analysis now keeps those two identities separate. TMDb, assignment
+  contracts, and Jellyfin continue to use the resolved canonical series name,
+  while OpenSubtitles receives a standardized `Superfan Episodes` or `Extended`
+  lookup name inferred from the exact disc's saved media context. This activates
+  the existing exact/compatible/generic release search and cache separation
+  without letting release metadata assign an episode.
+- The manual TV-analysis boundary accepts an optional reviewed first/last
+  episode for a known season. The dashboard exposes this as a disc-paperwork
+  candidate range. It filters OpenSubtitles, local advisory comparison, Gemini,
+  residual elimination, and coherence inputs to the stated candidates, but it
+  never maps title order or range position to an episode. Every automatic name
+  still requires the normal independent two-window OpenSubtitles evidence or a
+  separately enabled two-pass Gemini result, followed by whole-disc coherence.
+- The reviewed range is path-free and dialogue-free in the identification
+  audit and API response. Invalid, incomplete, seasonless, reversed, or overly
+  broad ranges stop before the background analysis begins.
+- Focused Python tests, Ruff, and frontend lint cover the release-hint handoff,
+  candidate filtering, and request forwarding. Diagnosis used only saved,
+  dialogue-redacted audit data; no optical disc, MKV, transcode, organization,
+  or live provider operation was performed.

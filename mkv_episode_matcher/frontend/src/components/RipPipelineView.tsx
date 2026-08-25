@@ -934,6 +934,8 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
   const [jellyfinRoots, setJellyfinRoots] = useState({ tv: '', movie: '' });
   const [retainedSourceTtlDays, setRetainedSourceTtlDays] = useState(30);
   const [unmatchedSeriesName, setUnmatchedSeriesName] = useState('');
+  const [unmatchedEpisodeStart, setUnmatchedEpisodeStart] = useState('');
+  const [unmatchedEpisodeEnd, setUnmatchedEpisodeEnd] = useState('');
   const [submittingSeriesRecovery, setSubmittingSeriesRecovery] = useState<string | null>(null);
   const [openingReviewId, setOpeningReviewId] = useState<string | null>(null);
   const [reviewPlaybackOpened, setReviewPlaybackOpened] = useState<Set<string>>(() => new Set());
@@ -3146,7 +3148,29 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
       setReviewNotice('Enter the canonical TV series name before starting all-season analysis.');
       return;
     }
-    const scopeLabel = suggestedSeason === null ? 'across every aired season' : `against Season ${suggestedSeason}`;
+    const rawEpisodeStart = unmatchedEpisodeStart.trim();
+    const rawEpisodeEnd = unmatchedEpisodeEnd.trim();
+    if (Boolean(rawEpisodeStart) !== Boolean(rawEpisodeEnd)) {
+      setReviewNotice('Enter both the first and last episode from the disc paperwork, or leave both blank.');
+      return;
+    }
+    let episodeStart: number | null = null;
+    let episodeEnd: number | null = null;
+    if (rawEpisodeStart && rawEpisodeEnd) {
+      if (suggestedSeason === null || !/^\d{1,3}$/.test(rawEpisodeStart) || !/^\d{1,3}$/.test(rawEpisodeEnd)) {
+        setReviewNotice('A paperwork episode range requires a known season and valid positive episode numbers.');
+        return;
+      }
+      episodeStart = Number(rawEpisodeStart);
+      episodeEnd = Number(rawEpisodeEnd);
+      if (episodeStart < 1 || episodeEnd < episodeStart || episodeEnd - episodeStart > 49) {
+        setReviewNotice('The paperwork episode range is invalid or too broad.');
+        return;
+      }
+    }
+    const scopeLabel = episodeStart !== null && episodeEnd !== null && suggestedSeason !== null
+      ? `against reviewed candidates S${String(suggestedSeason).padStart(2, '0')}E${String(episodeStart).padStart(2, '0')}-E${String(episodeEnd).padStart(2, '0')}`
+      : suggestedSeason === null ? 'across every aired season' : `against Season ${suggestedSeason}`;
     if (!window.confirm(`Analyze the held MKVs as “${reviewedSeries}” ${scopeLabel}? This reads short audio samples, transcribes them locally, and queries TMDb episode metadata.${discGeminiFallback ? ' If local matching remains ambiguous, the configured Gemini fallback may receive bounded transcript excerpts and candidate episode metadata.' : ' Gemini fallback is disabled for this scan.'} It does not rename, move, delete, or transcode media.`)) return;
     setControlling(true);
     try {
@@ -3157,6 +3181,8 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
           disc_fingerprint: selectedDiscFingerprint,
           series_name: reviewedSeries,
           season: suggestedSeason,
+          episode_start: episodeStart,
+          episode_end: episodeEnd,
           confirm_media_read: true,
           confirm_provider_lookup: true,
           confirm_external_fallback: discGeminiFallback,
@@ -3164,7 +3190,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : 'All-season analysis could not be started.');
-      setReviewNotice(`Started ${suggestedSeason === null ? 'all-season' : `Season ${suggestedSeason}`} evidence and sequence analysis for ${payload.item_count} title(s).`);
+      setReviewNotice(`Started ${scopeLabel} evidence analysis for ${payload.item_count} title(s).`);
       const queueResponse = await fetch('/rip/pipeline/items');
       if (queueResponse.ok) setPipelineQueue(await queueResponse.json());
     } catch (requestError) {
@@ -4478,6 +4504,36 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                   placeholder={suggestedUnmatchedSeries || 'Enter the TV series name'}
                 />
               </label>
+              {suggestedSeason !== null && (
+                <div className="rounded-lg border border-indigo-300/20 p-3 space-y-2">
+                  <div className="text-xs font-semibold">Optional reviewed episode range from the disc paperwork</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="text-xs">First episode
+                      <input
+                        type="number"
+                        min="1"
+                        max="999"
+                        className="mt-1 w-full rounded-lg bg-[var(--bg-primary)] border border-indigo-400/30 p-2 text-white"
+                        value={unmatchedEpisodeStart}
+                        onChange={(event) => setUnmatchedEpisodeStart(event.target.value)}
+                        placeholder="20"
+                      />
+                    </label>
+                    <label className="text-xs">Last episode
+                      <input
+                        type="number"
+                        min="1"
+                        max="999"
+                        className="mt-1 w-full rounded-lg bg-[var(--bg-primary)] border border-indigo-400/30 p-2 text-white"
+                        value={unmatchedEpisodeEnd}
+                        onChange={(event) => setUnmatchedEpisodeEnd(event.target.value)}
+                        placeholder="24"
+                      />
+                    </label>
+                  </div>
+                  <p className="text-[11px] text-indigo-100/75">This only limits which episode references may be tested. It never assigns an episode from title order or range position; each title still needs independent evidence.</p>
+                </div>
+              )}
               {learnedCoverage && learnedCoverage.disc_count > 0 && (
                 <details className="border-y border-indigo-300/20 py-2 text-xs">
                   <summary className="cursor-pointer font-semibold">Learned fingerprint coverage · {learnedCoverage.disc_count} disc(s), {learnedCoverage.episode_count} episode(s)</summary>

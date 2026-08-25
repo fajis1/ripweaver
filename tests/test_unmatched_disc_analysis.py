@@ -314,6 +314,43 @@ def test_disc_number_prioritizes_expected_title_count_window_without_exclusion()
     assert disc_two.index(catalog[0]) > disc_two.index(catalog[6])
 
 
+def test_saved_superfan_context_is_retained_only_for_subtitle_lookup():
+    selected = [
+        (
+            SimpleNamespace(media_id="title-1"),
+            {"media_context": {"series_name": "The Office Superfan Episodes"}},
+        )
+    ]
+
+    lookup_name, release_profile = analysis._subtitle_lookup_series_name(
+        "The Office", selected
+    )
+
+    assert lookup_name == "The Office Superfan Episodes"
+    assert release_profile == "superfan"
+
+
+def test_reviewed_episode_range_only_narrows_candidate_catalog():
+    catalog = tuple(
+        EpisodeCatalogEntry(
+            f"S07E{episode:02d}", 7, episode, f"Episode {episode}", "", 1200
+        )
+        for episode in range(18, 27)
+    ) + (EpisodeCatalogEntry("S08E20", 8, 20, "Other season", "", 1200),)
+
+    scoped = analysis._reviewed_episode_catalog(catalog, 7, (20, 24))
+
+    assert tuple(entry.episode_id for entry in scoped) == (
+        "S07E20",
+        "S07E21",
+        "S07E22",
+        "S07E23",
+        "S07E24",
+    )
+    with pytest.raises(analysis.PipelineQueueError, match="requires a season"):
+        analysis._reviewed_episode_catalog(catalog, None, (20, 24))
+
+
 def test_gemini_disc_coherence_rejects_split_s4_d3_assignments():
     entries = tuple(
         EpisodeCatalogEntry(
@@ -617,6 +654,9 @@ def test_disc_route_scopes_content_fallback_for_scene_guided_review(
         rip_router.UnmatchedDiscAnalysisRequest(
             disc_fingerprint=fingerprint,
             series_name="The Office",
+            season=7,
+            episode_start=20,
+            episode_end=24,
             confirm_media_read=True,
             confirm_provider_lookup=True,
             confirm_external_fallback=True,
@@ -633,12 +673,14 @@ def test_disc_route_scopes_content_fallback_for_scene_guided_review(
     assert result["started"] is True
     assert result["series_name"] == "The Office"
     assert captured["series_name"] == "The Office"
+    assert captured["episode_range"] == (20, 24)
     assert captured["allow_content_fallback"] is expected_content_fallback
     assert captured["reviewer_scene_descriptions"] == (
         {media_id: "Michael burns his foot on a countertop grill."}
         if scene_guided
         else {}
     )
+    assert result["reviewed_episode_range"] == [20, 24]
     assert result["reviewer_scene_description_count"] == int(scene_guided)
 
 
@@ -1654,7 +1696,10 @@ def test_local_sequence_keeps_full_aired_order_when_library_has_gaps(
                 "source_size_bytes": source.stat().st_size,
                 "disc_fingerprint": fingerprint,
                 "title_index": title_index,
-                "media_context": {"series_name": "Unmatched", "season": None},
+                "media_context": {
+                    "series_name": "Example Series Superfan Episodes",
+                    "season": None,
+                },
             }),
             encoding="utf-8",
         )
@@ -1698,6 +1743,7 @@ def test_local_sequence_keeps_full_aired_order_when_library_has_gaps(
         ),
     )
     seen_catalogs = []
+    seen_subtitle_series = []
 
     def fake_plan(_evidence, candidate_catalog, _groups):
         seen_catalogs.append(candidate_catalog)
@@ -1723,6 +1769,7 @@ def test_local_sequence_keeps_full_aired_order_when_library_has_gaps(
     def fake_subtitle_matches(
         _files, candidate_catalog, *_args, diagnostic_details=None, **_kwargs
     ):
+        seen_subtitle_series.append(_args[0])
         matches = {
             media_ids[0]: candidate_catalog[2],
             media_ids[1]: candidate_catalog[3],
@@ -1760,6 +1807,7 @@ def test_local_sequence_keeps_full_aired_order_when_library_has_gaps(
 
     assert applied == tuple(media_ids)
     assert seen_catalogs == [catalog]
+    assert seen_subtitle_series == ["Example Series Superfan Episodes"]
     diagnostic = next(
         event
         for event in store.list_events()

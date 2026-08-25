@@ -22,7 +22,10 @@ from mkv_episode_matcher.backend.identification_dossier import (
 from mkv_episode_matcher.core.credentials import ApiCredentialError, ApiServiceError
 from mkv_episode_matcher.core.models import Config
 from mkv_episode_matcher.core.providers.subtitles import OpenSubtitlesProvider
-from mkv_episode_matcher.core.subtitle_releases import release_match_priority
+from mkv_episode_matcher.core.subtitle_releases import (
+    infer_subtitle_release_profile,
+    release_match_priority,
+)
 from mkv_episode_matcher.core.tv_identification_policy import (
     AUTOMATIC_TV_IDENTIFICATION_POLICY_VERSION,
     AUTOMATIC_TV_MIN_CONFIDENCE,
@@ -220,6 +223,69 @@ def _disc_number_hint(selected: list[tuple[object, dict]]) -> int | None:
         and context.get("disc_number") > 0
     }
     return hints.pop() if len(hints) == 1 else None
+
+
+def _subtitle_lookup_series_name(
+    canonical_series_name: str,
+    selected: list[tuple[object, dict]],
+) -> tuple[str, str | None]:
+    """Retain a saved edition hint without changing canonical TV metadata."""
+
+    contextual_names = [canonical_series_name]
+    contextual_names.extend(
+        str(context["series_name"])
+        for _item, payload in selected
+        if isinstance((context := payload.get("media_context")), dict)
+        and isinstance(context.get("series_name"), str)
+        and str(context["series_name"]).strip()
+    )
+    profile = infer_subtitle_release_profile(" ".join(contextual_names))
+    if profile.key == "superfan":
+        return f"{canonical_series_name} Superfan Episodes", profile.key
+    if profile.key == "extended":
+        return f"{canonical_series_name} Extended", profile.key
+    return canonical_series_name, None
+
+
+def _reviewed_episode_catalog(
+    catalog: tuple[EpisodeCatalogEntry, ...],
+    season: int | None,
+    episode_range: tuple[int, int] | None,
+) -> tuple[EpisodeCatalogEntry, ...]:
+    """Apply a reviewer-supplied candidate boundary without assigning a title."""
+
+    scoped = (
+        tuple(item for item in catalog if item.season == season)
+        if season is not None
+        else catalog
+    )
+    if episode_range is None:
+        return scoped
+    if season is None:
+        raise PipelineQueueError("A reviewed episode range requires a season")
+    start, end = episode_range
+    if (
+        isinstance(start, bool)
+        or isinstance(end, bool)
+        or not isinstance(start, int)
+        or not isinstance(end, int)
+        or start < 1
+        or end < start
+        or end - start > 49
+    ):
+        raise PipelineQueueError("Reviewed episode range is invalid")
+    return tuple(item for item in scoped if start <= item.episode <= end)
+
+
+def _reviewed_candidate_scope_label(
+    season: int | None, episode_range: tuple[int, int] | None
+) -> str:
+    if season is None:
+        return "all"
+    if episode_range is None:
+        return f"S{season:02d}"
+    start, end = episode_range
+    return f"S{season:02d}E{start:02d}-E{end:02d}"
 
 
 def _prioritize_catalog_for_disc_number(
@@ -1785,6 +1851,7 @@ def execute_unmatched_disc_analysis(
     contract_root: Path,
     *,
     season: int | None = None,
+    episode_range: tuple[int, int] | None = None,
     allow_gemini: bool = False,
     allow_content_fallback: bool = True,
     reviewer_scene_descriptions: Mapping[str, str] | None = None,
@@ -1802,6 +1869,7 @@ def execute_unmatched_disc_analysis(
             asr,
             contract_root,
             season=season,
+            episode_range=episode_range,
             allow_gemini=allow_gemini,
             allow_content_fallback=allow_content_fallback,
             reviewer_scene_descriptions=reviewer_scene_descriptions,
@@ -1863,6 +1931,7 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
     contract_root: Path,
     *,
     season: int | None = None,
+    episode_range: tuple[int, int] | None = None,
     allow_gemini: bool = False,
     allow_content_fallback: bool = True,
     reviewer_scene_descriptions: Mapping[str, str] | None = None,
@@ -1877,6 +1946,10 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
         )
     selected_ids = {item.media_id for item, _payload in selected}
     media_ids = tuple(item.media_id for item, _payload in selected)
+    candidate_scope_label = _reviewed_candidate_scope_label(season, episode_range)
+    subtitle_series_name, subtitle_release_profile = _subtitle_lookup_series_name(
+        series_name, selected
+    )
     dossier = IdentificationDossierStore(
         contract_root.parent / "identification-evidence"
     )
@@ -1890,6 +1963,8 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
             "title_count": len(selected),
             "requested_series_name": series_name.strip()[:240],
             "requested_season": season,
+            "reviewed_candidate_scope": candidate_scope_label,
+            "subtitle_release_profile": subtitle_release_profile or "unresolved",
             "gemini_enabled": allow_gemini,
         },
     )
@@ -1903,9 +1978,11 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
         series_name, config, allow_gemini=allow_gemini
     )
     series_name = selected_series.name
+    subtitle_series_name, subtitle_release_profile = _subtitle_lookup_series_name(
+        series_name, selected
+    )
     all_series_catalog = catalog
-    if season is not None:
-        catalog = tuple(item for item in catalog if item.season == season)
+    catalog = _reviewed_episode_catalog(catalog, season, episode_range)
     if not catalog:
         raise PipelineQueueError(
             "Episode catalogue is unavailable for the reviewed scope"
@@ -1962,7 +2039,7 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
                     season_scope = discover_opensubtitles_season(
                         anchor_evidence,
                         catalog,
-                        series_name,
+                        subtitle_series_name,
                         selected_series.tmdb_id,
                         asr,
                         min_confidence=automatic_min_confidence,
@@ -2083,7 +2160,7 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
         global_margin=plan.global_margin,
         disposition=plan.disposition,
         library_episode_count=len(library_episodes),
-        candidate_scope=f"S{season:02d}" if season is not None else "all",
+        candidate_scope=candidate_scope_label,
     )
     catalog_by_id = {entry.episode_id: entry for entry in candidate_catalog}
     full_catalog_by_id = {entry.episode_id: entry for entry in catalog}
@@ -2111,7 +2188,7 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
             disposition="review",
             analysis_run_id=analysis_run_id,
             summary={
-                "candidate_scope": (f"S{season:02d}" if season is not None else "all"),
+                "candidate_scope": candidate_scope_label,
                 "candidate_count": len(catalog),
                 "candidate_episode_id": (
                     candidate.episode_id if candidate is not None else None
@@ -2141,7 +2218,7 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
                 season_scope = discover_opensubtitles_season(
                     gemini_evidence,
                     candidate_catalog,
-                    series_name,
+                    subtitle_series_name,
                     selected_series.tmdb_id,
                     asr,
                     min_confidence=automatic_min_confidence,
@@ -2155,7 +2232,7 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
             proposed, opensubtitles_diagnostics = match_opensubtitles_seasons(
                 gemini_evidence,
                 candidate_catalog,
-                series_name,
+                subtitle_series_name,
                 selected_series.tmdb_id,
                 season_scope,
                 asr,
@@ -2215,7 +2292,7 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
                         match_opensubtitles_seasons(
                             supplemental_evidence,
                             narrowed_supplemental_catalog,
-                            series_name,
+                            subtitle_series_name,
                             selected_series.tmdb_id,
                             season_scope,
                             asr,
@@ -2273,9 +2350,7 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
                     disposition=("matched" if item.file_id in proposed else "review"),
                     analysis_run_id=analysis_run_id,
                     summary={
-                        "candidate_scope": ",".join(
-                            f"S{value:02d}" for value in season_scope
-                        ),
+                        "candidate_scope": candidate_scope_label,
                         "best_score": round(score, 6),
                         "runner_up_score": round(
                             float(details.get("runner_up_score", 0.0)), 6
@@ -2428,7 +2503,7 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
         effective_gemini_scope = (
             disc_range_fence.scope
             if disc_range_fence is not None
-            else ",".join(f"S{value:02d}" for value in season_scope)
+            else candidate_scope_label
             if season_scope
             else gemini_candidate_scope
         )

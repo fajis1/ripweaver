@@ -2798,6 +2798,8 @@ class UnmatchedDiscAnalysisRequest(BaseModel):
     disc_fingerprint: str = Field(pattern=r"^[0-9a-f]{16}$")
     series_name: str = Field(min_length=1, max_length=160)
     season: int | None = Field(default=None, ge=0, le=99)
+    episode_start: int | None = Field(default=None, ge=1, le=999)
+    episode_end: int | None = Field(default=None, ge=1, le=999)
     confirm_media_read: bool = False
     confirm_provider_lookup: bool = False
     confirm_external_fallback: bool = False
@@ -5195,6 +5197,31 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
             status_code=400,
             detail="Reviewer scene descriptions require explicit Gemini transmission approval",
         )
+    if (request.episode_start is None) != (request.episode_end is None):
+        raise HTTPException(
+            status_code=400,
+            detail="Both the first and last reviewed episode are required",
+        )
+    if request.episode_start is not None:
+        if request.season is None:
+            raise HTTPException(
+                status_code=400,
+                detail="A reviewed episode range requires a reviewed season",
+            )
+        if (
+            request.episode_end is None
+            or request.episode_end < request.episode_start
+            or request.episode_end - request.episode_start > 49
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="The reviewed episode range is invalid or too broad",
+            )
+    episode_range = (
+        (request.episode_start, request.episode_end)
+        if request.episode_start is not None and request.episode_end is not None
+        else None
+    )
     requested_series_name = " ".join(request.series_name.split())
     selected_by_title = {}
     for item in store.list_items():
@@ -5283,6 +5310,7 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
                 get_engine().asr,
                 contract_root,
                 season=request.season,
+                episode_range=episode_range,
                 allow_gemini=request.confirm_external_fallback,
                 # An ordinary disc pass may route true leftovers to bonus
                 # analysis. An explicit scene-guided episode review must stay
@@ -5334,6 +5362,9 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
         "started": True,
         "item_count": len(selected),
         "series_name": series_name,
+        "reviewed_episode_range": (
+            list(episode_range) if episode_range is not None else None
+        ),
         "reviewer_scene_description_count": len(reviewer_scene_descriptions),
     }
 
