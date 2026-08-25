@@ -174,6 +174,118 @@ def test_episode_reviews_enter_one_disc_level_analysis(tmp_path, monkeypatch):
     )
 
 
+def test_disc_retry_reconciles_season_from_all_exact_disc_siblings(
+    tmp_path, monkeypatch
+):
+    fingerprint = "0123456789abcdef"
+    contexts = {
+        2: {
+            "content_hint": "tv",
+            "series_name": "THE OFFICE SUPERFAN EPISODES",
+            "season": 7,
+        },
+        3: {"series_name": "The Office", "season": None},
+        4: {"series_name": "The Office", "season": None},
+        5: {
+            "content_hint": "tv",
+            "series_name": "THE OFFICE SUPERFAN EPISODES",
+            "season": 7,
+        },
+    }
+    # Put legacy seasonless contracts first to prove selection is disc-wide,
+    # rather than dependent on whichever held title happens to be first.
+    ordered_indexes = (3, 4, 2, 5)
+    media_ids = tuple(
+        f"The-Office-Superfan-Episodes--disc-04-{fingerprint}-title-{index:03d}"
+        for index in ordered_indexes
+    )
+    store = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+    for media_id, title_index in zip(media_ids, ordered_indexes, strict=True):
+        contract = tmp_path / f"rip-{title_index}.json"
+        contract.write_text(
+            json.dumps({
+                "mode": "verified-rip-contract",
+                "disc_fingerprint": fingerprint,
+                "title_index": title_index,
+                "media_context": contexts[title_index],
+            }),
+            encoding="utf-8",
+        )
+        store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+        store.hold_for_review(media_id, "gemini_provider_failed")
+
+    captured = []
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_engine",
+        lambda: SimpleNamespace(asr=object()),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.unmatched_disc_analysis.execute_unmatched_disc_analysis",
+        lambda *_args, **kwargs: captured.append(kwargs) or media_ids,
+    )
+
+    _resolve_automatic_unmatched_disc(
+        media_ids,
+        store,
+        SimpleNamespace(automatic_gemini_ambiguity_fallback=True),
+        tmp_path / "contracts",
+    )
+
+    assert captured == [{"season": 7, "allow_gemini": True}]
+    assert all(
+        store.get(media_id).review_code == "all_season_analysis_running"
+        for media_id in media_ids
+    )
+
+
+def test_disc_retry_refuses_conflicting_sibling_seasons(tmp_path, monkeypatch):
+    fingerprint = "0123456789abcdef"
+    media_ids = tuple(
+        f"show--disc-04-{fingerprint}-title-{index:03d}" for index in (2, 3)
+    )
+    store = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+    for media_id, title_index, season in zip(media_ids, (2, 3), (7, 8), strict=True):
+        contract = tmp_path / f"rip-{title_index}.json"
+        contract.write_text(
+            json.dumps({
+                "mode": "verified-rip-contract",
+                "disc_fingerprint": fingerprint,
+                "title_index": title_index,
+                "media_context": {
+                    "content_hint": "tv",
+                    "series_name": "The Office",
+                    "season": season,
+                },
+            }),
+            encoding="utf-8",
+        )
+        store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+        store.hold_for_review(media_id, "gemini_provider_failed")
+
+    called = []
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_engine",
+        lambda: SimpleNamespace(asr=object()),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.unmatched_disc_analysis.execute_unmatched_disc_analysis",
+        lambda *_args, **_kwargs: called.append(True),
+    )
+
+    _resolve_automatic_unmatched_disc(
+        media_ids,
+        store,
+        SimpleNamespace(automatic_gemini_ambiguity_fallback=True),
+        tmp_path / "contracts",
+    )
+
+    assert called == []
+    assert all(
+        store.get(media_id).review_code == "all_season_analysis_failed"
+        for media_id in media_ids
+    )
+
+
 def test_single_episode_review_enters_full_disc_level_analysis(tmp_path, monkeypatch):
     fingerprint = "0123456789abcdef"
     media_id = f"show--disc-01-{fingerprint}-title-007"
@@ -222,7 +334,7 @@ def test_single_episode_review_enters_full_disc_level_analysis(tmp_path, monkeyp
     assert captured == [
         (
             fingerprint,
-            "The Office Superfan Episodes",
+            "The Office",
             {"season": 6, "allow_gemini": True},
         )
     ]

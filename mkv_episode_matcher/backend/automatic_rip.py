@@ -12,6 +12,9 @@ from uuid import uuid4
 from fastapi import HTTPException
 from loguru import logger
 
+from mkv_episode_matcher.core.subtitle_releases import (
+    infer_subtitle_release_profile,
+)
 from mkv_episode_matcher.core.tv_identification_policy import (
     AUTOMATIC_TV_DISC_RETRY_CODES,
 )
@@ -467,8 +470,6 @@ def _resolve_automatic_unmatched_disc(  # noqa: C901
 ) -> None:
     """Run the normal disc-sequence fallback for one automatic TV batch."""
 
-    import json
-
     from mkv_episode_matcher.backend.dependencies import get_engine
     from mkv_episode_matcher.backend.unmatched_disc_analysis import (
         GeminiAnalysisError,
@@ -487,21 +488,11 @@ def _resolve_automatic_unmatched_disc(  # noqa: C901
     if not held:
         return
     try:
-        payload = json.loads(held[0].artifact.contract_path.read_text(encoding="utf-8"))
-        context = payload.get("media_context", {})
-        if context.get("content_hint") in {"movie", "extras", "mixed"}:
+        fingerprint, series_name, season = _automatic_disc_tv_context(held)
+        if fingerprint is None:
             # Movie and bonus-feature batches must never be passed to the TV
             # all-season sequence matcher merely because they have no season.
             return
-        fingerprint = payload.get("disc_fingerprint")
-        series_name = _automatic_series_name(
-            context.get("series_name"), held[0].media_id
-        )
-        season = context.get("season")
-        if not isinstance(fingerprint, str) or series_name is None:
-            raise PipelineQueueError("Automatic episode context is incomplete")
-        if not isinstance(season, int) or isinstance(season, bool):
-            season = None
         for item in held:
             store.choose_review_path(item.media_id, "all_season_analysis_running")
         execute_unmatched_disc_analysis(
@@ -589,14 +580,80 @@ def _automatic_series_name(series_name: object, media_id: str) -> str | None:
     if isinstance(series_name, str):
         normalized = re.sub(r"[^a-z0-9]+", "", series_name.casefold())
         if normalized not in {"", "unmatched", "unknown", "unknownseries"}:
-            return series_name.strip()
+            return infer_subtitle_release_profile(
+                series_name.strip()
+            ).canonical_series_name
     disc_label = media_id.split("--disc-", 1)[0]
     inferred = infer_release_name_from_disc_label(disc_label)
     if inferred is None:
         return None
     normalized = re.sub(r"[^a-z0-9]+", "", inferred.casefold())
+    if normalized in {"", "unmatched", "unknown", "unknownseries"}:
+        return None
+    return infer_subtitle_release_profile(inferred).canonical_series_name
+
+
+def _automatic_item_context(item) -> tuple[str, dict]:
+    """Load one private contract while returning only its matching context."""
+
+    import json
+
+    from mkv_episode_matcher.pipeline_queue import PipelineQueueError
+
+    try:
+        payload = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PipelineQueueError("Automatic episode context is unavailable") from exc
+    fingerprint = payload.get("disc_fingerprint")
+    if not isinstance(fingerprint, str):
+        raise PipelineQueueError("Automatic episode context is incomplete")
+    context = payload.get("media_context")
+    return fingerprint, context if isinstance(context, dict) else {}
+
+
+def _automatic_disc_tv_context(held) -> tuple[str | None, str | None, int | None]:
+    """Reconcile exact-disc TV context across every held sibling contract.
+
+    Legacy recovery items can carry uneven metadata even though their exact
+    fingerprint proves they belong to one disc.  A season present on any
+    sibling therefore narrows the whole disc, while conflicting non-null
+    seasons or series names stop for review instead of launching an arbitrary
+    all-season search.
+    """
+
+    from mkv_episode_matcher.pipeline_queue import PipelineQueueError
+
+    fingerprints: set[str] = set()
+    seasons: set[int] = set()
+    series_by_key: dict[str, str] = {}
+    explicit_non_tv = False
+    for item in held:
+        fingerprint, context = _automatic_item_context(item)
+        fingerprints.add(fingerprint)
+        if context.get("content_hint") in {"movie", "extras", "mixed"}:
+            explicit_non_tv = True
+        season = context.get("season")
+        if (
+            isinstance(season, int)
+            and not isinstance(season, bool)
+            and 0 <= season <= 999
+        ):
+            seasons.add(season)
+        series_name = _automatic_series_name(context.get("series_name"), item.media_id)
+        if series_name is not None:
+            series_by_key.setdefault(
+                re.sub(r"[^a-z0-9]+", "", series_name.casefold()), series_name
+            )
+    if explicit_non_tv:
+        return None, None, None
+    if len(fingerprints) != 1:
+        raise PipelineQueueError("Automatic disc context is inconsistent")
+    if len(seasons) > 1:
+        raise PipelineQueueError("Automatic episode season context is inconsistent")
+    if len(series_by_key) != 1:
+        raise PipelineQueueError("Automatic episode series context is inconsistent")
     return (
-        inferred
-        if normalized not in {"", "unmatched", "unknown", "unknownseries"}
-        else None
+        next(iter(fingerprints)),
+        next(iter(series_by_key.values())),
+        next(iter(seasons)) if seasons else None,
     )

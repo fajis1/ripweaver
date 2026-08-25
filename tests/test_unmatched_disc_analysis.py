@@ -1492,9 +1492,7 @@ def test_opensubtitles_does_not_fail_over_before_normal_neighbor_season_succeeds
         EpisodeCatalogEntry(f"S0{season}E01", season, 1, "", "", 1200)
         for season in (1, 2)
     )
-    files = (
-        UnmatchedFileEvidence("title", 1200, ("season two", "season two")),
-    )
+    files = (UnmatchedFileEvidence("title", 1200, ("season two", "season two")),)
     alternate_calls = []
 
     class Provider:
@@ -1581,9 +1579,7 @@ def test_alternate_release_failover_does_not_lower_two_window_requirement(tmp_pa
 
     assert matched == {}
     assert details["title"]["reason"] == "insufficient_qualifying_windows"
-    assert details["title"]["subtitle_reference_pass"] == (
-        "alternate-release-failover"
-    )
+    assert details["title"]["subtitle_reference_pass"] == ("alternate-release-failover")
 
 
 def test_opensubtitles_records_exact_review_reason():
@@ -1854,6 +1850,36 @@ def test_opensubtitles_bootstraps_season_without_existing_matches(tmp_path):
     )
 
     assert scope == (2, 3)
+
+
+def test_subtitle_analysis_budget_yields_and_stops_cpu_scoring():
+    now = [0.0]
+    yielded = []
+
+    def yield_control(seconds):
+        yielded.append(seconds)
+        now[0] += 0.6
+
+    budget = analysis._SubtitleAnalysisBudget(
+        1.0,
+        clock=lambda: now[0],
+        yield_control=yield_control,
+        yield_every=1,
+    )
+
+    with pytest.raises(analysis.SubtitleAnalysisBudgetError):
+        analysis._score_subtitle(
+            SimpleNamespace(calculate_match_score=lambda *_args: 0.5),
+            ("synthetic dialogue evidence",),
+            "synthetic reference dialogue evidence",
+            1200,
+            analysis_budget=budget,
+        )
+
+    assert yielded == [
+        analysis._SUBTITLE_YIELD_SECONDS,
+        analysis._SUBTITLE_YIELD_SECONDS,
+    ]
 
 
 def test_local_sequence_keeps_full_aired_order_when_library_has_gaps(

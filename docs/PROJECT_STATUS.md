@@ -4249,3 +4249,26 @@ for review rather than forcing a TV identity.
   candidate filtering, and request forwarding. Diagnosis used only saved,
   dialogue-redacted audit data; no optical disc, MKV, transcode, organization,
   or live provider operation was performed.
+
+### Exact-disc context reconciliation and responsive subtitle budgets (2026-08-25)
+
+- Automatic TV recovery now reconciles the exact fingerprint's complete held
+  sibling set before starting disc analysis. A valid season retained by any
+  sibling narrows the complete disc even when other legacy recovery contracts
+  are seasonless. Superfan, extended, unrated, and supercut packaging is
+  canonicalized for the series lookup while remaining available to the
+  edition-aware subtitle provider.
+- Conflicting non-null seasons, conflicting canonical series names, mixed exact
+  fingerprints, or an explicit non-TV sibling stop for review. RipWeaver no
+  longer chooses whichever context happened to appear on the first held item
+  or silently expands a known-season disc to the complete aired catalogue.
+- CPU-heavy fuzzy subtitle comparisons now share a per-disc wall-clock budget
+  and cooperatively yield to API/WebUI threads. Known-season analysis retains a
+  larger ten-minute local-evidence window; truly seasonless discovery is capped
+  at five minutes. A reached budget is retained in the redacted identification
+  audit and proceeds to the already bounded Gemini fallback when enabled rather
+  than repeating an open-ended all-season scan.
+- Synthetic regressions cover mixed seasonless/Season 7 siblings, release-name
+  canonicalization, conflicting-season refusal, cooperative CPU yielding, and
+  deterministic budget exhaustion. No optical drive, staged MKV, provider,
+  transcode, organization, or eject operation was used for validation.
