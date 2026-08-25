@@ -3633,6 +3633,10 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
               const physicalDriveOperation = driveDashboard.physical_drive_operations?.[drive.drive_index];
               const driveRipping = physicalDriveOperation === 'MakeMKV rip' || (job?.state === 'running' && job.executor_attached);
               const drivePreparing = driveBusy && !driveRipping;
+              const discIdentityNeedsVerification = drive.has_disc
+                && !drive.current_disc_fingerprint
+                && !driveRipping
+                && !drivePreparing;
               const driveJobs = (jobDashboard?.jobs ?? []).filter((candidate) => candidate.preview?.drives.some((item) => item.drive_index === drive.drive_index));
               const currentDiscJobs = drive.current_disc_fingerprint
                 ? driveJobs.filter((candidate) => previewHasDiscFingerprint(candidate.preview, drive.current_disc_fingerprint))
@@ -3790,8 +3794,10 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
               const queuedWithoutExecutor = job?.state === 'queued' && job.executor_attached === false;
               const interruptedQueued = job?.state === 'queued' && job.executor_attached === false && job.rip_progress_percent !== null && job.rip_progress_percent !== undefined;
               const driveNeedsAction = Boolean(reripJob) || unavailableInventoryTitleIndexes.length > 0 || driveNeedsReview || drivePaused || job?.state === 'queued' || discardedIdentificationRemains || Boolean(earlierActiveJob);
-              const driveStatus = reripJob
-                ? failedRecoveryPlanIsStale
+              const driveStatus = discIdentityNeedsVerification
+                ? 'disc identity needs verification'
+                : reripJob
+                  ? failedRecoveryPlanIsStale
                   ? 'recovery scope needs verification'
                   : recoverableStagedTitleIndexes.length > 0
                     ? `recover ${recoverableStagedTitleIndexes.length} preserved · ${missingAfterStagedRecoveryTitleIndexes.length} still missing`
@@ -3837,12 +3843,23 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
               const stagingAttemptCollision = job?.state === 'awaiting_review'
                 && (job.preview?.collision_count ?? 0) > 0
                 && job.preview?.jobs.every((item) => ['clear', 'staging-exists'].includes(item.collision_status));
+              const driveIndicatorClass = driveNeedsAction || driveFailed
+                ? 'text-red-300'
+                : driveRipping
+                  ? 'text-blue-300'
+                  : drivePreparing || discIdentityNeedsVerification || identificationNeedsAttention || outstandingDiscReviewItems.length > 0 || skippedDiscTitles.length > 0
+                    ? 'text-amber-300'
+                    : driveRipComplete
+                      ? 'text-green-300'
+                      : drive.has_disc
+                        ? 'text-blue-300'
+                        : 'text-slate-600';
               return (
                 <div key={driveKey} className={`rounded-xl border p-4 space-y-4 ${driveNeedsAction || driveFailed
                   ? 'border-red-500/60 bg-red-500/10'
                   : driveRipping
                     ? 'border-blue-400/60 bg-blue-500/10'
-                  : drivePreparing || outstandingDiscReviewItems.length > 0 || skippedDiscTitles.length > 0
+                  : drivePreparing || discIdentityNeedsVerification || outstandingDiscReviewItems.length > 0 || skippedDiscTitles.length > 0
                     ? 'border-amber-400/60 bg-amber-500/10'
                   : driveRipComplete
                     ? 'border-green-400/60 bg-green-500/10'
@@ -3851,13 +3868,13 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                     : 'border-[var(--border-color)] bg-[var(--bg-primary)]/40'
                 }`}>
                   <div className="flex items-center justify-between gap-3">
-                    <span className={`text-4xl ${drive.has_disc ? 'text-blue-300' : 'text-slate-600'}`} aria-label={drive.has_disc ? 'Disc inserted' : 'Empty tray'}>{drive.has_disc ? '●' : '▱'}</span>
+                    <span className={`text-4xl ${driveIndicatorClass}`} aria-label={drive.has_disc ? 'Disc inserted' : 'Empty tray'}>{drive.has_disc ? '●' : '▱'}</span>
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2 font-semibold text-white">
                         <span>Optical drive {drive.drive_index + 1}{drive.display_name ? ` · ${drive.display_name}` : ''}{drive.disc_label ? ` — ${drive.disc_label}` : ''}</span>
                         {skippedDiscTitles.length > 0 && <span className="rounded-full border border-amber-300/50 bg-amber-400/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-200">⚠ {skippedDiscTitles.length} force-ignored {skippedDiscTitles.length === 1 ? 'title' : 'titles'}</span>}
                       </div>
-                      <div className={`text-xs font-bold uppercase ${driveNeedsAction || driveFailed ? 'text-red-300' : driveRipping ? 'text-blue-200' : drivePreparing || identificationNeedsAttention || outstandingDiscReviewItems.length > 0 || skippedDiscTitles.length > 0 ? 'text-amber-300' : driveRipComplete ? 'text-green-300' : drive.has_disc ? 'text-blue-300' : 'text-slate-400'}`}>{drive.has_disc ? driveStatus : 'empty tray'}</div>
+                      <div className={`text-xs font-bold uppercase ${driveNeedsAction || driveFailed ? 'text-red-300' : driveRipping ? 'text-blue-200' : drivePreparing || discIdentityNeedsVerification || identificationNeedsAttention || outstandingDiscReviewItems.length > 0 || skippedDiscTitles.length > 0 ? 'text-amber-300' : driveRipComplete ? 'text-green-300' : drive.has_disc ? 'text-blue-300' : 'text-slate-400'}`}>{drive.has_disc ? driveStatus : 'empty tray'}</div>
                     </div>
                   </div>
                   {drive.has_disc && <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -4220,6 +4237,8 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                           ? 'Queued for preparation'
                           : stagingAttemptCollision
                             ? 'Prepare fresh isolated attempt'
+                            : discIdentityNeedsVerification
+                              ? 'Verify disc identity and restore saved status'
                             : job
                               ? 'Prepare a new pipeline for this disc'
                               : jobDashboard?.automatic_processing_enabled
