@@ -5224,7 +5224,7 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
         else None
     )
     requested_series_name = " ".join(request.series_name.split())
-    selected_by_title = {}
+    latest_by_title = {}
     for item in store.list_items():
         try:
             rip_payload = json.loads(
@@ -5239,16 +5239,21 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
             rip_payload.get("disc_fingerprint") != request.disc_fingerprint
             or not isinstance(title_index, int)
             or isinstance(title_index, bool)
-            or item.stage != "identify"
-            or item.state != "review_required"
-            or item.review_code not in TV_DISC_ANALYSIS_REVIEW_CODES
         ):
             continue
-        previous = selected_by_title.get(title_index)
-        if previous is None or item.updated_at >= previous.updated_at:
-            selected_by_title[title_index] = item
+        previous = latest_by_title.get(title_index)
+        if previous is None or (item.created_at, item.updated_at, item.media_id) >= (
+            previous.created_at,
+            previous.updated_at,
+            previous.media_id,
+        ):
+            latest_by_title[title_index] = item
     selected = tuple(
-        selected_by_title[index].media_id for index in sorted(selected_by_title)
+        latest_by_title[index].media_id
+        for index in sorted(latest_by_title)
+        if latest_by_title[index].stage == "identify"
+        and latest_by_title[index].state == "review_required"
+        and latest_by_title[index].review_code in TV_DISC_ANALYSIS_REVIEW_CODES
     )
     if not selected:
         raise HTTPException(

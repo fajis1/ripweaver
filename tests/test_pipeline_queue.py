@@ -1706,6 +1706,26 @@ def test_sequence_diagnostic_accepts_real_ambiguous_planner_disposition(tmp_path
     assert event.details["disposition"] == "review-ambiguous"
 
 
+def test_sequence_diagnostic_accepts_reviewed_episode_range_scope(tmp_path):
+    store = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+    store.enqueue_verified_rip("media-1", _artifact(tmp_path, "media-1", "rip"))
+
+    store.record_sequence_diagnostic(
+        ("media-1",),
+        catalog_episode_count=5,
+        file_count=1,
+        best_score=0.51,
+        runner_up_score=0.50,
+        global_margin=0.01,
+        disposition="review-ambiguous",
+        candidate_scope="S07E20-E24",
+    )
+
+    event = store.list_events("media-1")[-1]
+    assert event.event_type == "sequence_match_scored"
+    assert event.details["candidate_scope"] == "S07E20-E24"
+
+
 def test_matching_performance_is_durable_and_path_free(tmp_path):
     database = tmp_path / "queue.sqlite3"
     store = PipelineQueueStore(database)
@@ -1733,6 +1753,28 @@ def test_matching_performance_is_durable_and_path_free(tmp_path):
     assert records[0]["failure_stage"] is None
     assert records[0]["provider_branches"] == []
     assert "path" not in records[0]
+
+
+def test_matching_performance_accepts_completed_single_title_residual(tmp_path):
+    store = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+
+    store.record_matching_performance(
+        disc_fingerprint="0123456789abcdef",
+        series_name="Example Series",
+        title_count=1,
+        anchor_count=1,
+        season_scope=(7,),
+        proposed_count=1,
+        applied_count=1,
+        unresolved_count=0,
+        anchor_elapsed_ms=10,
+        total_elapsed_ms=20,
+        provider_branches=("tv-local", "tv-gemini"),
+    )
+
+    record = store.matching_performance()[0]
+    assert record["title_count"] == 1
+    assert record["outcome"] == "completed"
 
 
 def test_matching_performance_migrates_existing_database_and_records_failure(

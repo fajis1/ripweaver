@@ -63,6 +63,18 @@ _SILENT_VIDEO_CLASSIFICATIONS = {
 }
 _SAFE_DIAGNOSTIC_CODE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,95}")
 _EPISODE_ID = re.compile(r"(?i)S(\d{1,3})E(\d{1,4})")
+_CANDIDATE_SCOPE = re.compile(r"(?:all|missing|S\d{2,3}(?:E\d{2,4}-E\d{2,4})?)")
+
+
+def _valid_candidate_scope(value: str) -> bool:
+    """Accept a whole season or one explicit, increasing episode range."""
+
+    if _CANDIDATE_SCOPE.fullmatch(value) is None:
+        return False
+    episode_range = re.fullmatch(r"S\d{2,3}E(\d{2,4})-E(\d{2,4})", value)
+    return episode_range is None or int(episode_range.group(1)) <= int(
+        episode_range.group(2)
+    )
 
 
 def _catalogue_history_metadata(
@@ -892,7 +904,7 @@ class PipelineQueueStore:
             or len(canonical) > 160
             or any(not isinstance(value, int) or value < 0 for value in counts)
             or outcome not in _MATCHING_OUTCOMES
-            or (outcome == "completed" and title_count < 2)
+            or (outcome == "completed" and title_count < 1)
             or (outcome == "completed" and not 1 <= anchor_count <= title_count)
             or (outcome == "failed" and not 0 <= anchor_count <= title_count)
             or proposed_count > title_count
@@ -1714,7 +1726,7 @@ class PipelineQueueStore:
             or file_count != len(checked_ids)
             or disposition not in {"proposed", "review", "review-ambiguous"}
             or library_episode_count < 0
-            or re.fullmatch(r"(?:all|missing|S\d{2,3})", candidate_scope) is None
+            or not _valid_candidate_scope(candidate_scope)
             or any(
                 not isinstance(value, int | float) or not 0 <= value <= 1
                 for value in (best_score, runner_up_score, global_margin)

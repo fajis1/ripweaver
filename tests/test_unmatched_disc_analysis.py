@@ -193,6 +193,71 @@ def test_gemini_disc_batch_reuses_private_exact_request_cache(tmp_path):
     assert ranker.calls == 1
 
 
+def test_gemini_provider_recorder_is_not_part_of_request_digest(tmp_path):
+    files = (UnmatchedFileEvidence("title-1", 1200, ("dialogue",)),)
+    catalog = (EpisodeCatalogEntry("S07E20", 7, 20, "Twenty", "", 1200),)
+    dossier = IdentificationDossierStore(tmp_path / "private")
+
+    class Ranker:
+        model = "gemini-test"
+
+        def __init__(self):
+            self.recorder = None
+
+        def rank_with_configured_keys(
+            self,
+            supplied_files,
+            _catalog,
+            *,
+            prior_attempts,
+            existing_episode_ids,
+            review_phase,
+            transaction_recorder,
+        ):
+            self.recorder = transaction_recorder
+            return GeminiReviewPlan(
+                "gemini-unmatched-review-plan",
+                self.model,
+                (
+                    GeminiMatchResult(
+                        supplied_files[0].file_id,
+                        "S07E20",
+                        0.9,
+                        ("paired scenes",),
+                    ),
+                ),
+            )
+
+    ranker = Ranker()
+    matches = analysis._rank_gemini_chunks(
+        ranker,
+        files,
+        catalog,
+        dossier,
+        frozenset(),
+        analysis_run_id="0123456789abcdef0123456789abcdef",
+    )
+
+    assert matches["title-1"].episode_id == "S07E20"
+    assert callable(ranker.recorder)
+
+
+def test_matching_telemetry_omits_non_provider_audit_branches():
+    dossier = SimpleNamespace(
+        safe_attempts=lambda _media_id: (
+            {"branch": "tv-local"},
+            {"branch": "tv-disc-range"},
+            {"branch": "visual-ocr"},
+            {"branch": "tv-opensubtitles"},
+        )
+    )
+
+    assert analysis._matching_provider_branches(dossier, ("title-1",)) == (
+        "tv-local",
+        "tv-opensubtitles",
+    )
+
+
 def test_gemini_uses_six_diverse_excerpts_and_paired_subtitle_passages():
     excerpts = tuple(
         f"speaker{index} topic{index} location{index} action{index}"
@@ -682,6 +747,120 @@ def test_disc_route_scopes_content_fallback_for_scene_guided_review(
     )
     assert result["reviewed_episode_range"] == [20, 24]
     assert result["reviewer_scene_description_count"] == int(scene_guided)
+
+
+def test_disc_route_does_not_select_stale_review_lineage(tmp_path):
+    fingerprint = "0123456789abcdef"
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+
+    for position, media_id in enumerate(("older-title", "newer-title")):
+        source = tmp_path / f"source-{position}.mkv"
+        source.write_bytes(b"synthetic")
+        contract = contracts / f"rip-{position}.json"
+        contract.write_text(
+            json.dumps({
+                "mode": "verified-rip-contract",
+                "media_id": media_id,
+                "source_path": str(source),
+                "source_size_bytes": source.stat().st_size,
+                "disc_fingerprint": fingerprint,
+                "title_index": 4,
+                "media_context": {"series_name": "Example", "season": 7},
+            }),
+            encoding="utf-8",
+        )
+        store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+        if position == 0:
+            store.claim_next()
+            store.require_review(media_id, "all_season_sequence_review_required")
+
+    with pytest.raises(rip_router.HTTPException) as exc_info:
+        rip_router.analyze_unmatched_disc(
+            rip_router.UnmatchedDiscAnalysisRequest(
+                disc_fingerprint=fingerprint,
+                series_name="Example",
+                season=7,
+                episode_start=20,
+                episode_end=20,
+                confirm_media_read=True,
+                confirm_provider_lookup=True,
+            ),
+            store,
+            contracts,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "No unmatched disc titles are ready"
+
+
+def test_analyzer_does_not_select_stale_review_lineage(tmp_path):
+    fingerprint = "0123456789abcdef"
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+
+    for position, media_id in enumerate(("older-title", "newer-title")):
+        source = tmp_path / f"source-{position}.mkv"
+        source.write_bytes(b"synthetic")
+        contract = contracts / f"rip-{position}.json"
+        contract.write_text(
+            json.dumps({
+                "mode": "verified-rip-contract",
+                "media_id": media_id,
+                "source_path": str(source),
+                "source_size_bytes": source.stat().st_size,
+                "disc_fingerprint": fingerprint,
+                "title_index": 4,
+                "media_context": {"series_name": "Example", "season": 7},
+            }),
+            encoding="utf-8",
+        )
+        store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+        if position == 0:
+            store.claim_next()
+            store.require_review(media_id, "all_season_sequence_review_required")
+
+    assert analysis._selected_analysis_items(store, fingerprint) == []
+
+    store.claim_next()
+    store.require_review("newer-title", "all_season_sequence_review_required")
+    selected = analysis._selected_analysis_items(store, fingerprint)
+    assert [item.media_id for item, _payload in selected] == ["newer-title"]
+
+
+def test_disc_release_profile_uses_latest_sibling_context(tmp_path):
+    fingerprint = "0123456789abcdef"
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+
+    for title_index, series_name in ((3, "The Office"), (5, "The Office Superfan")):
+        media_id = f"title-{title_index}"
+        source = tmp_path / f"source-{title_index}.mkv"
+        source.write_bytes(b"synthetic")
+        contract = contracts / f"rip-{title_index}.json"
+        contract.write_text(
+            json.dumps({
+                "mode": "verified-rip-contract",
+                "media_id": media_id,
+                "source_path": str(source),
+                "source_size_bytes": source.stat().st_size,
+                "disc_fingerprint": fingerprint,
+                "title_index": title_index,
+                "media_context": {"series_name": series_name, "season": 7},
+            }),
+            encoding="utf-8",
+        )
+        store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+
+    lookup_name, profile = analysis._subtitle_lookup_series_name(
+        "The Office", analysis._latest_disc_title_items(store, fingerprint)
+    )
+
+    assert lookup_name == "The Office Superfan Episodes"
+    assert profile == "superfan"
 
 
 def test_last_held_title_can_use_prior_disc_assignments(tmp_path, monkeypatch):

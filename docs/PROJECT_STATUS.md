@@ -4297,3 +4297,29 @@ for review rather than forcing a TV identity.
   cooperative progress without a total-time cutoff. Validation did not read an
   MKV, access a disc, call TMDb/OpenSubtitles/Gemini, rip, transcode, organize,
   delete, or eject anything.
+
+### Held live Drive 4 identification validation (2026-08-25)
+
+- A separately user-authorized validation started RipWeaver with automatic rip
+  and downstream workers held, kept the durable queue paused, and read only the
+  four unresolved staged Season 7 Disc 4 titles. No rip, transcode,
+  organization, deletion, overwrite, or eject ran.
+- The first live pass exposed and fixed four orchestration boundaries that the
+  synthetic matcher tests had not exercised together: explicit episode-range
+  labels are now valid sequence diagnostics; Gemini's private transaction
+  recorder is excluded from the deterministic request digest; both the route
+  and analyzer select the newest lineage before testing review eligibility; and
+  a remaining title inherits its altered-release profile from the newest
+  siblings on the exact disc.
+- The full five-title disc result is coherent: the already completed title 1 is
+  S07E21, title 2 matched S07E22 with four qualifying subtitle windows, title 4
+  matched S07E23 after evidence-based residual reduction, title 5 matched
+  S07E24 through the altered-release pass with six qualifying windows, and the
+  remaining title 3 matched S07E20 after two consistent, runtime-valid Gemini
+  passes. The one-title pass remained independently evidence-gated; catalogue
+  elimination alone did not name it.
+- Both accepted Gemini provider responses are retained only in the bounded
+  private trace; the public audit records their status, candidate set,
+  consistency, confidence, runtime decision, and response hashes without raw
+  dialogue. Successful single-title residual analyses are now also valid
+  matching-performance telemetry records.

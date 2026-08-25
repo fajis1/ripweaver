@@ -1923,8 +1923,15 @@ def _rank_gemini_chunks(  # noqa: C901 - batched request/cache/audit boundary
     review = None
     request_digest = None
     if isinstance(dossier, IdentificationDossierStore):
+        # The recorder is an execution-side diagnostic callback, not part of
+        # the provider request. Passing it into the request builder both makes
+        # an otherwise deterministic digest impossible and raises before the
+        # provider can be called.
+        digest_kwargs = {
+            key: value for key, value in kwargs.items() if key != "transaction_recorder"
+        }
         request_digest = gemini_request_digest(
-            ranker.model, files, chunk_catalog, **kwargs
+            ranker.model, files, chunk_catalog, **digest_kwargs
         )
         review = dossier.load_gemini_review(request_digest, model=ranker.model)
         if review is not None:
@@ -2211,28 +2218,42 @@ def resolve_series_catalog(
     return selected.name, catalog
 
 
-def _selected_analysis_items(
+def _latest_disc_title_items(
     store: PipelineQueueStore, disc_fingerprint: str
 ) -> list[tuple[object, dict]]:
-    selected_by_title = {}
+    latest_by_title = {}
     for item in store.list_items():
-        if item.stage != "identify" or item.state != "review_required":
-            continue
         try:
             payload = json.loads(
-                item.artifact.contract_path.read_text(encoding="utf-8")
+                store.rip_artifact(item.media_id).contract_path.read_text(
+                    encoding="utf-8"
+                )
             )
-        except (OSError, json.JSONDecodeError) as exc:
+        except (OSError, json.JSONDecodeError, PipelineQueueError) as exc:
             raise PipelineQueueError("Verified rip contract is unavailable") from exc
         if payload.get("disc_fingerprint") != disc_fingerprint:
             continue
         title_index = payload.get("title_index")
         if not isinstance(title_index, int) or isinstance(title_index, bool):
             continue
-        previous = selected_by_title.get(title_index)
-        if previous is None or item.updated_at >= previous[0].updated_at:
-            selected_by_title[title_index] = (item, payload)
-    return [selected_by_title[index] for index in sorted(selected_by_title)]
+        previous = latest_by_title.get(title_index)
+        if previous is None or (item.created_at, item.updated_at, item.media_id) >= (
+            previous[0].created_at,
+            previous[0].updated_at,
+            previous[0].media_id,
+        ):
+            latest_by_title[title_index] = (item, payload)
+    return [latest_by_title[index] for index in sorted(latest_by_title)]
+
+
+def _selected_analysis_items(
+    store: PipelineQueueStore, disc_fingerprint: str
+) -> list[tuple[object, dict]]:
+    return [
+        entry
+        for entry in _latest_disc_title_items(store, disc_fingerprint)
+        if entry[0].stage == "identify" and entry[0].state == "review_required"
+    ]
 
 
 def _matching_failure_diagnostic(exc: Exception) -> tuple[str, str]:
@@ -2319,7 +2340,19 @@ def _matching_provider_branches(
         except PipelineQueueError:
             continue
         branches.extend(str(attempt["branch"]) for attempt in attempts)
-    return tuple(dict.fromkeys(branches))
+    provider_branches = {
+        "tv-local",
+        "tv-opensubtitles",
+        "tv-gemini",
+        "tv-play-all",
+        "tv-movie",
+        "movie-bonus",
+        "tv-bonus",
+        "gemini-synthesis",
+    }
+    return tuple(
+        dict.fromkeys(branch for branch in branches if branch in provider_branches)
+    )
 
 
 def execute_unmatched_disc_analysis(
@@ -2419,7 +2452,12 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
 ) -> tuple[str, ...]:
     """Transcribe held titles and compare them to the reviewed episode scope."""
 
-    selected = _selected_analysis_items(store, disc_fingerprint)
+    disc_context_items = _latest_disc_title_items(store, disc_fingerprint)
+    selected = [
+        entry
+        for entry in disc_context_items
+        if entry[0].stage == "identify" and entry[0].state == "review_required"
+    ]
     if not selected:
         raise PipelineQueueError(
             "At least one held title is required for disc sequence analysis"
@@ -2428,7 +2466,7 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
     media_ids = tuple(item.media_id for item, _payload in selected)
     candidate_scope_label = _reviewed_candidate_scope_label(season, episode_range)
     subtitle_series_name, subtitle_release_profile = _subtitle_lookup_series_name(
-        series_name, selected
+        series_name, disc_context_items
     )
     dossier = IdentificationDossierStore(
         contract_root.parent / "identification-evidence"
@@ -2460,7 +2498,7 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
     )
     series_name = selected_series.name
     subtitle_series_name, subtitle_release_profile = _subtitle_lookup_series_name(
-        series_name, selected
+        series_name, disc_context_items
     )
     all_series_catalog = catalog
     catalog = _reviewed_episode_catalog(catalog, season, episode_range)
