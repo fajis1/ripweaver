@@ -8,6 +8,9 @@ import pytest
 from mkv_episode_matcher.backend.identification_dossier import (
     IdentificationDossierStore,
 )
+from mkv_episode_matcher.backend.legacy_context_repair import (
+    upgrade_legacy_disc_context,
+)
 from mkv_episode_matcher.backend.routers.rip import (
     AmbiguityChoiceRequest,
     ManualEpisodeIdentificationRequest,
@@ -262,6 +265,121 @@ def test_disc_identification_quarantine_refuses_unpaused_or_coherent_queue(tmp_p
         coherent.quarantine_incoherent_disc_identifications(
             fingerprint, (1, 2, 3, 4, 5, 6, 8)
         )
+
+
+def _seed_legacy_seasonless_disc(tmp_path):
+    store = PipelineQueueStore(tmp_path / "legacy-context.sqlite3")
+    fingerprint = "0123456789abcdef"
+    media_ids = {}
+    original_contracts = {}
+    original_media = {}
+    store.remember_disc_matching_scope(fingerprint, tuple(range(1, 9)))
+    for title_index in range(1, 9):
+        media_id = f"legacy-title-{title_index:03d}"
+        media_ids[title_index] = media_id
+        source = tmp_path / f"legacy-title-{title_index:03d}.mkv"
+        source.write_bytes(f"preserved-{title_index}".encode())
+        original_media[title_index] = source.read_bytes()
+        contract = tmp_path / f"legacy-title-{title_index:03d}.json"
+        contract.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "mode": "verified-rip-contract",
+                "media_id": media_id,
+                "source_path": str(source),
+                "source_size_bytes": source.stat().st_size,
+                "warning_count": 0,
+                "disc_fingerprint": fingerprint,
+                "title_index": title_index,
+                "media_context": {
+                    "series_name": "The Office",
+                    "season": None,
+                    "content_hint": None,
+                    "episode_assignments": [],
+                },
+            }),
+            encoding="utf-8",
+        )
+        original_contracts[title_index] = contract
+        store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+        claimed = store.claim_next(
+            allowed_stages=("identify",), allowed_media_ids=(media_id,)
+        )
+        assert claimed is not None
+        store.require_review(media_id, "gemini_response_invalid")
+    return store, fingerprint, media_ids, original_contracts, original_media
+
+
+def test_legacy_disc_context_is_upgraded_without_changing_media(tmp_path):
+    (
+        store,
+        fingerprint,
+        media_ids,
+        original_contracts,
+        original_media,
+    ) = _seed_legacy_seasonless_disc(tmp_path)
+    contract_root = tmp_path / "recontextualized"
+    store.set_paused(True)
+
+    repaired = upgrade_legacy_disc_context(
+        store,
+        disc_fingerprint=fingerprint,
+        fresh_context=MediaContext(
+            disc_id="disc-01",
+            series_name="THE OFFICE SUPERFAN EPISODES",
+            season=8,
+            disc_number=2,
+            content_hint="tv",
+        ),
+        contract_root=contract_root,
+    )
+
+    assert [item.media_id for item in repaired] == [
+        media_ids[index] for index in range(1, 9)
+    ]
+    assert all(item.state == "queued" and item.stage == "identify" for item in repaired)
+    assert store.is_paused() is True
+    for title_index, original_contract in original_contracts.items():
+        payload = json.loads(
+            store.rip_artifact(media_ids[title_index]).contract_path.read_text(
+                encoding="utf-8"
+            )
+        )
+        assert payload["media_context"]["series_name"] == "The Office"
+        assert payload["media_context"]["season"] == 8
+        assert payload["media_context"]["disc_number"] == 2
+        assert payload["media_context"]["content_hint"] == "tv"
+        assert original_contract.is_file()
+        source = tmp_path / f"legacy-title-{title_index:03d}.mkv"
+        assert source.read_bytes() == original_media[title_index]
+        assert store.list_events(media_ids[title_index])[-1].event_type == (
+            "legacy_disc_media_context_repaired"
+        )
+
+
+def test_legacy_disc_context_upgrade_is_inert_while_queue_is_running(tmp_path):
+    store, fingerprint, media_ids, _contracts, _media = _seed_legacy_seasonless_disc(
+        tmp_path
+    )
+
+    repaired = upgrade_legacy_disc_context(
+        store,
+        disc_fingerprint=fingerprint,
+        fresh_context=MediaContext(
+            disc_id="disc-01",
+            series_name="The Office",
+            season=8,
+            disc_number=2,
+            content_hint="tv",
+        ),
+        contract_root=tmp_path / "recontextualized",
+    )
+
+    assert repaired == ()
+    payload = json.loads(
+        store.rip_artifact(media_ids[1]).contract_path.read_text(encoding="utf-8")
+    )
+    assert payload["media_context"]["season"] is None
 
 
 def _store(tmp_path):
@@ -1384,6 +1502,17 @@ def test_verified_rip_result_is_admitted_without_discovering_media(tmp_path):
         results=[result],
         output_root=output_root,
         contract_root=contract_root,
+        media_contexts={
+            job.job_id: MediaContext(
+                disc_id=job.job_id,
+                series_name="Test Show",
+                season=8,
+                disc_number=2,
+                volume_number=4,
+                content_hint="tv",
+                selected_title_indexes=(0,),
+            )
+        },
         media_id_overrides={job.job_id: "disc-title000-recovery-0123456789ab"},
     )
 
@@ -1392,6 +1521,10 @@ def test_verified_rip_result_is_admitted_without_discovering_media(tmp_path):
     assert queued[0].state == "queued"
     private_payload = json.loads(queued[0].artifact.contract_path.read_text())
     assert private_payload["source_path"] == str(source.resolve())
+    assert private_payload["media_context"]["season"] == 8
+    assert private_payload["media_context"]["disc_number"] == 2
+    assert private_payload["media_context"]["volume_number"] == 4
+    assert private_payload["media_context"]["selected_title_indexes"] == [0]
     assert str(source) not in json.dumps([
         event.details for event in store.list_events()
     ])

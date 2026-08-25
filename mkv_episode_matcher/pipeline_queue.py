@@ -313,9 +313,17 @@ def enqueue_verified_rip_results(  # noqa: C901
             context_payload = {
                 "series_name": str(context.series_name),
                 "season": context.season,
+                "disc_number": context.disc_number,
+                "volume_number": context.volume_number,
                 "tmdb_id": context.tmdb_id,
                 "content_hint": context.content_hint,
                 "handbrake_profile_id": context.handbrake_profile_id,
+                "staging_attempt": context.staging_attempt,
+                "selected_title_indexes": (
+                    list(context.selected_title_indexes)
+                    if context.selected_title_indexes is not None
+                    else None
+                ),
                 "special_feature_catalog_id": context.special_feature_catalog_id,
                 "special_feature_release_id": context.special_feature_release_id,
                 "special_feature_library_title": context.special_feature_library_title,
@@ -325,6 +333,11 @@ def enqueue_verified_rip_results(  # noqa: C901
                 ),
                 "episode_assignments": list(context.episode_assignments),
                 "catalogue_help_assignments": list(context.catalogue_help_assignments),
+                "disc_metadata_source": context.disc_metadata_source,
+                "disc_metadata_status": context.disc_metadata_status,
+                "disc_metadata_matched_title_count": (
+                    context.disc_metadata_matched_title_count
+                ),
                 "existing_output_policy": context.existing_output_policy,
                 "downstream_skip_title_indexes": list(
                     context.downstream_skip_title_indexes
@@ -2818,6 +2831,246 @@ class PipelineQueueStore:
             )
             connection.commit()
         return self.get(checked_id)
+
+    def repair_legacy_disc_media_context(  # noqa: C901
+        self,
+        disc_fingerprint: str,
+        replacement_artifacts: Mapping[int, PipelineArtifact],
+        *,
+        expected_series_name: str,
+        expected_season: int,
+        expected_disc_number: int | None,
+    ) -> tuple[QueuedPipelineItem, ...]:
+        """Atomically attach corrected TV context to exact legacy rip contracts."""
+
+        if re.fullmatch(r"[0-9a-f]{16}", disc_fingerprint) is None:
+            raise PipelineQueueError("Disc fingerprint is invalid")
+        if (
+            not replacement_artifacts
+            or any(
+                isinstance(index, bool) or not isinstance(index, int) or index < 0
+                for index in replacement_artifacts
+            )
+            or not isinstance(expected_series_name, str)
+            or not expected_series_name.strip()
+            or isinstance(expected_season, bool)
+            or not isinstance(expected_season, int)
+            or not 0 <= expected_season <= 99
+            or (
+                expected_disc_number is not None
+                and (
+                    isinstance(expected_disc_number, bool)
+                    or not isinstance(expected_disc_number, int)
+                    or expected_disc_number < 1
+                )
+            )
+        ):
+            raise PipelineQueueError("Legacy disc media context repair is invalid")
+        replacements = dict(replacement_artifacts)
+        for artifact in replacements.values():
+            _validate_artifact(artifact, "rip")
+        expected_titles = set(replacements)
+        repaired_media_ids: list[str] = []
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                paused = connection.execute(
+                    "SELECT paused FROM pipeline_control WHERE singleton = 1"
+                ).fetchone()
+                if paused is None or not paused["paused"]:
+                    raise PipelineQueueError(
+                        "Legacy disc media context repair requires a paused queue"
+                    )
+                scope_row = connection.execute(
+                    "SELECT relevant_title_indexes_json FROM disc_matching_scopes "
+                    "WHERE disc_fingerprint = ?",
+                    (disc_fingerprint,),
+                ).fetchone()
+                if scope_row is None:
+                    raise PipelineQueueError("Disc matching scope is unavailable")
+                try:
+                    scope = set(json.loads(scope_row["relevant_title_indexes_json"]))
+                except (json.JSONDecodeError, TypeError) as exc:
+                    raise PipelineQueueError("Disc matching scope is invalid") from exc
+                if scope != expected_titles:
+                    raise PipelineQueueError(
+                        "Current disc matching scope differs from context repair"
+                    )
+                if connection.execute(
+                    "SELECT 1 FROM disc_title_history WHERE disc_fingerprint = ? "
+                    "AND title_index IN ("
+                    + ",".join("?" for _index in expected_titles)
+                    + ") LIMIT 1",
+                    (disc_fingerprint, *sorted(expected_titles)),
+                ).fetchone():
+                    raise PipelineQueueError(
+                        "Accepted disc title history prevents legacy context repair"
+                    )
+
+                rows = connection.execute(
+                    "SELECT * FROM pipeline_items ORDER BY created_at, media_id"
+                ).fetchall()
+                selected: dict[int, tuple[sqlite3.Row, dict[str, object]]] = {}
+                for row in rows:
+                    rip_path = Path(row["rip_artifact_path"])
+                    if (
+                        not rip_path.is_file()
+                        or _file_sha256(rip_path) != row["rip_artifact_sha256"]
+                    ):
+                        continue
+                    try:
+                        payload = json.loads(rip_path.read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError):
+                        continue
+                    if payload.get("disc_fingerprint") != disc_fingerprint:
+                        continue
+                    title_index = payload.get("title_index")
+                    if (
+                        isinstance(title_index, bool)
+                        or not isinstance(title_index, int)
+                        or title_index < 0
+                    ):
+                        raise PipelineQueueError(
+                            "Verified disc title identity is invalid"
+                        )
+                    if title_index in selected:
+                        raise PipelineQueueError(
+                            "Verified disc title identity is duplicated"
+                        )
+                    selected[title_index] = (row, payload)
+                if set(selected) != expected_titles:
+                    raise PipelineQueueError(
+                        "Exact legacy disc title set is unavailable"
+                    )
+
+                for title_index in sorted(expected_titles):
+                    row, original = selected[title_index]
+                    if (
+                        row["state"] != "review_required"
+                        or row["stage"] != "identify"
+                        or row["review_code"]
+                        not in {
+                            "gemini_response_invalid",
+                            "gemini_analysis_failed",
+                            "all_season_analysis_failed",
+                            "all_season_sequence_review_required",
+                            "independent_episode_evidence_required",
+                            "whole_disc_coherence_review_required",
+                            "unmatched_disc_analysis_required",
+                        }
+                        or row["artifact_path"] != row["rip_artifact_path"]
+                        or row["artifact_sha256"] != row["rip_artifact_sha256"]
+                    ):
+                        raise PipelineQueueError(
+                            "Legacy disc title is not awaiting context repair"
+                        )
+                    context = original.get("media_context")
+                    if (
+                        not isinstance(context, dict)
+                        or context.get("season") is not None
+                        or context.get("episode_assignments") not in (None, [], ())
+                    ):
+                        raise PipelineQueueError(
+                            "Legacy disc title already has identification context"
+                        )
+                    source_path = original.get("source_path")
+                    source_size = original.get("source_size_bytes")
+                    if (
+                        not isinstance(source_path, str)
+                        or not source_path
+                        or isinstance(source_size, bool)
+                        or not isinstance(source_size, int)
+                        or source_size <= 0
+                    ):
+                        raise PipelineQueueError(
+                            "Verified rip media metadata is invalid"
+                        )
+                    source = Path(source_path)
+                    try:
+                        source_matches = (
+                            source.is_file() and source.stat().st_size == source_size
+                        )
+                    except OSError:
+                        source_matches = False
+                    if not source_matches:
+                        raise PipelineQueueError(
+                            "Verified rip media is missing or changed"
+                        )
+
+                    replacement = replacements[title_index]
+                    try:
+                        revised = json.loads(
+                            replacement.contract_path.read_text(encoding="utf-8")
+                        )
+                    except (OSError, json.JSONDecodeError) as exc:
+                        raise PipelineQueueError(
+                            "Replacement rip contract is invalid"
+                        ) from exc
+                    original_without_context = dict(original)
+                    revised_without_context = dict(revised)
+                    original_context = original_without_context.pop("media_context")
+                    revised_context = revised_without_context.pop("media_context", None)
+                    if original_without_context != revised_without_context:
+                        raise PipelineQueueError(
+                            "Replacement rip contract changed verified media"
+                        )
+                    expected_context = dict(original_context)
+                    expected_context.update(
+                        series_name=expected_series_name.strip(),
+                        season=expected_season,
+                        disc_number=expected_disc_number,
+                        content_hint="tv",
+                    )
+                    if revised_context != expected_context:
+                        raise PipelineQueueError(
+                            "Replacement rip contract context differs from authorization"
+                        )
+
+                now = self._now()
+                for title_index in sorted(expected_titles):
+                    row, _payload = selected[title_index]
+                    replacement = replacements[title_index]
+                    connection.execute(
+                        """
+                        UPDATE pipeline_items SET state = 'queued', stage = 'identify',
+                            artifact_path = ?, artifact_sha256 = ?, artifact_count = ?,
+                            rip_artifact_path = ?, rip_artifact_sha256 = ?,
+                            rip_artifact_count = ?, updated_at = ?, error_type = NULL,
+                            review_code = NULL WHERE media_id = ?
+                        """,
+                        (
+                            str(replacement.contract_path.resolve()),
+                            replacement.contract_sha256,
+                            replacement.item_count,
+                            str(replacement.contract_path.resolve()),
+                            replacement.contract_sha256,
+                            replacement.item_count,
+                            now,
+                            row["media_id"],
+                        ),
+                    )
+                    self._append_event(
+                        connection,
+                        media_id=row["media_id"],
+                        event_type="legacy_disc_media_context_repaired",
+                        stage="identify",
+                        state="queued",
+                        details={
+                            "title_index": title_index,
+                            "season": expected_season,
+                            "disc_number": expected_disc_number,
+                            "content_hint": "tv",
+                            "media_changed": False,
+                        },
+                    )
+                    repaired_media_ids.append(row["media_id"])
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+
+        return tuple(self.get(media_id) for media_id in repaired_media_ids)
 
     def quarantine_incoherent_disc_identifications(  # noqa: C901
         self,

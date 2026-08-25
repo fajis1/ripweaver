@@ -44,6 +44,9 @@ from mkv_episode_matcher.backend.gemini_fallback import execute_gemini_fallback
 from mkv_episode_matcher.backend.identification_dossier import (
     IdentificationDossierStore,
 )
+from mkv_episode_matcher.backend.legacy_context_repair import (
+    upgrade_legacy_disc_context,
+)
 from mkv_episode_matcher.backend.organization_authorization import (
     build_organization_authorization_plan,
 )
@@ -2102,6 +2105,23 @@ def prepare_drive_pipeline(  # noqa: C901
         preview_fingerprint = _preview_disc_fingerprint(preview)
         if preview_fingerprint != disc_fingerprint:
             raise RipError("Prepared disc identity is unavailable")
+        try:
+            repaired_context_items = upgrade_legacy_disc_context(
+                pipeline_store,
+                disc_fingerprint=disc_fingerprint,
+                fresh_context=context,
+                contract_root=get_pipeline_contract_root(),
+            )
+            if repaired_context_items:
+                logger.info(
+                    "Repaired legacy season context for {} verified pipeline titles",
+                    len(repaired_context_items),
+                )
+        except PipelineQueueError as exc:
+            logger.warning(
+                "Legacy season-context repair stopped safely: {}",
+                type(exc).__name__,
+            )
         with _prepared_disc_identity_lock:
             reusable_states = {
                 "awaiting_review",
