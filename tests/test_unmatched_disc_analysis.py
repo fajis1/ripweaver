@@ -395,6 +395,58 @@ def test_saved_superfan_context_is_retained_only_for_subtitle_lookup():
     assert release_profile == "superfan"
 
 
+def test_reviewed_release_context_survives_canonical_series_resolution():
+    selected = [
+        (
+            SimpleNamespace(media_id="title-1"),
+            {"media_context": {"series_name": "The Office"}},
+        )
+    ]
+
+    lookup_name, release_profile = analysis._subtitle_lookup_series_name(
+        "The Office",
+        selected,
+        reviewed_series_name="The Office Superfan Episodes",
+    )
+
+    assert lookup_name == "The Office Superfan Episodes"
+    assert release_profile == "superfan"
+
+
+@pytest.mark.parametrize(
+    ("reviewed_name", "expected_name", "expected_profile"),
+    (
+        ("Example Extended", "Example Extended", "extended"),
+        ("Example Unrated", "Example Unrated", "unrated"),
+        ("Example Supercut", "Example Supercut", "supercut"),
+        ("Example Director's Cut", "Example Director's Cut", "directors_cut"),
+    ),
+)
+def test_reviewed_altered_release_profiles_are_retained_for_subtitle_lookup(
+    reviewed_name: str,
+    expected_name: str,
+    expected_profile: str,
+):
+    lookup_name, release_profile = analysis._subtitle_lookup_series_name(
+        "Example",
+        [],
+        reviewed_series_name=reviewed_name,
+    )
+
+    assert lookup_name == expected_name
+    assert release_profile == expected_profile
+
+
+def test_release_lookup_does_not_duplicate_existing_edition_suffix():
+    lookup_name, release_profile = analysis._subtitle_lookup_series_name(
+        "The Office Superfan Episodes",
+        [],
+    )
+
+    assert lookup_name == "The Office Superfan Episodes"
+    assert release_profile == "superfan"
+
+
 def test_reviewed_episode_range_only_narrows_candidate_catalog():
     catalog = tuple(
         EpisodeCatalogEntry(

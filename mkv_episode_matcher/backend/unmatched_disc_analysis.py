@@ -262,10 +262,14 @@ def _disc_number_hint(selected: list[tuple[object, dict]]) -> int | None:
 def _subtitle_lookup_series_name(
     canonical_series_name: str,
     selected: list[tuple[object, dict]],
+    *,
+    reviewed_series_name: str | None = None,
 ) -> tuple[str, str | None]:
     """Retain a saved edition hint without changing canonical TV metadata."""
 
     contextual_names = [canonical_series_name]
+    if reviewed_series_name and reviewed_series_name.strip():
+        contextual_names.append(reviewed_series_name)
     contextual_names.extend(
         str(context["series_name"])
         for _item, payload in selected
@@ -274,10 +278,17 @@ def _subtitle_lookup_series_name(
         and str(context["series_name"]).strip()
     )
     profile = infer_subtitle_release_profile(" ".join(contextual_names))
-    if profile.key == "superfan":
-        return f"{canonical_series_name} Superfan Episodes", profile.key
-    if profile.key == "extended":
-        return f"{canonical_series_name} Extended", profile.key
+    canonical_profile = infer_subtitle_release_profile(canonical_series_name)
+    lookup_base = canonical_profile.canonical_series_name
+    release_suffix = {
+        "superfan": "Superfan Episodes",
+        "extended": "Extended",
+        "unrated": "Unrated",
+        "supercut": "Supercut",
+        "directors_cut": "Director's Cut",
+    }.get(profile.key)
+    if release_suffix is not None:
+        return f"{lookup_base} {release_suffix}", profile.key
     return canonical_series_name, None
 
 
@@ -2465,8 +2476,11 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
     selected_ids = {item.media_id for item, _payload in selected}
     media_ids = tuple(item.media_id for item, _payload in selected)
     candidate_scope_label = _reviewed_candidate_scope_label(season, episode_range)
+    reviewed_series_name = series_name
     subtitle_series_name, subtitle_release_profile = _subtitle_lookup_series_name(
-        series_name, disc_context_items
+        series_name,
+        disc_context_items,
+        reviewed_series_name=reviewed_series_name,
     )
     dossier = IdentificationDossierStore(
         contract_root.parent / "identification-evidence"
@@ -2498,7 +2512,9 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
     )
     series_name = selected_series.name
     subtitle_series_name, subtitle_release_profile = _subtitle_lookup_series_name(
-        series_name, disc_context_items
+        series_name,
+        disc_context_items,
+        reviewed_series_name=reviewed_series_name,
     )
     all_series_catalog = catalog
     catalog = _reviewed_episode_catalog(catalog, season, episode_range)
