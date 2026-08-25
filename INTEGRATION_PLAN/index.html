@@ -1,0 +1,1958 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Automatically match and rename your MKV TV episodes">
+      
+      
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.1">
+    
+    
+      
+        <title>Integration Plan - MKV Episode Matcher</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#integration-plan" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="MKV Episode Matcher" class="md-header__button md-logo" aria-label="MKV Episode Matcher" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            MKV Episode Matcher
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Integration Plan
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/Jsakkos/mkv-episode-matcher" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    Jsakkos/mkv-episode-matcher
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../installation/" class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../api/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  API Reference
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../cli/" class="md-tabs__link">
+          
+  
+  
+  Advanced Usage
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="MKV Episode Matcher" class="md-nav__button md-logo" aria-label="MKV Episode Matcher" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    MKV Episode Matcher
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/Jsakkos/mkv-episode-matcher" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    Jsakkos/mkv-episode-matcher
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Advanced Usage
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Advanced Usage
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Command Line Interface
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tips/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tips and Tricks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#objective" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Objective
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#existing-components" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Existing Components
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Existing Components">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#mkv-episode-matcher" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        mkv-episode-matcher
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#selected-riplex-capabilities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Selected Riplex Capabilities
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#special-feature-discs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Special-feature discs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#reviewed-legacy-work" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reviewed Legacy Work
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#target-workflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Target Workflow
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#proposed-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Proposed Architecture
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Proposed Architecture">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#disc-adapter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Disc adapter
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#media-probe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Media probe
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#title-planner" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Title planner
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#audio-diagnostics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Audio diagnostics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#episode-matcher" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Episode matcher
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Episode matcher">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#anthology-and-conflicting-order-fallback" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Anthology and conflicting-order fallback
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#deduplication" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Deduplication
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#organizer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Organizer
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#durable-orchestration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Durable orchestration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#web-orchestration-control-plane" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Web orchestration control plane
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#operating-defaults-and-credentials" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operating defaults and credentials
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#windows-installation-and-launcher" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Windows installation and launcher
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phases-and-gates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phases and Gates
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Phases and Gates">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#phase-0-safety-and-fixtures" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 0: Safety and fixtures
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-1-plan-only-title-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 1: Plan-only title selection
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-2-media-and-audio-diagnostics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 2: Media and audio diagnostics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-3-controlled-single-title-rip" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 3: Controlled single-title rip
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-4-episode-identification-plan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 4: Episode identification plan
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-5-deduplication-and-organization-plan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 5: Deduplication and organization plan
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-6-reviewed-execution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 6: Reviewed execution
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-7-durable-disc-orchestration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 7: Durable disc orchestration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-8-optional-handbrake-transcode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 8: Optional HandBrake transcode
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-9-automatic-web-orchestration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 9: Automatic web orchestration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-10-windows-installer-and-desktop-launcher" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 10: Windows installer and desktop launcher
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="integration-plan">Integration Plan</h1>
+<h2 id="objective">Objective</h2>
+<p>Build one safe media-ingest application that combines:</p>
+<ul>
+<li>the existing <code>mkv-episode-matcher</code> CLI, FastAPI backend, React frontend, and
+  transcript/subtitle matching engine;</li>
+<li>selected Riplex concepts for MKV scanning, runtime matching, deduplication,
+  Plex-style organization, MakeMKV integration, and disc orchestration; and</li>
+<li>reviewed portions of the legacy MakeMKV, matcher, proxy, inventory, and
+  staging scripts.</li>
+</ul>
+<p>The combined system should support unattended work eventually, but unattended
+operation is not an initial milestone. Every mutating action must be planned,
+observable, interruptible, restartable, and explicitly enabled.</p>
+<h2 id="existing-components">Existing Components</h2>
+<h3 id="mkv-episode-matcher">mkv-episode-matcher</h3>
+<p>Keep as the application foundation:</p>
+<ul>
+<li>Typer CLI in <code>mkv_episode_matcher/cli.py</code>;</li>
+<li>FastAPI routes and WebSockets in <code>mkv_episode_matcher/backend/</code>;</li>
+<li>React/Vite frontend in <code>mkv_episode_matcher/frontend/</code>;</li>
+<li><code>MatchEngineV2</code>, subtitle providers, Faster Whisper integration, and matching
+  models in <code>mkv_episode_matcher/core/</code>.</li>
+</ul>
+<p>The matcher currently extracts multiple audio chunks, transcribes them, compares
+them with subtitle windows, votes across chunks, and may rename matched files.
+Renaming must be separated from identification before it joins disc automation.</p>
+<h3 id="selected-riplex-capabilities">Selected Riplex Capabilities</h3>
+<p>Adopt or adapt concepts rather than placing a second orchestrator around the
+application:</p>
+<ul>
+<li>FFprobe-based MKV inventory;</li>
+<li>runtime-based feature, episode, and extras classification;</li>
+<li>deterministic duplicate detection;</li>
+<li>Plex-compatible organization plans;</li>
+<li>a MakeMKV adapter;</li>
+<li>durable disc/job orchestration.</li>
+</ul>
+<p>Confirm the upstream version, public API, CLI behavior, license, and data models
+before importing code. Prefer a narrow adapter or a documented reimplementation
+when direct reuse would create competing ownership of drives or output folders.</p>
+<h3 id="special-feature-discs">Special-feature discs</h3>
+<p>Bonus discs require a separate plan from episode-cluster selection. Short
+runtime is not synonymous with junk: deleted scenes, trailers, interviews,
+featurettes, shorts, and clips can all be much shorter than a movie or episode.
+The special-feature path therefore combines:</p>
+<ol>
+<li>a saved MakeMKV title/stream inventory;</li>
+<li>a reviewed, provider-neutral per-disc feature catalogue, initially populated
+   from a selected DVDCompare release or manually;</li>
+<li>global one-to-one runtime assignment;</li>
+<li>explicit play-all/component relationships;</li>
+<li>post-rip media fingerprints for actual duplicate confirmation;</li>
+<li>a collision-safe Jellyfin/Plex organization proposal.</li>
+</ol>
+<p><code>mkv_episode_matcher/disc/special_features.py</code> and
+<code>mkv-match plan-special-features</code> now implement the first plan-only portion.
+The planner uses a minimum-cost global assignment so similar runtimes cannot
+claim the same catalogue entry. It proposes Jellyfin-recognized folders such as
+<code>behind the scenes</code>, <code>deleted scenes</code>, <code>interviews</code>, <code>scenes</code>, <code>shorts</code>,
+<code>featurettes</code>, <code>clips</code>, <code>trailers</code>, and <code>other</code>. It recommends only
+catalogue-matched individual features. Play-all/summed titles,
+metadata-duplicate candidates, menu-length clips, and unmatched titles remain
+held for review. Equal-best runtime assignments are also explicit ambiguities:
+the planner never breaks them arbitrarily. Metadata equality never proves
+duplicate content. Titles containing multiple audio streams carry a
+<code>preserve-all</code> policy because a bonus-disc audio archive may store distinct
+features as separate streams within one title.</p>
+<p>The catalogue is an exact, path-free JSON contract with stable feature IDs,
+display titles, feature types, runtimes, representation types, source
+references, and optional explicit play-all component IDs. A feature can be a
+standalone video title, multi-audio title, menu-bound item, audio-only item,
+still gallery, or unknown. Only representations expected to exist as titles
+participate in runtime matching or the missing-title report. Provider adapters
+translate into this contract rather than letting DVDCompare-, Riplex-, or
+review-site-specific structures enter the planner. Release selection remains
+necessary because regions and editions can contain different bonus discs.</p>
+<p>The identification ladder is deliberately provider-independent:</p>
+<ol>
+<li>release catalogue plus global runtime assignment;</li>
+<li>FFprobe structure and exact/perceptual content fingerprints;</li>
+<li>representative thumbnails and contact sheets;</li>
+<li>embedded text, subtitle OCR, and short transcription evidence;</li>
+<li>an optional bounded external model only for the unresolved candidate set;</li>
+<li>explicit human review.</li>
+</ol>
+<p>A provider outage or lack of a catalogue must reduce confidence, not lose
+content. After a separately authorized diagnostic rip, every plausible
+non-menu title remains in isolated staging and receives a content fingerprint.
+If all identification layers fail, the organization planner may propose
+<code>Movie (Year)/extras/Unidentified Extra - &lt;short-content-fingerprint&gt;.mkv</code>.
+That neutral name is collision-resistant and valid for Jellyfin, while the item
+remains in the review queue for a later rename proposal. A filename must never
+be generated from a path, drive identity, title index alone, or an unverified
+model guess. Menu candidates and unverified duplicates remain held rather than
+being sent through this fallback automatically.</p>
+<p><code>mkv_episode_matcher/disc/special_feature_manifest.py</code> and
+<code>mkv-match plan-special-feature-rip</code> implement the next saved-data-only
+boundary. The command rebuilds the validated feature plan from one explicit
+inventory and catalogue, then writes a digest-bound diagnostic manifest. It
+includes matched, ambiguous, unmatched-review, and metadata-duplicate
+candidates; excludes menu and play-all candidates by default; retains every
+ambiguity candidate ID; and schedules FFprobe, cryptographic/content
+fingerprinting, perceptual fingerprinting, and escalation evidence after a
+future rip. Multi-audio titles also require a complete audio-stream inventory.</p>
+<p>This diagnostic manifest is deliberately not executable. It contains no drive
+index, MakeMKV arguments, source path, or library destination and declares
+<code>execution_authorized: false</code>. Its isolated staging names derive from the
+validated plan digest.</p>
+<p><code>mkv_episode_matcher/disc/special_feature_binder.py</code> and
+<code>mkv-match bind-special-feature-rip</code> implement the fresh-preflight binding
+boundary. The caller supplies the exact reviewed diagnostic SHA-256. The binder
+then compares the full inventory signature and each selected title's index,
+runtime, size, and audio-stream count. A stale, changed, or substituted
+inventory stops safely. Its output uses the distinct
+<code>special-feature-rip-binding-plan</code> mode, remains
+<code>execution_authorized: false</code>, and is intentionally rejected by the episode
+rip loader.</p>
+<p>The next layers are:</p>
+<ul>
+<li>a cached DVDCompare adapter with release selection and saved/synthetic
+  fixtures;</li>
+<li>adapters for other public/provider catalogues using the same normalized
+  contract, with manual catalogue entry as the final metadata fallback;</li>
+<li>a separate special-feature executor that accepts only the bound manifest
+  mode, rechecks its immutable digest and fresh metadata, and requires explicit
+  exact-manifest rip authorization;</li>
+<li>post-rip FFprobe and perceptual/content fingerprint evidence;</li>
+<li>optional short sample, OCR, or transcription evidence for unresolved titles;</li>
+<li>preservation or reviewed splitting of multi-stream audio archive titles;</li>
+<li>HandBrake profile selection by content type;</li>
+<li>a final organization plan using Jellyfin's supported extras folders.</li>
+</ul>
+<p>None of these layers should directly encode into or mutate the configured media
+library. Current Jellyfin documentation confirms that movie extras can live in
+typed subfolders under the movie folder, including <code>behind the scenes</code>,
+<code>deleted scenes</code>, <code>interviews</code>, <code>scenes</code>, <code>shorts</code>, <code>featurettes</code>, <code>clips</code>,
+<code>other</code>, <code>extras</code>, and <code>trailers</code>.</p>
+<h3 id="reviewed-legacy-work">Reviewed Legacy Work</h3>
+<p>Reuse small ideas, not whole scripts:</p>
+<ul>
+<li>MakeMKV drive discovery and robot-output parsing;</li>
+<li>title duration and playlist extraction;</li>
+<li>progress-message parsing;</li>
+<li>drive-letter to MakeMKV-index mapping;</li>
+<li>subprocess output streaming;</li>
+<li>basic show/season filename heuristics;</li>
+<li>source/library inventory separation;</li>
+<li>review manifests and dry-run staging;</li>
+<li>audio-track discovery that demonstrated default 5.1 plus alternate stereo
+  layouts.</li>
+</ul>
+<p>Do not reuse automatic target-folder cleanup, immediate rename/delete behavior,
+daemon-thread orchestration, season-folder sweeping, or low-confidence AI
+renaming.</p>
+<h2 id="target-workflow">Target Workflow</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>Discover
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  -&gt; read-only disc scan
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>  -&gt; normalized title/stream inventory
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>  -&gt; title classification and duplicate groups
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>  -&gt; proposed rip plan
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>  -&gt; explicit approval
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>  -&gt; isolated per-disc staging rip
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>  -&gt; output verification
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>  -&gt; FFprobe inventory and audio diagnostics
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>  -&gt; runtime candidate matching
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>  -&gt; subtitle/transcript episode identification
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>  -&gt; confidence gate and ambiguity review
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>  -&gt; deterministic duplicate detection
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>  -&gt; optional transcode
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>  -&gt; post-transcode media verification
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>  -&gt; proposed Plex/Jellyfin organization plan
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>  -&gt; explicit approval
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>  -&gt; transactional rename/copy/move
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>  -&gt; quarantine or retention decision
+</code></pre></div>
+<p>Planning and execution are separate APIs and job states. No stage may infer
+permission for the next destructive or expensive stage.</p>
+<p>Each disc owns an independent pipeline state. When a disc completes a stage and
+passes its gate, it may enter the next stage immediately while other discs
+remain in earlier stages. Parallelism is bounded separately for optical I/O,
+lightweight metadata work, ASR, and transcoding.</p>
+<p>TV staging uses the matcher's native hierarchy while retaining collision
+isolation:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>TV Shows/
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>  Canonical Series Name/
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    Season 01/
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>      Disc 02 [disc-02]/
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>        &lt;fingerprint&gt;/
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>          title-000/
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>            source.mkv
+</code></pre></div>
+<p>The matcher searches ancestors for the <code>Season XX</code> directory, so per-disc and
+per-title safety directories do not destroy context. If a box-set volume spans
+seasons or the season is unknown, stage it under
+<code>TV Shows/&lt;Series&gt;/Unmatched/&lt;volume and staging ID&gt;/</code>; do not convert a volume
+number into a season number.</p>
+<p>MakeMKV-assigned names are not unique across discs. After a single new output
+passes size/count verification, the rip worker assigns a collision-resistant
+staging basename:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>disc-02-031fa38fcc781d5c-title-003.mkv
+</code></pre></div>
+<p>The source-created directory is unique and pre-existing targets are refused.
+When a later organizer proposes the canonical Plex/Jellyfin filename, an
+existing destination is a deduplication/review event, never an overwrite.</p>
+<h2 id="proposed-architecture">Proposed Architecture</h2>
+<h3 id="disc-adapter">Disc adapter</h3>
+<p>Responsibilities:</p>
+<ul>
+<li>discover MakeMKV drive indices;</li>
+<li>run read-only <code>info</code>;</li>
+<li>parse <code>DRV</code>, <code>CINFO</code>, <code>TINFO</code>, <code>SINFO</code>, <code>MSG</code>, and progress records;</li>
+<li>later, execute one explicitly approved title rip;</li>
+<li>expose cancellation and retain exact process results.</li>
+</ul>
+<p>The read-only implementation begins in <code>mkv_episode_matcher/disc/preflight.py</code>.
+Ripping must be implemented in a separate module.</p>
+<h3 id="media-probe">Media probe</h3>
+<p>Use FFprobe to record:</p>
+<ul>
+<li>duration, size, codecs, resolution, frame rate, and chapters;</li>
+<li>all audio/subtitle streams, languages, flags, channels, and layouts;</li>
+<li>container and stream warnings;</li>
+<li>stable, deterministic fingerprints.</li>
+</ul>
+<p>Raw probe data should be retained so parsers can be tested without accessing
+media again.</p>
+<h3 id="title-planner">Title planner</h3>
+<p>Classify titles using deterministic evidence:</p>
+<ul>
+<li>episode and movie runtime ranges;</li>
+<li>near-identical and exact runtimes;</li>
+<li>segment maps, chapters, and output size;</li>
+<li>combined-title relationships;</li>
+<li>extras and short-title policy.</li>
+</ul>
+<p>The planner produces reasons and confidence, never a rip command.</p>
+<h3 id="audio-diagnostics">Audio diagnostics</h3>
+<p>For every candidate audio stream:</p>
+<ol>
+<li>rank language, commentary indicators, default status, codec, and channels;</li>
+<li>extract a short sample with an explicit stream map;</li>
+<li>use a documented, dialogue-preserving downmix;</li>
+<li>measure peak, RMS/loudness, and silence;</li>
+<li>transcribe and score transcript information content;</li>
+<li>retry alternate streams when evidence is weak.</li>
+</ol>
+<p>Do not modify default-track flags or replace source MKVs with proxies. A
+multichannel layout alone is not evidence of silent audio.</p>
+<h3 id="episode-matcher">Episode matcher</h3>
+<p>Use a staged evidence cascade:</p>
+<ol>
+<li>show/season constraints;</li>
+<li>runtime candidates;</li>
+<li>local or downloaded subtitles;</li>
+<li>multi-sample ASR matching;</li>
+<li>cross-sample agreement;</li>
+<li>ambiguity/review queue.</li>
+</ol>
+<p>Identification returns a proposed episode identity and evidence. A separate
+authorized executor applies a collision-checked name.</p>
+<h4 id="anthology-and-conflicting-order-fallback">Anthology and conflicting-order fallback</h4>
+<p>For sets such as <em>Faerie Tale Theatre</em>, normalize numbered volume labels to the
+canonical series title before metadata lookup; the volume number must not be
+treated as a season number. Attempt the normal runtime/subtitle/transcript path
+first. If release-order conflicts or incorrect subtitle assignments prevent a
+match:</p>
+<ol>
+<li>sample several short windows, prioritizing the spoken introduction;</li>
+<li>evaluate alternate audio streams when the primary is silent,
+   low-information, or materially quieter;</li>
+<li>retrieve candidates across every season with BM25/window search;</li>
+<li>reject a subtitle cache when retrieval and fuzzy scores are weak or
+   contradictory rather than forcing its labels;</li>
+<li>compare names, characters, and distinctive plot language with a supplied
+   authoritative episode-title/summary catalogue;</li>
+<li>enforce one-to-one assignment within each physical-disc order; and</li>
+<li>require an explicit aired-order versus DVD-order choice before creating a
+   season-folder plan.</li>
+</ol>
+<p>An LLM may rank only the supplied authoritative episode candidates and must
+return structured evidence and confidence. It may not invent a filename or
+rename automatically. Ambiguous results enter the review queue.</p>
+<p>The Gemini adapter is a bounded fallback, not the primary matcher:</p>
+<ul>
+<li>send redacted file IDs, runtimes, short transcript excerpts, and an
+  authoritative candidate catalogue; never send local paths or library
+  inventories;</li>
+<li>request schema-validated JSON containing supplied episode IDs, evidence,
+  rankings, and confidence;</li>
+<li>reject any episode ID not present in the request;</li>
+<li>use bounded retries with explicit authentication/rate-limit handling and the
+  existing hidden credential-replacement flow;</li>
+<li>call once for a disc-level candidate set when practical, then apply local
+  one-to-one assignment and confidence/margin thresholds;</li>
+<li>retain only score/evidence metadata in durable logs, not API keys, paths, or
+  full transcripts; and</li>
+<li>produce a review plan only. Rename, move, and organization remain separate
+  authorized operations.</li>
+</ul>
+<p>Implemented foundation (2026-07-30):</p>
+<ul>
+<li>an aired-order TMDb catalogue builder and local runtime/text candidate ranker;</li>
+<li>a path-free, size-bounded Gemini Interactions request using structured JSON;</li>
+<li>local rejection of invented IDs, missing/duplicate files, duplicate episode
+  assignments, malformed confidence, and path-bearing evidence;</li>
+<li>bounded authentication recovery, paid-key fallback, rate-limit/transient
+  retries, and redacted errors;</li>
+<li>a plan-only <code>plan-gemini-unmatched</code> CLI whose durable output excludes
+  transcript excerpts; and</li>
+<li>a twelve-file <em>Faerie Tale Theatre</em> aired-order regression fixture.</li>
+</ul>
+<p>The transient evidence-bundle collector now joins saved multi-window Whisper
+output to the catalogue and local shortlist. Producing those saved windows from
+explicit MKV inputs remains a separate, authorization-gated media-reading
+stage. A live Gemini request is also a later, separately approved external-data
+transmission, not part of planning.</p>
+<p>The transient evidence collector is now implemented as
+<code>build-unmatched-bundle</code>. Its explicit saved-transcript input is:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">{</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="nt">&quot;files&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="p">{</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">      </span><span class="nt">&quot;file_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;disc-01-title-000&quot;</span><span class="p">,</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">      </span><span class="nt">&quot;duration_seconds&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2940</span><span class="p">,</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">      </span><span class="nt">&quot;windows&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">        </span><span class="p">{</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">          </span><span class="nt">&quot;start_seconds&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">300</span><span class="p">,</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="w">          </span><span class="nt">&quot;text&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Short saved transcript window&quot;</span>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="w">        </span><span class="p">}</span>
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="w">      </span><span class="p">]</span>
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="w">    </span><span class="p">}</span>
+<a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="w">  </span><span class="p">]</span>
+<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="p">}</span>
+</code></pre></div>
+<p>The separate catalogue report contains an <code>episodes</code> array using
+<code>episode_id</code>, <code>season</code>, <code>episode</code>, <code>title</code>, <code>overview</code>, and optional
+<code>runtime_seconds</code>. The collector:</p>
+<ul>
+<li>reads only the two explicit reports and never discovers MKV files;</li>
+<li>selects at most three informative, non-duplicate excerpts per file;</li>
+<li>creates a deterministic local candidate ranking;</li>
+<li>retains enough catalogue candidates to support disc-wide one-to-one
+  assignment even when <code>--top-k</code> is smaller than the number of files;</li>
+<li>refuses existing or identical output paths before writing;</li>
+<li>writes the excerpts only to the explicitly named private transient bundle;
+  and</li>
+<li>writes scores, counts, redacted file IDs, and candidate episode IDs—but no
+  dialogue or paths—to the durable safe report.</li>
+</ul>
+<p>No saved multi-window transcript-text report existed in <code>.mkv-runs</code> when this
+boundary was added. The next collection stage must produce this schema from
+explicitly authorized media sampling without placing dialogue in normal logs.</p>
+<p>That collection stage is now implemented as <code>collect-transcripts</code>:</p>
+<ul>
+<li>accepts explicit MKV paths only, with one redacted ID and one saved sanitized
+  FFprobe report per file;</li>
+<li>requires <code>--confirm-read</code> and otherwise exits before loading the ASR model or
+  accessing media;</li>
+<li>forces the configured ASR provider onto CPU and loads it once for the batch;</li>
+<li>processes files and windows sequentially to bound CPU and disk load;</li>
+<li>uses the existing three-window audio plan;</li>
+<li>prefers a normal default track, including usable 5.1 audio, and attempts
+  stereo/other non-commentary streams only when the preferred track is weak,
+  silent, or fails;</li>
+<li>runs constrained FFmpeg arguments without a shell, uses <code>-n</code> for temporary
+  WAV collision refusal, and returns redacted error categories;</li>
+<li>continues later files when one file needs audio review;</li>
+<li>writes dialogue only to the explicit private transcript report and writes a
+  separate path- and dialogue-free metrics report; and</li>
+<li>marks weak/failed files <code>review-audio</code>, which the downstream bundle loader
+  refuses.</li>
+</ul>
+<p>No real MKV has been read through this batch command yet. Its implementation
+and tests use synthetic WAVs, fake extraction, and fake ASR providers.</p>
+<p>Live validation on 2026-07-30 subsequently read one known-good Dragons control
+and all twelve staged Theatre files with explicit authorization. Every file
+collected from the normal default 5.1 stream; stereo fallback was unnecessary.
+The CPU Faster Whisper <code>small</code> INT8 model loaded once per monitored batch.
+Dialogue was retained only in ignored private reports, while safe reports kept
+redacted IDs, stream IDs, word counts, and signal metrics.</p>
+<p>The standard three-window local catalogue ranking correctly led six Theatre
+files but left six weak or incorrect. This demonstrated that 25%/50%/75%
+sampling misses the spoken story introductions. A tested <code>intro</code> mode now
+collects one additional 30-second window at a caller-reviewed start time, and
+can prioritize a reviewed stream index from saved FFprobe metadata.
+<code>merge-transcript-reports --enrich-duplicates</code> can add those windows without
+discarding existing evidence. Only locally low-confidence files should be
+resampled.</p>
+<p>The four monitored private reports were merged to twelve Theatre IDs. A
+metadata-only TMDb request for reviewed series ID 4603 saved 27 aired episodes.
+The offline bundle and Gemini request preview both validate twelve files
+against those 27 candidates. No Gemini API request has occurred.</p>
+<p>An authorized 60-second introduction pass collected usable dialogue for three
+of six selected files and improved the offline top result from six to eight of
+twelve reviewed identities. The other three samples were weak, while prior
+path-free diagnostics identify four unresolved files with much stronger
+dialogue at 120 seconds on stream 2. That targeted fallback must be separately
+approved before those files are read again.</p>
+<p>That four-file read was subsequently authorized and completed locally. All four
+stream-2 samples were usable, and evidence enrichment improved independent
+offline top-result agreement to ten of twelve. The remaining ambiguity is now
+an assignment problem rather than an audio failure: per-file lexical ranking
+does not yet account for the strong contiguous episode ordering within each
+disc. Add an offline disc-sequence/global-assignment layer before considering
+an external Gemini fallback.</p>
+<p>The saved-data-only sequence layer is now implemented. It requires explicit
+title membership/order inside each disc and explicit chronological order
+between discs; it never infers either from a volume number. It enumerates
+contiguous aired-order windows per disc, then uses dynamic programming to find
+the best and second-best ordered, non-overlapping global assignments. The safe
+report retains per-file independent lexical tops, selected lexical scores,
+group alternatives, and local/global margins.</p>
+<p>Applied to the twelve-file Theatre evidence, it recovered all reviewed aired
+identities without Gemini: disc 05 maps to S03E01-S03E04, disc 04 to
+S03E05-S04E01, and disc 03 to S04E02-S04E05. The global score was 0.818 and the
+best-versus-next margin was 0.107, so all groups cleared the current proposal
+thresholds. This remains a review plan; it did not rename or move media.</p>
+<p>The organization planner is now implemented as a separate saved-plan boundary.
+It accepts only the fully proposed sequence report, joins episode titles from
+the saved authoritative catalogue, sanitizes Windows filename components, and
+produces direct season-folder targets without any disc/title subfolders. It
+inspects only direct destination filenames. Exact case-insensitive canonical
+collisions and alternate filenames containing the same episode ID are routed
+to deduplication/review.</p>
+<p>A filename-only inspection of the configured TV library found no existing
+canonical Theatre series folder and therefore no episode conflicts. All twelve
+items are proposed; the canonical Season 03 and Season 04 directories are
+reported as missing but were not created. The safe proposal contains only
+relative destinations and does not expose the library root.</p>
+<p>The HandBrake batch-planning boundary is now implemented. It joins the
+conflict-free organization plan to exact caller-supplied staged MKVs using
+redacted media IDs, requires exact one-to-one source coverage from one source
+root, and writes only source basenames plus relative encoded-staging targets.
+It checks nonempty MKV metadata, final/partial output collisions, source/output
+separation, conservative free space, the reviewed AMD VCN profile, and live
+<code>HandBrakeCLI --help</code> capabilities. It does not create missing staging folders
+or invoke a transcode.</p>
+<p>The Theatre batch contains twelve jobs using <code>vce_h265</code>, quality 26. Total
+source size is 13,122,380,591 bytes; the conservative requirement with a
+10-GiB reserve is 23,859,798,831 bytes, well below available space. No final or
+partial output collision was found. Two encoded season directories remain to
+be created under the staging prefix, so manifest status is
+<code>ready-after-directory-creation</code>. The configured HandBrake path was stale;
+the previously validated explicit executable succeeded.</p>
+<p>The confirmed batch-execution boundary is also implemented but has only been
+exercised with synthetic MKVs and mocked HandBrake/FFprobe calls. It consumes
+the strict path-redacted manifest schema, hashes the raw manifest for safe
+resume, rechecks source basenames/sizes and capacity, and delegates every job
+to the existing verified partial/promote adapter. Concurrency is capped at two,
+while a separate total-job limit defaults the CLI to one two-job chunk.
+Destination directories are created incrementally only for jobs attempted in
+that invocation. Unknown collisions and individual failures are isolated;
+unaffected jobs continue. Path-free JSONL events support digest-checked resume,
+and <code>STOP</code>/<code>PAUSE</code> markers prevent a new chunk while allowing the active chunk
+to finish verification. The event directory is prohibited inside either media
+root. No real batch has been authorized or executed.</p>
+<h3 id="deduplication">Deduplication</h3>
+<p>Do not use an LLM or filename equality as deletion proof. Build levels:</p>
+<ul>
+<li>exact content hash where practical;</li>
+<li>sampled content fingerprint;</li>
+<li>duration, size, and stream-signature comparison;</li>
+<li>normalized media identity and edition;</li>
+<li>title/segment relationship for disc duplicates.</li>
+</ul>
+<p>Dedup results create a review manifest. Initial handling is quarantine or
+retention, not permanent deletion.</p>
+<h3 id="organizer">Organizer</h3>
+<p>Generate Plex/Jellyfin-compatible destination proposals:</p>
+<ul>
+<li>movies: title, year, edition, and extras;</li>
+<li>TV: show, season, <code>SxxExx</code>, episode title, and multi-episode handling;</li>
+<li>collision and existing-library reports.</li>
+</ul>
+<p>The organizer must not mutate the library while scanning or planning.</p>
+<h3 id="durable-orchestration">Durable orchestration</h3>
+<p>Use a durable store, likely SQLite initially, with:</p>
+<ul>
+<li>job, disc, drive, title, attempt, and artifact identifiers;</li>
+<li>explicit states and timestamps;</li>
+<li>structured events and retained external-process output;</li>
+<li>cancellation and graceful pause after the current safe unit;</li>
+<li>restart recovery;</li>
+<li>per-drive locks plus separate scan, rip, ASR, and transcode limits.</li>
+</ul>
+<p>Parallel-across-drives operation was explicitly approved on 2026-07-30 and is
+the default for approved manifests. Each physical drive has one sequential title
+worker. Every MakeMKV CLI process is pinned to an explicit <code>disc:&lt;index&gt;</code> target;
+the coordinator never uses MakeMKV all-drive mode. A completed drive may advance
+to read-only validation and matching while other drives continue ripping.
+Drive-specific failures pause only that drive; shared failures such as
+destination-storage errors may pause the whole batch. CPU-heavy ASR and
+transcode stages use separate bounded worker pools.</p>
+<h3 id="web-orchestration-control-plane">Web orchestration control plane</h3>
+<p>Extend the existing FastAPI/React server instead of creating a second web
+application. The server becomes a control plane over the reviewed planners and
+executors; API routes must not duplicate subprocess construction or bypass the
+CLI safety boundaries.</p>
+<p>The normal unattended policy is:</p>
+<ol>
+<li>an explicitly enabled drive monitor notices media insertion;</li>
+<li>read-only disc discovery and title planning run automatically;</li>
+<li>a saved default profile is snapshotted into the disc job;</li>
+<li>unambiguous jobs progress through rip, verification, matching, and
+   encoded-staging without requiring a web selection;</li>
+<li>a web choice, if made before the applicable stage is dispatched, replaces
+   the default for that disc only;</li>
+<li>ambiguity, collisions, failed verification, unavailable tools/encoders, and
+   exhausted credentials pause only the affected pipeline for review.</li>
+</ol>
+<p>The web UI is therefore an optional override and monitoring surface, not a
+required wizard. Automation must be deliberately armed by the repository owner
+with configured drive and staging roots. It never implies eject, deletion,
+source replacement, or direct media-library writes. A profile or policy change
+does not mutate a job already dispatched; each job retains the version and
+digest of the policy snapshot it received.</p>
+<p>Add a durable SQLite-backed state machine before adding automatic execution.
+Recommended states are <code>detected</code>, <code>scanning</code>, <code>planned</code>, <code>ripping</code>,
+<code>verifying-rip</code>, <code>matching</code>, <code>review-needed</code>, <code>transcode-queued</code>,
+<code>transcoding</code>, <code>verifying-transcode</code>, <code>staged</code>, <code>paused</code>, <code>failed</code>, and
+<code>complete</code>. Store opaque disc/job/artifact IDs and path-redacted events. Keep
+private paths in a separate local store that is never returned in routine API
+responses. On restart, reconcile running attempts against retained executor
+events and files before dispatching any new work.</p>
+<p>The first UI views should be:</p>
+<ul>
+<li>a drive/pipeline dashboard with current stage, progress, retained warnings,
+  and per-drive pause/resume controls;</li>
+<li>an automation page that selects the saved default HandBrake profile and audio
+  policy;</li>
+<li>an operating-defaults page for staging roots, encoded output, media-library
+  destinations, external-tool locations, and concurrency/retention policies;</li>
+<li>a per-disc override panel with an explicit deadline/status showing whether
+  the override can still be applied;</li>
+<li>a review queue for unknown series/season, ambiguous episode matches,
+  collisions, and failed verification;</li>
+<li>a profile builder backed by live, read-only HandBrake capability discovery.</li>
+</ul>
+<h3 id="operating-defaults-and-credentials">Operating defaults and credentials</h3>
+<p>The web UI is the primary configuration surface for an installed application.
+Organize settings into clear sections rather than one untyped configuration
+form:</p>
+<ul>
+<li><strong>Folders:</strong> initial/browse directory, isolated rip-staging root,
+  encoded-staging root, Jellyfin TV root, Jellyfin movie root, and local
+  cache/log location;</li>
+<li><strong>Tools:</strong> MakeMKV, HandBrakeCLI, FFmpeg, FFprobe, OCR, and optional
+  transcription executable/model selections;</li>
+<li><strong>Automation:</strong> enabled/disabled state, default HandBrake profile, default
+  audio policy, optional override delay, per-drive rip concurrency, bounded ASR
+  and transcode workers, and stop/pause behavior;</li>
+<li><strong>Matching:</strong> metadata order, minimum confidence, provider preference, and
+  ambiguity thresholds;</li>
+<li><strong>Credentials:</strong> TMDb, OpenSubtitles, Gemini, and future integration
+  credentials registered through the central credential registry.</li>
+</ul>
+<p>Configuring a Jellyfin directory is destination planning information only. It
+does not authorize direct encoding into that directory or automatic moves.
+Transcodes always finish and verify in encoded staging. A separate organization
+stage inventories the configured library, checks episode/movie identity and
+collisions, and applies only the owner's configured organization policy. It
+never overwrites an existing library file.</p>
+<p>Directory settings must be absolute, normalized, and validated for role
+separation. Reject dangerous broad roots, identical source/destination roots,
+encoded staging nested inside a media library, a library nested inside
+temporary rip staging, and any layout that would make recursive discovery feed
+outputs back into inputs. Saving a path must not scan media, create missing
+trees, or test it by writing a probe file. Offer an explicit folder picker and
+separate validation result. Creating a missing directory, if supported later,
+is a distinct user action showing the exact target.</p>
+<p>Credentials remain write-only:</p>
+<ul>
+<li>configuration GET responses return only configured/missing/invalid status
+  and an official provider-management link;</li>
+<li>replacement fields are empty password inputs and never receive the stored
+  value;</li>
+<li>submitted replacements go directly through the central credential store into
+  the ignored local <code>.env</code>;</li>
+<li>credential values never enter configuration JSON, WebSocket events, logs,
+  validation errors, or browser persistence;</li>
+<li>a provider test returns only classified status such as valid,
+  authentication-rejected, rate-limited, unavailable, or network-error;</li>
+<li>clearing a credential is a separate confirmed action, not an empty form
+  submission.</li>
+</ul>
+<p>The existing Settings route already implements the core non-disclosure pattern
+for TMDb and OpenSubtitles: secret fields are blank on reads and replacements
+are stored through the credential layer. Extend that registry and replace the
+current free-form <code>dict</code> update endpoint with versioned Pydantic request models,
+field allowlists, role-aware path validation, and atomic configuration writes.</p>
+<h3 id="windows-installation-and-launcher">Windows installation and launcher</h3>
+<p>The Windows installer must ask whether to create a desktop shortcut. This is an
+opt-in convenience choice, not a prerequisite for installation. The shortcut
+launches the installed application entry point in server mode, opens the local
+web dashboard, and gives the user a normal way to stop the server. Its target
+must not contain a repository path, Python virtual-environment path, API key,
+credential, or media-library path.</p>
+<p>The shortcut starts the server only; it does not arm disc automation by itself.
+The dashboard must clearly show whether automatic processing is armed. If a
+user has explicitly enabled a persisted automatic-processing policy, starting
+the server activates monitoring under that policy, so the shortcut becomes the
+normal “ready to rip” launcher. If a
+second shortcut launch finds the same healthy local server already running, it
+should open that dashboard instead of starting a duplicate server. Startup
+failures should produce a local diagnostic with a safe link or message rather
+than leaving a hidden orphan process.</p>
+<p>The initial packaging target is a per-user Windows installer with:</p>
+<ul>
+<li>an installer checkbox such as <code>Create a desktop shortcut</code>;</li>
+<li>a Start Menu entry regardless of the desktop choice;</li>
+<li>a stable installed launcher independent of the source checkout;</li>
+<li>uninstall cleanup for shortcuts and installed program files without removing
+  user configuration, logs, manifests, or media;</li>
+<li>no automatic server launch at Windows sign-in unless a separate, explicit
+  option is added later.</li>
+</ul>
+<p>Shortcut creation belongs to the installer rather than runtime application
+code. Development installs continue to use <code>uv run mkv-match serve
+--no-browser</code> or <code>uv run mkv-match serve</code>; they must not modify the desktop.</p>
+<p>The profile builder supports AMD VCN/VCE, NVIDIA NVENC, Intel Quick Sync, and
+CPU encoders. It must populate encoder and preset choices only from the
+installed HandBrakeCLI capabilities, record the hardware/tool version used for
+validation, and refuse to dispatch a profile whose encoder is no longer
+available. Profiles may select quality, encoder preset, selective decomb,
+content kind, conditional denoise, subtitle retention, and one of these audio
+policies:</p>
+<ul>
+<li>stereo compatibility first plus original surround;</li>
+<li>original surround first plus stereo compatibility;</li>
+<li>original audio only;</li>
+<li>stereo compatibility only.</li>
+</ul>
+<p>Animation profiles reject denoise. Unsupported passthrough formats must resolve
+through an explicit fallback rule rather than silently dropping audio. Built-in
+profiles should include a conservative automatic default, higher-quality,
+space-saving, and source-preserving choices; user-created profiles are immutable
+versions, and changing a profile creates a new version.</p>
+<p>Use one event schema for HTTP status and WebSocket updates. Replace the current
+in-memory matching job dictionary with the durable store, authenticate
+non-loopback access before treating the UI as a phone-accessible controller,
+restrict CORS, and avoid returning absolute paths or raw external-process logs.
+The existing <code>/ws</code> manager can carry progress initially, but it needs
+disconnect cleanup, bounded per-client delivery, event sequence IDs, and
+replay-from-sequence support.</p>
+<h2 id="phases-and-gates">Phases and Gates</h2>
+<h3 id="phase-0-safety-and-fixtures">Phase 0: Safety and fixtures</h3>
+<ul>
+<li>maintain <code>AGENTS.md</code> and credential boundaries;</li>
+<li>retain ignored preflight reports;</li>
+<li>create sanitized/synthetic parser fixtures;</li>
+<li>keep all operations read-only.</li>
+</ul>
+<p>Gate: parser and safety tests pass without physical media.</p>
+<h3 id="phase-1-plan-only-title-selection">Phase 1: Plan-only title selection</h3>
+<ul>
+<li>normalize title and stream metadata;</li>
+<li>detect episode-length titles, combined titles, and extras;</li>
+<li>present reasons and exclusions;</li>
+<li>add CLI JSON output without rip commands.</li>
+</ul>
+<p>Gate: the saved episodic-disc fixture produces a reviewable, deterministic
+four-title plan and excludes its duplicate/extra patterns.</p>
+<p>Status as of 2026-07-30: implemented and verified. The selector uses dominant
+runtime clusters, subset-sum combined-title detection, a conservative short
+extra threshold, and explicit review classification. Diagnostic audio ranking
+prefers English non-commentary stereo while retaining multichannel alternates.
+When stereo is absent, the available 5.1 stream remains the diagnostic choice.
+The implementation contains no disc or media executor.</p>
+<h3 id="phase-2-media-and-audio-diagnostics">Phase 2: Media and audio diagnostics</h3>
+<ul>
+<li>add FFprobe models and fixtures;</li>
+<li>implement explicit audio selection and loudness/silence diagnostics;</li>
+<li>verify 5.1 and stereo behavior using non-destructive samples.</li>
+</ul>
+<p>Gate: diagnostics distinguish extraction failure, low level, no speech, short
+transcript, and matching failure.</p>
+<p>Status as of 2026-07-30: read-only inventory foundation implemented and tested.
+Saved FFprobe JSON is normalized without retaining source filenames. A
+constrained runner accepts explicit MKV files only, uses fixed metadata flags
+without a shell, enforces a timeout, and saves replayable sanitized reports
+under ordinal IDs. A separate plan-only command ranks audio streams, selects
+sample windows, declares dialogue-preserving downmix intent, lists
+loudness/silence/transcript measurements, and defines fallback to alternate
+streams. A bounded transcript diagnostic now extracts an explicit audio stream
+to a temporary mono WAV, measures mean/peak signal, runs CPU Faster Whisper, and
+removes the WAV. It has been exercised on real staging media with path-redacted
+reports. It is diagnostic-only and has no rename or move behavior.</p>
+<h3 id="phase-3-controlled-single-title-rip">Phase 3: Controlled single-title rip</h3>
+<ul>
+<li>separate rip adapter from preflight;</li>
+<li>require an approved plan and unique staging directory;</li>
+<li>support cancellation, timeout, verification, and retained logs;</li>
+<li>never eject automatically.</li>
+</ul>
+<p>Gate: one authorized title can be ripped, verified, and resumed safely.</p>
+<h3 id="phase-4-episode-identification-plan">Phase 4: Episode identification plan</h3>
+<ul>
+<li>combine runtime and transcript/subtitle evidence;</li>
+<li>return proposed identities without renaming;</li>
+<li>add an ambiguity queue.</li>
+<li>build an authoritative aired-order catalogue and deterministic local
+  shortlist before any LLM fallback;</li>
+<li>permit a bounded, schema-constrained Gemini ranker only for unresolved sets,
+  with local semantic validation and score-only durable output.</li>
+</ul>
+<p>Gate: known fixtures identify correctly without source mutation.</p>
+<p>The cross-kind retry design now uses a private per-title evidence dossier.
+Classifier branches receive safe summaries of earlier results, reuse exact-source
+transcripts across restarts, and execute through a bounded route that cannot
+repeat a branch within one cycle. Public state remains dialogue-free. Provider
+episode assignments require two agreeing structured responses and must satisfy
+the configured confidence threshold plus a local runtime guard. Confident
+partial results release the worker while unresolved titles remain held.
+Jellyfin-present/missing state is a tie-break annotation over the complete
+canonical catalogue, never a candidate filter.</p>
+<p>The separately approved ten-file staged-media gate completed without injecting
+a known episode layout. It advanced seven stable provisional episode matches,
+held one inconsistent episode-length title, and rejected both play-all titles
+from one-episode assignment. No live queue or media mutation was involved. The
+next identification gate is synthetic/API composition coverage proving the
+same partial/hold behavior through the web worker boundary.</p>
+<h3 id="phase-5-deduplication-and-organization-plan">Phase 5: Deduplication and organization plan</h3>
+<ul>
+<li>add media fingerprints and existing-library inventory;</li>
+<li>generate Plex/Jellyfin destinations and collision reports;</li>
+<li>provide no deletion path.</li>
+</ul>
+<p>Gate: duplicate and organization decisions are reproducible from stored
+evidence.</p>
+<h3 id="phase-6-reviewed-execution">Phase 6: Reviewed execution</h3>
+<ul>
+<li>add explicit plan approval;</li>
+<li>transaction journal, collision checks, and rollback/quarantine;</li>
+<li>controlled rename/copy/move executors.</li>
+</ul>
+<p>Gate: interrupted operations can be explained and safely resumed.</p>
+<h3 id="phase-7-durable-disc-orchestration">Phase 7: Durable disc orchestration</h3>
+<ul>
+<li>persistent queue and state machine;</li>
+<li>monitored logs and stop policies;</li>
+<li>one-drive operation first, then explicitly approved concurrency.</li>
+</ul>
+<p>Gate: restart recovery and pause-after-current-title are tested.</p>
+<h3 id="phase-8-optional-handbrake-transcode">Phase 8: Optional HandBrake transcode</h3>
+<ul>
+<li>separate resource-limited worker;</li>
+<li>explicit AMD VCN encoder selection and capability verification rather than
+  trusting mutable GUI preset names;</li>
+<li>plan-only command separated from <code>--confirm-transcode</code> execution;</li>
+<li>one explicit input and one collision-free encoded-staging destination;</li>
+<li>source-audio passthrough plus a compatibility audio track;</li>
+<li>unique partial output with preserved failure artifacts;</li>
+<li>redacted process/event logs;</li>
+<li>FFprobe validation of codec, duration, size, video, audio, and subtitles
+  before atomic promotion to the reviewed staging filename;</li>
+<li>short sample validation before a full-episode job.</li>
+<li>immutable path-redacted batch manifests with digest-checked resume;</li>
+<li>separate two-worker concurrency and total-job limits;</li>
+<li>incremental reviewed staging-directory creation;</li>
+<li>path-free coordinator events and <code>STOP</code>/<code>PAUSE</code> chunk boundaries;</li>
+<li>failure/collision isolation without overwrite or media-library writes.</li>
+</ul>
+<p>Gate: source remains intact until the transcoded artifact passes verification
+and the user approves subsequent handling.</p>
+<h3 id="phase-9-automatic-web-orchestration">Phase 9: Automatic web orchestration</h3>
+<ul>
+<li>retain the implemented durable public job/event store, stable preview
+  identity, isolated private path-binding store, and restart reconciliation;</li>
+<li>retain loopback/same-origin control until secure remote pairing exists;</li>
+<li>retain the implemented, API-disconnected production rip adapter, which has
+  fake-runner tests and requires an explicit executable, new external run
+  directory, timeout, and drive bound; the dispatcher still has no default
+  physical executor;</li>
+<li>add an explicit live-execution composition root only after a separately
+  authorized physical canary;</li>
+<li>add read-only drive-monitor simulation with synthetic insertion/removal
+  events;</li>
+<li>add typed operating-default models and role-aware directory validation;</li>
+<li>extend write-only credential status/replacement handling to every supported
+  provider;</li>
+<li>add capability discovery and immutable HandBrake profile CRUD;</li>
+<li>add automatic-default and per-disc-override policy resolution;</li>
+<li>expose path-redacted pipeline status and replayable events through FastAPI;</li>
+<li>build the drive dashboard, profile builder, override panel, and review queue;</li>
+<li>test restart recovery, late overrides, unavailable encoders, pause/stop,
+  drive-local failures, and bounded worker pools before accessing a real disc.</li>
+</ul>
+<p>Gate: a synthetic disc can traverse the complete state machine using fake
+executors, with no prompt when the default policy is valid, while an override
+is applied only to the intended disc and every unsafe/ambiguous transition
+pauses deterministically.</p>
+<p>Current gate status: the rip-only path now traverses FastAPI job creation,
+private binding, exact authorization, queueing, dispatch, and the production
+adapter with a fake queue runner. Drive-monitor simulation, automatic policy,
+matching/transcode continuation, and the complete-disc state machine remain.</p>
+<h3 id="phase-10-windows-installer-and-desktop-launcher">Phase 10: Windows installer and desktop launcher</h3>
+<ul>
+<li>select and configure a reproducible Windows installer around the packaged
+  executable;</li>
+<li>add the optional desktop-shortcut prompt and Start Menu launcher;</li>
+<li>make repeated launches reuse an existing healthy local server;</li>
+<li>test paths containing spaces and non-ASCII characters;</li>
+<li>verify uninstall preserves configuration, logs, manifests, and all media;</li>
+<li>document local-only and authenticated network-access modes.</li>
+</ul>
+<p>Gate: clean-install, upgrade, repeated-launch, and uninstall tests pass in a
+Windows test environment without exposing secrets or touching media.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/Jsakkos/mkv-episode-matcher" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "navigation.top", "search.suggest", "search.highlight", "content.tabs.link", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

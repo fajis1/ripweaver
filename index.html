@@ -576,6 +576,39 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#plan-titles-from-saved-makemkv-metadata" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plan Titles from Saved MakeMKV Metadata
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#plan-audio-diagnostics-from-saved-ffprobe-json" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plan Audio Diagnostics from Saved FFprobe JSON
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#create-a-sanitized-ffprobe-report" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Create a Sanitized FFprobe Report
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#building-the-executable" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1118,6 +1151,39 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#plan-titles-from-saved-makemkv-metadata" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plan Titles from Saved MakeMKV Metadata
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#plan-audio-diagnostics-from-saved-ffprobe-json" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plan Audio Diagnostics from Saved FFprobe JSON
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#create-a-sanitized-ffprobe-report" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Create a Sanitized FFprobe Report
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#building-the-executable" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1231,9 +1297,26 @@ On the very first run, the system needs to download the speech recognition model
 <h3 id="3-setup">3. Setup</h3>
 <ol>
 <li>In the Web UI, go to the <strong>Settings</strong> tab.</li>
-<li>Enter your <strong>OpenSubtitles</strong> credentials and <strong>TMDb API Key</strong>.</li>
+<li>Enter your <strong>OpenSubtitles</strong> credentials and <strong>TMDb API Key</strong>. Saved values
+    are written to the local, Git-ignored <code>.env</code> and are never returned to the
+    browser.</li>
 <li>Click <strong>Save</strong>.</li>
 </ol>
+<p>For CLI setup, use hidden prompts:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">credentials</span> <span class="n">tmdb</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">credentials</span> <span class="n">opensubtitles-api</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">credentials</span> <span class="n">opensubtitles-username</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">credentials</span> <span class="n">opensubtitles-password</span>
+</code></pre></div>
+<p>Run <code>uv run mkv-match credentials</code> without a name to see configured status and
+official provider links. Credential values are never displayed. If TMDb or
+OpenSubtitles rejects a key during an interactive CLI match, the command offers
+to replace it and retries once. The Web UI stops safely and links to Settings
+and the provider's key-management page.</p>
+<p>One-time migration from an older user JSON config is also available:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">credentials</span> <span class="p">-</span><span class="n">-migrate-legacy</span>
+</code></pre></div>
+<p>It reports only the names moved, never their values.</p>
 <h3 id="4-make-your-first-match">4. Make Your First Match</h3>
 <ol>
 <li>Go to the <strong>Dashboard</strong>.</li>
@@ -1255,7 +1338,7 @@ On the very first run, the system needs to download the speech recognition model
 <h3 id="the-issue">The Issue</h3>
 <p>When you run MKV Episode Matcher, it automatically downloads reference subtitles for the entire season from OpenSubtitles.com. <strong>Free OpenSubtitles accounts have very low daily download limits (typically 5-20 downloads per day).</strong></p>
 <p>If you're trying to match a TV season with more episodes than your daily limit, you'll immediately see this error:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>&quot;Download limit reached. Please upgrade your account or wait for your quota to reset (~24hrs)&quot;
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>&quot;Download limit reached. Please upgrade your account or wait for your quota to reset (~24hrs)&quot;
 </code></pre></div></p>
 <h3 id="solutions">Solutions</h3>
 <p><strong>Option 1: Upgrade to OpenSubtitles VIP ($3/month)</strong>
@@ -1280,35 +1363,67 @@ On the very first run, the system needs to download the speech recognition model
 <h2 id="advanced-installation-usage">🛠️ Advanced Installation &amp; Usage</h2>
 <p>For developers, Linux/macOS users, or those preferring the command line.</p>
 <h3 id="option-a-install-via-pip-cross-platform">Option A: Install via pip (Cross-platform)</h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># Basic install</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>pip<span class="w"> </span>install<span class="w"> </span>mkv-episode-matcher<span class="o">[</span>cpu<span class="o">]</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="c1"># With CUDA support (NVIDIA GPU required)</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>pip<span class="w"> </span>install<span class="w"> </span>mkv-episode-matcher<span class="o">[</span>cu128<span class="o">]</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Basic install</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>pip<span class="w"> </span>install<span class="w"> </span>mkv-episode-matcher<span class="o">[</span>cpu<span class="o">]</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># With CUDA support (NVIDIA GPU required)</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>pip<span class="w"> </span>install<span class="w"> </span>mkv-episode-matcher<span class="o">[</span>cu128<span class="o">]</span>
 </code></pre></div>
 <h3 id="option-b-run-from-source-development">Option B: Run from Source (Development)</h3>
 <p>We recommend using <a href="https://docs.astral.sh/uv/">uv</a> for dependency management.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/Jsakkos/mkv-episode-matcher.git
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="nb">cd</span><span class="w"> </span>mkv-episode-matcher
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># Install dependencies</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>uv<span class="w"> </span>sync<span class="w"> </span>--extra<span class="w"> </span>cpu
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="c1"># Launch Server</span>
-<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>uv<span class="w"> </span>run<span class="w"> </span>mkv-match<span class="w"> </span>serve
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/Jsakkos/mkv-episode-matcher.git
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="nb">cd</span><span class="w"> </span>mkv-episode-matcher
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># Install dependencies</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>uv<span class="w"> </span>sync<span class="w"> </span>--extra<span class="w"> </span>cpu
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="c1"># Launch Server</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>uv<span class="w"> </span>run<span class="w"> </span>mkv-match<span class="w"> </span>serve
 </code></pre></div>
 <h3 id="cli-mode">CLI Mode</h3>
 <p>You can also use the Command Line Interface (CLI) for automation. Make sure to run the command from the root directory of the repository or your home directory, not the show directory.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Match a folder</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>mkv-match<span class="w"> </span>match<span class="w"> </span><span class="s2">&quot;C:\Path\To\Show&quot;</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># Match with subtitle download</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>mkv-match<span class="w"> </span>match<span class="w"> </span><span class="s2">&quot;C:\Path\To\Show&quot;</span><span class="w"> </span>--get-subs
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># Match a folder</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>mkv-match<span class="w"> </span>match<span class="w"> </span><span class="s2">&quot;C:\Path\To\Show&quot;</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="c1"># Match with subtitle download</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>mkv-match<span class="w"> </span>match<span class="w"> </span><span class="s2">&quot;C:\Path\To\Show&quot;</span><span class="w"> </span>--get-subs
 </code></pre></div>
+<h3 id="plan-titles-from-saved-makemkv-metadata">Plan Titles from Saved MakeMKV Metadata</h3>
+<p>This command reads preflight JSON only. It does not access a disc or create a
+rip command:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">plan-titles</span> <span class="p">.</span><span class="n">mkv-preflight</span><span class="p">\</span><span class="n">saved-report</span><span class="p">.</span><span class="n">json</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">plan-titles</span> <span class="p">.</span><span class="n">mkv-preflight</span><span class="p">\</span><span class="n">saved-report</span><span class="p">.</span><span class="n">json</span> <span class="p">-</span><span class="n">-json</span>
+</code></pre></div>
+<p>The plan identifies likely individual episodes, combined-title duplicates,
+short extras, review items, and the preferred diagnostic audio stream.</p>
+<p>For ambiguous discs, optional constraints make the selection evidence explicit:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">plan-titles</span> <span class="n">saved-report</span><span class="p">.</span><span class="n">json</span> <span class="p">`</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>  <span class="p">-</span><span class="n">-expected-episodes</span> <span class="n">4</span> <span class="p">`</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>  <span class="p">-</span><span class="n">-expected-runtime</span> <span class="n">50</span> <span class="p">`</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>  <span class="p">-</span><span class="n">-runtime-tolerance</span> <span class="n">3</span>
+</code></pre></div>
+<h3 id="plan-audio-diagnostics-from-saved-ffprobe-json">Plan Audio Diagnostics from Saved FFprobe JSON</h3>
+<p>This fixture-only Phase 2 command does not invoke FFprobe or FFmpeg and does not
+open an MKV:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">plan-audio</span> <span class="n">saved</span><span class="p">.</span><span class="n">ffprobe</span><span class="p">.</span><span class="n">json</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">plan-audio</span> <span class="n">saved</span><span class="p">.</span><span class="n">ffprobe</span><span class="p">.</span><span class="n">json</span> <span class="p">-</span><span class="n">-json</span>
+</code></pre></div>
+<p>It ranks main, multichannel, and commentary streams; plans three sample
+windows; and records the loudness, silence, and transcript-information
+measurements required before matching.</p>
+<h3 id="create-a-sanitized-ffprobe-report">Create a Sanitized FFprobe Report</h3>
+<p>This command reads metadata from explicit MKV files sequentially. It does not
+extract, transcribe, rename, move, delete, or transcode media:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">probe-mkv</span> <span class="n">C</span><span class="p">:\</span><span class="n">path</span><span class="p">\</span><span class="n">to</span><span class="p">\</span><span class="n">explicit-test</span><span class="o">-file</span><span class="p">.</span><span class="n">mkv</span>
+</code></pre></div>
+<p>Configure <code>FFPROBE_PATH</code> in the local <code>.env</code>, pass <code>--ffprobe-path</code>, or place
+<code>ffprobe.exe</code> on <code>PATH</code>. Reports use ordinal names under
+<code>.mkv-preflight\ffprobe</code> and omit source filenames. Use those reports with
+<code>mkv-match plan-audio</code>.</p>
 <h3 id="building-the-executable">Building the Executable</h3>
 <p>To build the <code>.exe</code> yourself:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>uv<span class="w"> </span>sync<span class="w"> </span>--extra<span class="w"> </span>cpu
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>uv<span class="w"> </span>run<span class="w"> </span>pyinstaller<span class="w"> </span>mkv_match.spec
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>uv<span class="w"> </span>sync<span class="w"> </span>--extra<span class="w"> </span>cpu
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>uv<span class="w"> </span>run<span class="w"> </span>pyinstaller<span class="w"> </span>mkv_match.spec
 </code></pre></div></p>
 <hr />
 <h2 id="reference-subtitle-structure">Reference Subtitle Structure</h2>
@@ -1317,9 +1432,9 @@ On the very first run, the system needs to download the speech recognition model
 <p><strong>Naming Format:</strong>
 <code>{show_name} - S{season:02d}E{episode:02d}.srt</code></p>
 <p>Example:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>Show Name/
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>├── Show Name - S01E01.srt
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>├── Show Name - S01E02.srt
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>Show Name/
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>├── Show Name - S01E01.srt
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>├── Show Name - S01E02.srt
 </code></pre></div></p>
 <h2 id="contributing">Contributing</h2>
 <ol>
@@ -1331,6 +1446,11 @@ On the very first run, the system needs to download the speech recognition model
 </ol>
 <h2 id="license">License</h2>
 <p>Distributed under the MIT License. See <code>LICENSE</code> for more information.</p>
+<p>RipWeaver is based on <a href="https://github.com/Jsakkos/mkv-episode-matcher">MKV Episode Matcher</a>
+and incorporates selected ideas or adapted behavior from
+<a href="https://github.com/AnyCredit5518/riplex">Riplex</a>. Copyright, dependency, and
+service acknowledgments are retained in <a href="THIRD_PARTY_NOTICES.md">THIRD_PARTY_NOTICES.md</a>
+and <a href="docs/ATTRIBUTIONS.md">docs/ATTRIBUTIONS.md</a>.</p>
 <h2 id="documentation">Documentation</h2>
 <p>Full documentation is available at <a href="https://jsakkos.github.io/mkv-episode-matcher/">https://jsakkos.github.io/mkv-episode-matcher/</a></p>
 
