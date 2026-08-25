@@ -41,16 +41,23 @@ const RecentActivityView = ({ onOpenDashboard }: RecentActivityViewProps) => {
   const restoreCleared = () => { const next = new Set<string>(); saveRecentState('ripweaver-recent-hidden', next); setHiddenIds(next); };
 
   useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    const schedule = () => {
+      if (!cancelled && document.visibilityState !== 'hidden') timer = window.setTimeout(refresh, 12_000);
+    };
     const refresh = async () => {
+      if (cancelled || document.visibilityState === 'hidden') return;
       try {
         const [response, configResponse] = await Promise.all([fetch('/rip/pipeline/items'), fetch('/system/config')]);
         const payload = await response.json();
         if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : 'History could not be loaded.');
+        if (cancelled) return;
         setItems((payload.items as HistoryItem[]).filter(hasReviewableMedia));
         setNotice((current) => {
           if (!current.startsWith('Queued evidence and Gemini review')) return current;
           if (payload.items.some((item: HistoryItem) => item.review_code === 'gemini_analysis_running')) return 'Local evidence collection and Gemini review are running.';
-          if (payload.items.some((item: HistoryItem) => ['gemini_analysis_failed', 'gemini_audio_evidence_insufficient', 'gemini_catalog_unavailable', 'gemini_provider_failed', 'gemini_credential_rejected', 'gemini_rate_limited', 'gemini_provider_unavailable', 'gemini_request_rejected', 'gemini_network_failed', 'gemini_response_invalid'].includes(item.review_code || ''))) return 'Local evidence or Gemini review failed safely. Open the affected disc or Logs for the specific reason.';
+          if (payload.items.some((item: HistoryItem) => ['gemini_analysis_failed', 'gemini_audio_evidence_insufficient', 'gemini_catalog_unavailable', 'gemini_provider_failed', 'gemini_credential_rejected', 'gemini_rate_limited', 'gemini_provider_unavailable', 'gemini_request_rejected', 'gemini_network_failed', 'gemini_response_invalid', 'whole_disc_coherence_review_required'].includes(item.review_code || ''))) return 'Episode matching stopped safely for review. Open the affected disc or Logs for the specific reason.';
           if (!payload.items.some((item: HistoryItem) => ['gemini_evidence_required', 'gemini_analysis_running'].includes(item.review_code || ''))) return 'Gemini review finished and successful matches returned to the pipeline.';
           return current;
         });
@@ -60,9 +67,20 @@ const RecentActivityView = ({ onOpenDashboard }: RecentActivityViewProps) => {
           setRetentionDays(Number(config.retained_source_ttl_days || 30));
         }
         setError('');
-      } catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'History could not be loaded.'); }
+      } catch (requestError) { if (!cancelled) setError(requestError instanceof Error ? requestError.message : 'History could not be loaded.'); }
+      finally { schedule(); }
     };
-    void refresh(); const timer = window.setInterval(refresh, 5000); return () => window.clearInterval(timer);
+    const handleVisibility = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      if (document.visibilityState === 'visible') void refresh();
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    void refresh();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
   }, []);
 
   const fullPath = (item: HistoryItem) => {

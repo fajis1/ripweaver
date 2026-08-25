@@ -3978,11 +3978,13 @@ for review rather than forcing a TV identity.
 - A parsed disc ordinal only reorders the complete in-season candidate set
   toward the corresponding later-season area. It never removes candidates,
   assumes MakeMKV title order, or supplies episode identity evidence.
-- Before accepting explicit-season Gemini assignments, RipWeaver validates the
-  entire provider-only set. Assignments must be unique, remain in the requested
-  season, and fit in a compact episode window no wider than the known title
-  count. The observed six-title `E12,E11,E01,E02,E03,E04` split is therefore
-  held for review even when two Gemini passes agree individually.
+- Before accepting assignments, RipWeaver validates the whole same-disc set,
+  including independently identified durable siblings and the current run's
+  proposals. Assignments must be unique, remain in one season, and fit in a
+  compact episode window no wider than the known relevant-title count. This
+  gate now runs even when the saved season is unknown; the observed six-title
+  `E12,E11,E01,E02,E03,E04` split is therefore held for review even when two
+  Gemini passes agree individually.
 - Regression coverage uses synthetic labels, catalogues, and provider results;
   no optical drive, media file, or live provider was accessed.
 ### Extended-cut subtitle retry and season-boundary exit (2026-08-16)
@@ -4111,6 +4113,29 @@ for review rather than forcing a TV identity.
   disc, selected-disc terminal history, attention-only items, and empty-disc
   fallback behavior. No optical drive, media file, or external provider was
   accessed.
+
+### Mandatory whole-disc coherence and remount-safe polling (2026-08-24)
+
+- A seasonless-disc bug allowed Gemini's individually consistent results to
+  bypass the existing set-level check. Whole-disc coherence is now a final,
+  provider-independent gate immediately before any current proposal advances.
+  It combines current proposals with durable same-fingerprint sibling episode
+  outcomes and rejects mixed seasons, duplicate episodes, or an episode span
+  wider than the known relevant-title count.
+- A rejected set is held as `whole_disc_coherence_review_required`; no proposed
+  title from that run is queued for transcode. The review card explains the
+  stop and preserves the normal explicitly reviewed retry/manual correction
+  paths. The gate rejects evidence but never invents episode identity.
+- Dashboard polling retains its view scopes and adaptive 3/12-second cadence.
+  Identical requests are now shared across component remounts, so moving among
+  tabs cannot accumulate duplicate copies of the same slow request. Unmounted
+  and hidden views schedule no further polls, and matching-performance history
+  remains bounded to one request per minute across remounts.
+- Pipeline response composition reads the current item contract once, reuses
+  the already-loaded configuration for every visible row, and queries series
+  proposal events only for the one review state that can display them.
+  Synthetic focused tests, Ruff, frontend lint/type checking, and the production
+  build cover these changes; no optical disc or media was read or modified.
 
 ### Restart-safe unresolved-disc coordination (2026-08-16)
 

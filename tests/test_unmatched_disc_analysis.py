@@ -186,12 +186,8 @@ def test_gemini_disc_batch_reuses_private_exact_request_cache(tmp_path):
             )
 
     ranker = Ranker()
-    first = analysis._rank_gemini_chunks(
-        ranker, files, catalog, dossier, frozenset()
-    )
-    second = analysis._rank_gemini_chunks(
-        ranker, files, catalog, dossier, frozenset()
-    )
+    first = analysis._rank_gemini_chunks(ranker, files, catalog, dossier, frozenset())
+    second = analysis._rank_gemini_chunks(ranker, files, catalog, dossier, frozenset())
 
     assert first == second
     assert ranker.calls == 1
@@ -232,10 +228,7 @@ def test_gemini_uses_six_diverse_excerpts_and_paired_subtitle_passages():
     selected = analysis._select_gemini_file_evidence(files, comparisons)
 
     assert len(comparisons["title-1"]) == 2
-    assert all(
-        pair.candidate_episode_id == "S04E11"
-        for pair in comparisons["title-1"]
-    )
+    assert all(pair.candidate_episode_id == "S04E11" for pair in comparisons["title-1"])
     assert len(selected[0].transcript_excerpts) == 6
 
 
@@ -250,17 +243,15 @@ def test_gemini_subtitle_comparisons_follow_final_unassigned_catalog():
             ),
         )
     }
-    remaining_catalog = (
-        EpisodeCatalogEntry("S07E22", 7, 22, "Episode 22", "", 1200),
-    )
+    remaining_catalog = (EpisodeCatalogEntry("S07E22", 7, 22, "Episode 22", "", 1200),)
 
     filtered = analysis._filter_gemini_subtitle_comparisons(
         comparisons, remaining_catalog
     )
 
-    assert tuple(
-        pair.candidate_episode_id for pair in filtered["title-1"]
-    ) == ("S07E22",)
+    assert tuple(pair.candidate_episode_id for pair in filtered["title-1"]) == (
+        "S07E22",
+    )
 
 
 def test_residual_subtitle_pass_preserves_close_or_weak_choices_for_review():
@@ -336,6 +327,22 @@ def test_gemini_disc_coherence_rejects_split_s4_d3_assignments():
     )
     assert analysis._gemini_disc_assignments_coherent(
         tuple(entries[:2]), disc_title_count=6, required_season=4
+    )
+
+
+def test_gemini_disc_coherence_is_required_without_saved_season_context():
+    scattered = tuple(
+        EpisodeCatalogEntry(
+            f"S08E{episode:02d}", 8, episode, f"Episode {episode}", "", 1200
+        )
+        for episode in (4, 7, 8, 12, 14, 16, 17, 19)
+    )
+
+    assert not analysis._gemini_disc_assignments_coherent(
+        scattered, disc_title_count=8, required_season=None
+    )
+    assert analysis._gemini_disc_assignments_coherent(
+        scattered[:3], disc_title_count=8, required_season=None
     )
 
 
@@ -1783,8 +1790,10 @@ def test_anchor_titles_bounds_and_spreads_initial_season_evidence():
     "mode",
     [
         "local",
+        "local-incoherent",
         "local-runtime-mismatch",
         "gemini",
+        "gemini-incoherent",
         "partial-gemini",
         "subtitle-partial-gemini",
         "subtitle-partial-gemini-failed",
@@ -1795,7 +1804,11 @@ def test_anchor_titles_bounds_and_spreads_initial_season_evidence():
 def test_all_season_analysis_uses_independent_evidence_not_sequence(  # noqa: C901
     tmp_path, monkeypatch, mode
 ):
-    use_gemini = mode not in {"local", "local-runtime-mismatch"}
+    use_gemini = mode not in {
+        "local",
+        "local-incoherent",
+        "local-runtime-mismatch",
+    }
     contracts = tmp_path / "contracts"
     contracts.mkdir()
     store = PipelineQueueStore(tmp_path / "queue.sqlite3")
@@ -1823,9 +1836,12 @@ def test_all_season_analysis_uses_independent_evidence_not_sequence(  # noqa: C9
         store.claim_next()
         store.require_review(media_id, "unmatched_disc_analysis_required")
 
+    catalog_episodes = (
+        (1, 12) if mode in {"gemini-incoherent", "local-incoherent"} else (1, 2)
+    )
     catalog = tuple(
-        EpisodeCatalogEntry(f"S0{index + 1}E01", index + 1, 1, title, "overview", 1200)
-        for index, title in enumerate(("First", "Second"))
+        EpisodeCatalogEntry(f"S01E{episode:02d}", 1, episode, title, "overview", 1200)
+        for episode, title in zip(catalog_episodes, ("First", "Second"), strict=True)
     )
     monkeypatch.setattr(
         analysis,
@@ -1920,7 +1936,7 @@ def test_all_season_analysis_uses_independent_evidence_not_sequence(  # noqa: C9
             }
 
         monkeypatch.setattr(analysis, "match_opensubtitles_seasons", match_one_subtitle)
-    elif mode in {"local", "local-runtime-mismatch"}:
+    elif mode in {"local", "local-incoherent", "local-runtime-mismatch"}:
 
         def match_local(files, *_args, diagnostic_details=None, **_kwargs):
             assert _kwargs["min_confidence"] == 0.7
@@ -2003,7 +2019,7 @@ def test_all_season_analysis_uses_independent_evidence_not_sequence(  # noqa: C9
     for media_id in media_ids:
         store.choose_review_path(media_id, "all_season_analysis_running")
 
-    applied = analysis.execute_unmatched_disc_analysis(
+    execute = lambda: analysis.execute_unmatched_disc_analysis(  # noqa: E731
         store,
         fingerprint,
         "Example Series",
@@ -2020,6 +2036,22 @@ def test_all_season_analysis_uses_independent_evidence_not_sequence(  # noqa: C9
         allow_gemini=use_gemini,
         allow_content_fallback=False,
     )
+    if mode in {"gemini-incoherent", "local-incoherent"}:
+        with pytest.raises(analysis.DiscCoherenceError) as exc_info:
+            execute()
+        assert exc_info.value.review_code == "whole_disc_coherence_review_required"
+        assert all(item.state == "review_required" for item in store.list_items())
+        assert any(
+            details.get("summary", {}).get("reason")
+            == (
+                "gemini_disc_assignments_incoherent"
+                if mode == "gemini-incoherent"
+                else "whole_disc_assignments_incoherent"
+            )
+            for _media_ids, details in dossier.attempts
+        )
+        return
+    applied = execute()
 
     expected_applied = (
         tuple(media_ids[:1])

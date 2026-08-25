@@ -1581,8 +1581,7 @@ def _auto_admit_staged_disc_if_complete(  # noqa: C901 - auto-admit verification
         contract_root=contract_root,
         media_contexts={disc_id: context},
         identity_overrides={
-            job.job_id: (disc_fingerprint, job.title_index)
-            for job in verified_jobs
+            job.job_id: (disc_fingerprint, job.title_index) for job in verified_jobs
         },
         repair_recovered_identity=True,
         media_id_overrides={
@@ -2931,13 +2930,21 @@ class LibraryCollisionComparisonResponse(BaseModel):
     size_difference_bytes: int
 
 
-def _pipeline_item_display_name(item) -> str | None:
-    """Read only a safe matched basename from the current private contract."""
-
+def _read_pipeline_contract_payload(item) -> dict[str, object]:
     try:
         payload = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return None
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _pipeline_item_display_name(
+    item, payload: dict[str, object] | None = None
+) -> str | None:
+    """Read only a safe matched basename from the current private contract."""
+
+    if payload is None:
+        payload = _read_pipeline_contract_payload(item)
     relative = payload.get("library_relative")
     if isinstance(relative, str) and relative.strip():
         parts = tuple(part for part in relative.replace("\\", "/").split("/") if part)
@@ -2980,13 +2987,13 @@ def _pipeline_item_display_name(item) -> str | None:
     return None
 
 
-def _pipeline_item_series_name(item) -> str | None:
+def _pipeline_item_series_name(
+    item, payload: dict[str, object] | None = None
+) -> str | None:
     """Read a bounded canonical series label from the current contract."""
 
-    try:
-        payload = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    if payload is None:
+        payload = _read_pipeline_contract_payload(item)
     context = payload.get("media_context")
     if not isinstance(context, dict):
         return None
@@ -2998,7 +3005,9 @@ def _pipeline_item_series_name(item) -> str | None:
 
 
 def _pipeline_identification_attempts(
-    item, dossier: IdentificationDossierStore | None
+    item,
+    dossier: IdentificationDossierStore | None,
+    series_name: str | None = None,
 ) -> list[dict[str, object]]:
     """Return concise attempts and one actionable candidate for legacy holds."""
 
@@ -3015,6 +3024,7 @@ def _pipeline_identification_attempts(
     if item.review_code not in {
         "episode_match_review",
         "independent_episode_evidence_required",
+        "whole_disc_coherence_review_required",
     } or any(
         isinstance(attempt["summary"].get("candidate_episode_id"), str)
         for attempt in attempts
@@ -3046,7 +3056,7 @@ def _pipeline_identification_attempts(
         latest_candidates,
         key=lambda event: float(event["summary"]["score"]),
     )
-    series_name = _pipeline_item_series_name(item)
+    series_name = series_name or _pipeline_item_series_name(item)
     if series_name is None:
         return attempts
     candidate_summary = best["summary"]
@@ -3070,13 +3080,13 @@ def _pipeline_identification_attempts(
     return attempts
 
 
-def _pipeline_item_match_summary(item) -> str | None:
+def _pipeline_item_match_summary(
+    item, payload: dict[str, object] | None = None
+) -> str | None:
     """Read a bounded provider/release summary from the current contract."""
 
-    try:
-        payload = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    if payload is None:
+        payload = _read_pipeline_contract_payload(item)
     direct_summary = payload.get("match_summary")
     if isinstance(direct_summary, str):
         cleaned = " ".join(direct_summary.split())[:320]
@@ -3102,13 +3112,13 @@ def _pipeline_item_match_summary(item) -> str | None:
     return None
 
 
-def _pipeline_catalogue_candidate_help(item) -> dict[str, object] | None:
+def _pipeline_catalogue_candidate_help(
+    item, payload: dict[str, object] | None = None
+) -> dict[str, object] | None:
     """Return one path-free, non-authorizing catalogue candidate for display."""
 
-    try:
-        payload = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    if payload is None:
+        payload = _read_pipeline_contract_payload(item)
     context = payload.get("media_context")
     title_index = payload.get("title_index")
     if (
@@ -3157,11 +3167,13 @@ def _pipeline_catalogue_candidate_help(item) -> dict[str, object] | None:
     return None
 
 
-def _pipeline_item_location(item) -> tuple[str, str | None, str | None]:
-    try:
-        payload = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return "Location unavailable", None, None
+def _pipeline_item_location(
+    item, payload: dict[str, object] | None = None
+) -> tuple[str, str | None, str | None]:
+    if payload is None:
+        payload = _read_pipeline_contract_payload(item)
+        if not payload:
+            return "Location unavailable", None, None
     relative = payload.get("library_relative")
     safe_relative = None
     if isinstance(relative, str):
@@ -3265,9 +3277,14 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
     item,
     dossier: IdentificationDossierStore | None = None,
     visual_review_code: str | None = None,
+    config=None,
 ) -> dict[str, object]:
-    location_label, location_relative, location_root_key = _pipeline_item_location(item)
-    config = get_config_manager().load()
+    payload = _read_pipeline_contract_payload(item)
+    location_label, location_relative, location_root_key = _pipeline_item_location(
+        item, payload
+    )
+    if config is None:
+        config = get_config_manager().load()
     output_size_bytes = None
     retained_source_available = False
     retained_source_expired = False
@@ -3285,6 +3302,8 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
                 f"{item.media_id}.verified-rip.json"
             ).read_text(encoding="utf-8")
         )
+        if not isinstance(rip_payload, dict):
+            rip_payload = {}
         fingerprint = rip_payload.get("disc_fingerprint")
         if isinstance(fingerprint, str) and re.fullmatch(r"[0-9a-f]{16}", fingerprint):
             disc_fingerprint = fingerprint
@@ -3292,44 +3311,44 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
         if isinstance(rip_title_index, int) and not isinstance(rip_title_index, bool):
             title_index = rip_title_index
     except (OSError, json.JSONDecodeError):
-        pass
+        rip_payload = {}
+    if item.review_code == "gemini_series_resolution_uncertain":
+        try:
+            proposal_event = next(
+                (
+                    event
+                    for event in reversed(
+                        get_pipeline_queue_store().list_events(item.media_id)
+                    )
+                    if event.event_type == "gemini_series_resolution_proposed"
+                ),
+                None,
+            )
+            if proposal_event is not None:
+                details = proposal_event.details
+                name = details.get("proposed_series_name")
+                confidence = details.get("confidence")
+                tmdb_id = details.get("proposed_tmdb_id")
+                ranked_names = details.get("proposed_series_names")
+                if (
+                    isinstance(name, str)
+                    and isinstance(confidence, int | float)
+                    and not isinstance(confidence, bool)
+                ):
+                    gemini_series_proposal = {
+                        "series_name": name,
+                        "series_names": (
+                            ranked_names
+                            if isinstance(ranked_names, list)
+                            and all(isinstance(value, str) for value in ranked_names)
+                            else [name]
+                        ),
+                        "confidence": float(confidence),
+                        "tmdb_id": tmdb_id if isinstance(tmdb_id, int) else None,
+                    }
+        except PipelineQueueError:
+            pass
     try:
-        proposal_event = next(
-            (
-                event
-                for event in reversed(
-                    get_pipeline_queue_store().list_events(item.media_id)
-                )
-                if event.event_type == "gemini_series_resolution_proposed"
-            ),
-            None,
-        )
-        if proposal_event is not None:
-            details = proposal_event.details
-            name = details.get("proposed_series_name")
-            confidence = details.get("confidence")
-            tmdb_id = details.get("proposed_tmdb_id")
-            ranked_names = details.get("proposed_series_names")
-            if (
-                isinstance(name, str)
-                and isinstance(confidence, int | float)
-                and not isinstance(confidence, bool)
-            ):
-                gemini_series_proposal = {
-                    "series_name": name,
-                    "series_names": (
-                        ranked_names
-                        if isinstance(ranked_names, list)
-                        and all(isinstance(value, str) for value in ranked_names)
-                        else [name]
-                    ),
-                    "confidence": float(confidence),
-                    "tmdb_id": tmdb_id if isinstance(tmdb_id, int) else None,
-                }
-    except PipelineQueueError:
-        pass
-    try:
-        payload = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
         if disc_fingerprint is None:
             fingerprint = payload.get("disc_fingerprint")
             if isinstance(fingerprint, str) and re.fullmatch(
@@ -3382,21 +3401,13 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
         confidence = payload.get("gemini_confidence")
         if isinstance(confidence, int | float) and not isinstance(confidence, bool):
             gemini_confidence = float(confidence)
-    except (OSError, json.JSONDecodeError):
+    except OSError:
         pass
     if (
         item.state == "completed"
         and item.stage == "organize"
         and not retained_source_available
     ):
-        try:
-            rip_payload = json.loads(
-                item.artifact.contract_path.with_name(
-                    f"{item.media_id}.verified-rip.json"
-                ).read_text(encoding="utf-8")
-            )
-        except (OSError, json.JSONDecodeError):
-            rip_payload = {}
         source = Path(str(rip_payload.get("source_path", "")))
         source_size = rip_payload.get("source_size_bytes")
         retention_candidate_available = (
@@ -3405,15 +3416,16 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
             and source.is_file()
             and source.stat().st_size == source_size
         )
+    series_name = _pipeline_item_series_name(item, payload)
     response = {
         "media_id": item.media_id,
         "artifact_sha256": item.artifact.contract_sha256,
         "disc_fingerprint": disc_fingerprint,
         "title_index": title_index,
-        "series_name": _pipeline_item_series_name(item),
-        "display_name": _pipeline_item_display_name(item),
-        "match_summary": _pipeline_item_match_summary(item),
-        "catalogue_candidate_help": _pipeline_catalogue_candidate_help(item),
+        "series_name": series_name,
+        "display_name": _pipeline_item_display_name(item, payload),
+        "match_summary": _pipeline_item_match_summary(item, payload),
+        "catalogue_candidate_help": _pipeline_catalogue_candidate_help(item, payload),
         "location_label": location_label,
         "location_relative": location_relative,
         "location_root_key": location_root_key,
@@ -3436,7 +3448,9 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
         "visual_review_code": visual_review_code,
         "likely_removable": visual_review_code
         in {"likely_warning_screen", "likely_disc_menu"},
-        "identification_attempts": _pipeline_identification_attempts(item, dossier),
+        "identification_attempts": _pipeline_identification_attempts(
+            item, dossier, series_name
+        ),
     }
     response.update(
         _pipeline_activity_snapshot(
@@ -4754,7 +4768,12 @@ def get_pipeline_items(
     visual_reviews = store.silent_video_review_flags()
     config = get_config_manager().load()
     item_responses = [
-        _pipeline_item_response(item, dossier, visual_reviews.get(item.media_id))
+        _pipeline_item_response(
+            item,
+            dossier,
+            visual_reviews.get(item.media_id),
+            config,
+        )
         for item in items
     ]
     matching_scope_fingerprints = fingerprints or tuple(
@@ -5151,6 +5170,7 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
                 "all_season_catalog_unavailable",
                 "all_season_sequence_review_required",
                 "independent_episode_evidence_required",
+                "whole_disc_coherence_review_required",
                 "gemini_descriptive_review_required",
                 "gemini_analysis_failed",
                 "gemini_audio_evidence_insufficient",
@@ -5290,6 +5310,7 @@ def classify_unmatched_disc(
                 "all_season_analysis_failed",
                 "all_season_sequence_review_required",
                 "independent_episode_evidence_required",
+                "whole_disc_coherence_review_required",
             }
         ):
             continue
@@ -5532,6 +5553,7 @@ def apply_manual_episode_identification(  # noqa: C901 - guarded review boundary
                 "all_season_analysis_failed",
                 "all_season_sequence_review_required",
                 "independent_episode_evidence_required",
+                "whole_disc_coherence_review_required",
                 "gemini_analysis_failed",
                 "special_feature_manual_assignment_required",
                 "gemini_descriptive_review_required",

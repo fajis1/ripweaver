@@ -82,14 +82,37 @@ try {
         '**/*.mp4',
         '**/*.wav'
     )
+    # Exclude private/scratch trees during traversal as well as resetting them
+    # afterward. Stage tracked changes separately, then enumerate accessible
+    # untracked files. A locked pytest scratch directory must not prevent
+    # unrelated reviewed work from receiving an emergency checkpoint.
+    $checkpointAddPathspecs = @('.')
+    $checkpointAddPathspecs += @(
+        $checkpointExclusions | ForEach-Object { ":(exclude)$_" }
+    )
     $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    $null = & git -C $repoRoot -c core.safecrlf=false add -A -- . 2>&1
-    $addExitCode = $LASTEXITCODE
+    $null = & git -C $repoRoot -c core.safecrlf=false add -u -- @checkpointAddPathspecs 2>&1
+    $trackedAddExitCode = $LASTEXITCODE
+    $untrackedFiles = @(
+        & git -C $repoRoot ls-files --others --exclude-standard -- @checkpointAddPathspecs 2>$null
+    )
+    $untrackedListExitCode = $LASTEXITCODE
+    $untrackedAddExitCode = 0
+    if ($untrackedFiles.Count -gt 0) {
+        $null = & git -C $repoRoot -c core.safecrlf=false add -- @untrackedFiles 2>&1
+        $untrackedAddExitCode = $LASTEXITCODE
+    }
     $null = & git -C $repoRoot reset -q HEAD -- @checkpointExclusions 2>&1
     $resetExitCode = $LASTEXITCODE
     $ErrorActionPreference = $previousErrorActionPreference
-    if ($addExitCode -ne 0) { throw 'The isolated checkpoint index could not stage the reviewed repository paths.' }
+    if ($trackedAddExitCode -ne 0 -or $untrackedListExitCode -ne 0 -or $untrackedAddExitCode -ne 0) {
+        throw (
+            'The isolated checkpoint index could not stage the reviewed repository paths ' +
+            "(tracked=$trackedAddExitCode, list=$untrackedListExitCode, untracked=$untrackedAddExitCode, " +
+            "paths=$($checkpointAddPathspecs.Count), files=$($untrackedFiles.Count))."
+        )
+    }
     if ($resetExitCode -ne 0) { throw 'The excluded local paths could not be removed from the isolated checkpoint index.' }
 
     $candidateFiles = @(& git -C $repoRoot diff --cached --name-only --diff-filter=ACDMRTUXB)

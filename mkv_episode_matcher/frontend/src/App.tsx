@@ -78,22 +78,41 @@ function App() {
 
   // Poll system status
   useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    const schedule = () => {
+      if (!cancelled && document.visibilityState !== 'hidden') {
+        timer = window.setTimeout(checkStatus, 5000);
+      }
+    };
     const checkStatus = async () => {
+      if (cancelled || document.visibilityState === 'hidden') return;
       try {
         const res = await fetch('/system/status');
+        if (cancelled) return;
         if (res.ok) {
           const data = await res.json();
-          setSystemStatus(data);
+          if (!cancelled) setSystemStatus(data);
         } else {
           setSystemStatus(prev => ({ ...prev, status: 'error' }));
         }
       } catch {
-        setSystemStatus(prev => ({ ...prev, status: 'error' }));
+        if (!cancelled) setSystemStatus(prev => ({ ...prev, status: 'error' }));
+      } finally {
+        schedule();
       }
     };
-    checkStatus();
-    const interval = setInterval(checkStatus, 5000);
-    return () => clearInterval(interval);
+    const handleVisibility = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      if (document.visibilityState === 'visible') void checkStatus();
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    void checkStatus();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
   }, []);
 
   // Handlers

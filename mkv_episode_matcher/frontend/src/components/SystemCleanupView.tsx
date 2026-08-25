@@ -10,7 +10,32 @@ const SystemCleanupView = () => {
   const [selectedProfiles, setSelectedProfiles] = useState<Record<string, string>>({}); const [message, setMessage] = useState(''); const [error, setError] = useState(''); const [working, setWorking] = useState(false);
   const [retentionDays, setRetentionDays] = useState(30);
   const refresh = async () => { try { const [itemsResponse, profilesResponse, configResponse] = await Promise.all([fetch('/rip/pipeline/items'), fetch('/rip/handbrake/profiles'), fetch('/system/config')]); const itemPayload = await itemsResponse.json(); const profilePayload = await profilesResponse.json(); const configPayload = await configResponse.json(); if (!itemsResponse.ok) throw new Error(itemPayload.detail || 'Cleanup records could not be loaded.'); setItems((itemPayload.items || []).filter((item: CleanupItem) => item.retained_source_available || item.retention_candidate_available)); if (profilesResponse.ok) setProfiles(profilePayload.profiles || []); if (configResponse.ok) setRetentionDays(Number(configPayload.retained_source_ttl_days || 30)); setError(''); } catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Cleanup records could not be loaded.'); } };
-  useEffect(() => { void refresh(); const timer = window.setInterval(refresh, 5000); return () => window.clearInterval(timer); }, []);
+  useEffect(() => {
+    let cancelled = false;
+    let running = false;
+    let timer: number | undefined;
+    const pageVisible = () => document.visibilityState !== 'hidden';
+    const poll = async () => {
+      if (cancelled || running || !pageVisible()) return;
+      running = true;
+      try { await refresh(); }
+      finally {
+        running = false;
+        if (!cancelled && pageVisible()) timer = window.setTimeout(poll, 12_000);
+      }
+    };
+    const handleVisibility = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      if (document.visibilityState === 'visible') void poll();
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, []);
   const groups = useMemo(() => { const result = new Map<string, CleanupItem[]>(); items.forEach((item) => { const key = discKeyFor(item.media_id); result.set(key, [...(result.get(key) || []), item]); }); return [...result.entries()]; }, [items]);
 
   const requeue = async (discKey: string, discItems: CleanupItem[]) => { const profileId = selectedProfiles[discKey] || ''; if (!profileId) { setError('Choose a HandBrake profile before requeueing this disc.'); return; } if (!window.confirm(`Requeue ${discItems.length} retained original(s) using the selected HandBrake profile? Saved matched names will be reused and Jellyfin files will remain unchanged. Retained originals expire after ${retentionDays} day(s).`)) return; setWorking(true); try { const response = await fetch('/rip/pipeline/retained-sources/reencode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ media_ids: discItems.map((item) => item.media_id), profile_id: profileId, confirm_reencode: true }) }); const payload = await response.json(); if (!response.ok) throw new Error(payload.detail || 'Disc could not be requeued.'); setMessage(`Queued ${payload.queued_item_count} title(s) for a new transcode.`); await refresh(); } catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Disc could not be requeued.'); } finally { setWorking(false); } };

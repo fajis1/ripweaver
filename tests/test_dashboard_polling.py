@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +11,7 @@ from mkv_episode_matcher.backend.routers.rip import (
     _filter_dashboard_jobs,
     _filter_dashboard_pipeline_items,
     _parse_dashboard_disc_fingerprints,
+    _pipeline_item_response,
 )
 from mkv_episode_matcher.pipeline_queue import PipelineQueueStore, build_artifact
 
@@ -173,3 +175,41 @@ def test_pipeline_list_decodes_all_rows_without_per_item_gets(
     monkeypatch.setattr(store, "get", fail_per_item_get)
 
     assert [item.media_id for item in store.list_items()] == ["polling-title-001"]
+
+
+def test_pipeline_response_reads_each_contract_once_per_poll(
+    tmp_path, monkeypatch
+) -> None:
+    store = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+    media_id = "polling-title-001"
+    contract = tmp_path / f"{media_id}.verified-rip.json"
+    contract.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "disc_fingerprint": "a5c6de13f86cc16b",
+            "title_index": 1,
+            "media_context": {"series_name": "Example Series"},
+        }),
+        encoding="utf-8",
+    )
+    store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+    item = store.get(media_id)
+    original_read_text = Path.read_text
+    reads = 0
+
+    def count_contract_reads(path: Path, *args, **kwargs):
+        nonlocal reads
+        if path == contract:
+            reads += 1
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", count_contract_reads)
+
+    response = _pipeline_item_response(
+        item,
+        config=SimpleNamespace(retained_source_ttl_days=30),
+    )
+
+    assert response["disc_fingerprint"] == "a5c6de13f86cc16b"
+    # One current-contract read plus one immutable verified-rip identity read.
+    assert reads == 2

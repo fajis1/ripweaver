@@ -107,6 +107,25 @@ const scopedDashboardUrl = (path: string, scope: string, discFingerprints: strin
   return `${path}?${params.toString()}`;
 };
 
+type DashboardJsonResult<T> = { ok: boolean; payload: T | null };
+const dashboardJsonRequests = new Map<string, Promise<DashboardJsonResult<unknown>>>();
+let lastMatchingPerformanceRefreshAt = 0;
+
+const sharedDashboardJson = <T,>(url: string): Promise<DashboardJsonResult<T>> => {
+  const existing = dashboardJsonRequests.get(url);
+  if (existing) return existing as Promise<DashboardJsonResult<T>>;
+  const request: Promise<DashboardJsonResult<unknown>> = fetch(url)
+    .then(async (response) => ({
+      ok: response.ok,
+      payload: response.ok ? await response.json() as unknown : null,
+    }))
+    .finally(() => {
+      dashboardJsonRequests.delete(url);
+    });
+  dashboardJsonRequests.set(url, request);
+  return request as Promise<DashboardJsonResult<T>>;
+};
+
 const dashboardHasActiveWork = (
   driveDashboard: DriveDashboard | null,
   jobDashboard: JobDashboard | null,
@@ -150,6 +169,7 @@ const episodeSequenceReviewCodes = new Set([
   'all_season_catalog_unavailable',
   'all_season_sequence_review_required',
   'independent_episode_evidence_required',
+  'whole_disc_coherence_review_required',
 ]);
 
 interface ExistingRipRecoveryPlan {
@@ -903,7 +923,6 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
   const [continueAfterMapping, setContinueAfterMapping] = useState(true);
   const reviewedMappingSnapshotRef = useRef<string | null>(null);
   const dashboardRefreshRunningRef = useRef(false);
-  const lastMatchingPerformanceRefreshRef = useRef(0);
   const [preparingDrive, setPreparingDrive] = useState<number | null>(null);
   const [queuedPrepareDrives, setQueuedPrepareDrives] = useState<number[]>([]);
   const prepareQueue = useRef<Promise<void>>(Promise.resolve());
@@ -976,22 +995,22 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
       try {
         let driveSnapshot = queueOnly || attentionOnly ? null : driveDashboardRef.current;
         if (!queueOnly && !attentionOnly) {
-          const response = await fetch('/rip/drives');
-          if (response.ok) {
-            driveSnapshot = await response.json() as DriveDashboard;
+          const response = await sharedDashboardJson<DriveDashboard>('/rip/drives');
+          if (response.ok && response.payload) {
+            driveSnapshot = response.payload;
             if (!cancelled) setDriveDashboard(driveSnapshot);
           }
         }
         const fingerprints = dashboardDiscFingerprints(driveSnapshot, savedJobRef.current, jobDashboardRef.current);
         const pipelineScope = attentionOnly ? 'attention' : queueOnly ? 'active' : 'dashboard';
         const jobsScope = queueOnly ? 'active' : 'dashboard';
-        const pipelineRequest = fetch(scopedDashboardUrl('/rip/pipeline/items', pipelineScope, pipelineScope === 'dashboard' ? fingerprints : []));
+        const pipelineRequest = sharedDashboardJson<PipelineQueue>(scopedDashboardUrl('/rip/pipeline/items', pipelineScope, pipelineScope === 'dashboard' ? fingerprints : []));
         const jobsRequest = attentionOnly
-          ? Promise.resolve<Response | null>(null)
-          : fetch(scopedDashboardUrl('/rip/jobs', jobsScope, queueOnly ? [] : fingerprints));
-        const performanceRequest = !attentionOnly && Date.now() - lastMatchingPerformanceRefreshRef.current >= 60_000
-          ? fetch('/rip/pipeline/matching-performance')
-          : Promise.resolve<Response | null>(null);
+          ? Promise.resolve<DashboardJsonResult<JobDashboard> | null>(null)
+          : sharedDashboardJson<JobDashboard>(scopedDashboardUrl('/rip/jobs', jobsScope, queueOnly ? [] : fingerprints));
+        const performanceRequest = !attentionOnly && Date.now() - lastMatchingPerformanceRefreshAt >= 60_000
+          ? sharedDashboardJson<{ runs: MatchingPerformanceRun[] }>('/rip/pipeline/matching-performance')
+          : Promise.resolve<DashboardJsonResult<{ runs: MatchingPerformanceRun[] }> | null>(null);
         const [pipelineResponse, jobsResponse, performanceResponse] = await Promise.all([
           pipelineRequest,
           jobsRequest,
@@ -999,18 +1018,17 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
         ]);
         let queueSnapshot = pipelineQueueRef.current;
         let jobSnapshot = attentionOnly ? null : jobDashboardRef.current;
-        if (pipelineResponse.ok) {
-          queueSnapshot = await pipelineResponse.json() as PipelineQueue;
+        if (pipelineResponse.ok && pipelineResponse.payload) {
+          queueSnapshot = pipelineResponse.payload;
           if (!cancelled) setPipelineQueue(queueSnapshot);
         }
-        if (jobsResponse?.ok) {
-          jobSnapshot = await jobsResponse.json() as JobDashboard;
+        if (jobsResponse?.ok && jobsResponse.payload) {
+          jobSnapshot = jobsResponse.payload;
           if (!cancelled) setJobDashboard(jobSnapshot);
         }
-        if (performanceResponse?.ok) {
-          const payload = await performanceResponse.json() as { runs: MatchingPerformanceRun[] };
-          lastMatchingPerformanceRefreshRef.current = Date.now();
-          if (!cancelled) setMatchingPerformance(payload.runs);
+        if (performanceResponse?.ok && performanceResponse.payload) {
+          lastMatchingPerformanceRefreshAt = Date.now();
+          if (!cancelled) setMatchingPerformance(performanceResponse.payload.runs);
         }
         schedule(dashboardHasActiveWork(driveSnapshot, jobSnapshot, queueSnapshot) ? 3000 : 12_000);
       } catch {
@@ -2465,6 +2483,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
         'all_season_catalog_unavailable',
         'all_season_sequence_review_required',
         'independent_episode_evidence_required',
+        'whole_disc_coherence_review_required',
       ].includes(item.review_code || '')),
     );
     const confirmation = allSeasonReady
@@ -3036,7 +3055,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
   const existingRipsNeedAnalysis = visiblePipelineItems.some((item) =>
     item.stage === 'identify'
     && item.state === 'review_required'
-    && ['missing_season_context', 'unmatched_disc_analysis_required', 'all_season_analysis_failed', 'all_season_series_not_found', 'all_season_evidence_failed', 'all_season_catalog_unavailable', 'all_season_sequence_review_required', 'independent_episode_evidence_required'].includes(item.review_code || '')
+    && ['missing_season_context', 'unmatched_disc_analysis_required', 'all_season_analysis_failed', 'all_season_series_not_found', 'all_season_evidence_failed', 'all_season_catalog_unavailable', 'all_season_sequence_review_required', 'independent_episode_evidence_required', 'whole_disc_coherence_review_required'].includes(item.review_code || '')
   );
   const existingRipsInPipeline = existingRipsRestarted || visiblePipelineItems.some(
     (item) => item.disc_fingerprint === selectedDiscFingerprint && item.media_id.includes('-recovery-'),
@@ -4427,7 +4446,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
               </div>
             </details>
           )}
-          {!queueOnly && !attentionOnly && visiblePipelineItems.some((item) => ['missing_season_context', 'unmatched_disc_analysis_required', 'all_season_analysis_failed', 'all_season_series_not_found', 'all_season_evidence_failed', 'all_season_catalog_unavailable', 'all_season_sequence_review_required', 'independent_episode_evidence_required'].includes(item.review_code || '')) && (
+          {!queueOnly && !attentionOnly && visiblePipelineItems.some((item) => ['missing_season_context', 'unmatched_disc_analysis_required', 'all_season_analysis_failed', 'all_season_series_not_found', 'all_season_evidence_failed', 'all_season_catalog_unavailable', 'all_season_sequence_review_required', 'independent_episode_evidence_required', 'whole_disc_coherence_review_required'].includes(item.review_code || '')) && (
             <div className="rounded-lg border border-indigo-400/30 bg-indigo-400/10 p-3 text-sm text-indigo-100 space-y-2">
               <div className="font-semibold">{suggestedSeason === null ? 'Run general all-season episode matching' : `Run Season ${suggestedSeason} episode matching`}</div>
               <p>{suggestedSeason === null ? 'The disc has no reliable season context. The matcher will compare each title independently against aired episodes for the reviewed series.' : `The disc label explicitly identifies Season ${suggestedSeason}. The matcher will restrict candidates to that season.`} A consecutive sequence can suggest what to inspect next, but it cannot name an episode or skip subtitle and Gemini checks.</p>
@@ -4570,7 +4589,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
           {visiblePipelineItems.some((item) => item.state === 'review_required' && item.review_code !== 'all_season_analysis_running') && (
             <div className="rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-sm text-amber-100 space-y-2">
               <div className="font-semibold">Review choices required</div>
-              {visiblePipelineItems.some((item) => ['missing_season_context', 'unmatched_disc_analysis_required', 'all_season_analysis_failed', 'all_season_series_not_found', 'all_season_evidence_failed', 'all_season_catalog_unavailable', 'all_season_sequence_review_required', 'independent_episode_evidence_required'].includes(item.review_code || '')) && (
+              {visiblePipelineItems.some((item) => ['missing_season_context', 'unmatched_disc_analysis_required', 'all_season_analysis_failed', 'all_season_series_not_found', 'all_season_evidence_failed', 'all_season_catalog_unavailable', 'all_season_sequence_review_required', 'independent_episode_evidence_required', 'whole_disc_coherence_review_required'].includes(item.review_code || '')) && (
                 <div>Episode identification needs a series/season analysis choice. Use the analysis panel above.</div>
               )}
               {visiblePipelineItems.some((item) => item.review_code === 'library_collision') && (
@@ -4857,7 +4876,8 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                         {item.review_code === 'all_season_catalog_unavailable' && <div className="mt-2">TMDb did not return an aired episode catalogue for the reviewed series name. Open the disc dashboard, confirm the canonical series name, and retry.</div>}
                         {item.review_code === 'all_season_series_not_found' && <div className="mt-2">No TV series could be validated from the supplied name. When automatic Gemini fallback is enabled, inexact labels are sent to Gemini before this review is shown.</div>}
                         {item.review_code === 'all_season_evidence_failed' && <div className="mt-2">Audio evidence collection failed before episode matching began. Review the server diagnostic for the safe failure category, then retry.</div>}
-                        {['episode_match_review', 'independent_episode_evidence_required'].includes(item.review_code || '') && episodeReviewCandidates(item).length > 0 && (
+                        {item.review_code === 'whole_disc_coherence_review_required' && <div className="mt-2">RipWeaver withheld every proposed assignment because the complete disc set crossed seasons, repeated an episode, or covered an episode range wider than this disc can plausibly contain.</div>}
+                        {['episode_match_review', 'independent_episode_evidence_required', 'whole_disc_coherence_review_required'].includes(item.review_code || '') && episodeReviewCandidates(item).length > 0 && (
                           <div className="mt-3 rounded-lg border border-amber-300/40 bg-black/15 p-3 text-sm">
                             <div className="font-semibold">Suggested episode for human review</div>
                             <div className="mt-1 text-xs text-amber-100/80">Automatic matching exhausted its safe options but did not have enough independent evidence to apply this choice. Open the staged rip and verify the episode before confirming it.</div>
@@ -4899,7 +4919,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                                 />
                                 Bonus content
                               </label>
-                              <button type="button" className="btn btn-primary text-xs" disabled={reviewingItemId === item.media_id || !renameDrafts[item.media_id]?.trim() || (['episode_match_review', 'independent_episode_evidence_required'].includes(item.review_code || '') && !reviewPlaybackOpened.has(item.media_id))} onClick={() => saveManualEpisodeIdentification(item)}>
+                              <button type="button" className="btn btn-primary text-xs" disabled={reviewingItemId === item.media_id || !renameDrafts[item.media_id]?.trim() || (['episode_match_review', 'independent_episode_evidence_required', 'whole_disc_coherence_review_required'].includes(item.review_code || '') && !reviewPlaybackOpened.has(item.media_id))} onClick={() => saveManualEpisodeIdentification(item)}>
                                 Save reviewed name and continue
                               </button>
                             </>

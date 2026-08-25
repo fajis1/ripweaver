@@ -2615,6 +2615,7 @@ class PipelineQueueStore:
             "all_season_catalog_unavailable",
             "all_season_sequence_review_required",
             "independent_episode_evidence_required",
+            "whole_disc_coherence_review_required",
             "visual_content_review_required",
             "gemini_series_resolution_uncertain",
             "play_all_aggregate_detected",
@@ -2657,6 +2658,7 @@ class PipelineQueueStore:
                     "all_season_catalog_unavailable",
                     "all_season_sequence_review_required",
                     "independent_episode_evidence_required",
+                    "whole_disc_coherence_review_required",
                     "visual_content_review_required",
                     "gemini_series_resolution_uncertain",
                 }
@@ -2713,6 +2715,7 @@ class PipelineQueueStore:
                     "all_season_catalog_unavailable",
                     "all_season_sequence_review_required",
                     "independent_episode_evidence_required",
+                    "whole_disc_coherence_review_required",
                     "gemini_series_resolution_uncertain",
                     "catalogue_candidate_help_available",
                 }

@@ -593,6 +593,16 @@ deterministic source. Gemini outcomes and legacy sequence history must never
 establish the fence. Every applied fence and rejected provider candidate must
 remain visible in the private identification audit.
 
+Immediately before any episode assignment advances from completed-disc
+analysis, RipWeaver must run a provider-independent whole-disc coherence gate.
+The gate combines the current run's proposals with durable episode outcomes
+for other relevant title indexes on the exact fingerprint. The combined set
+must contain unique episodes from one season and fit within an episode span no
+wider than the disc's known relevant-title count, even when saved season
+context is absent. Failure must withhold every current proposal under an
+explicit review code; coherence may reject assignments but must never supply
+episode identity evidence.
+
 A held organize-stage wrong-episode collision may be corrected only through
 the metadata-only correction boundary. The replacement must be an already
 displayed OpenSubtitles candidate, be the sole unassigned candidate inside a

@@ -92,6 +92,16 @@ class GeminiAnalysisError(PipelineQueueError):
         super().__init__(diagnostic)
 
 
+class DiscCoherenceError(GeminiAnalysisError):
+    """Stop every proposed assignment when the completed disc set is implausible."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "whole_disc_coherence_review_required",
+            "The proposed episode assignments do not form a plausible whole-disc set",
+        )
+
+
 @dataclass(frozen=True)
 class _ReviewSequencePlan:
     disposition: str = "review"
@@ -249,13 +259,13 @@ def _prioritize_catalog_for_disc_number(
     return tuple(sorted(catalog, key=priority))
 
 
-def _gemini_disc_assignments_coherent(
+def _disc_assignments_coherent(
     entries: tuple[EpisodeCatalogEntry, ...],
     *,
     disc_title_count: int,
     required_season: int | None,
 ) -> bool:
-    """Reject a provider-only set that cannot plausibly belong to one disc."""
+    """Reject an assignment set that cannot plausibly belong to one disc."""
 
     if not entries:
         return True
@@ -270,6 +280,41 @@ def _gemini_disc_assignments_coherent(
     if len(unique_episodes) < 2:
         return True
     return max(unique_episodes) - min(unique_episodes) + 1 <= disc_title_count
+
+
+# Retain the old private name for callers that used the narrower provider guard.
+_gemini_disc_assignments_coherent = _disc_assignments_coherent
+
+
+def _combined_disc_assignments(
+    store: PipelineQueueStore,
+    disc_fingerprint: str,
+    selected: list[tuple[object, dict]],
+    proposed: Mapping[str, EpisodeCatalogEntry],
+    catalog_by_id: Mapping[str, EpisodeCatalogEntry],
+) -> tuple[EpisodeCatalogEntry, ...]:
+    """Combine durable sibling outcomes with this run's proposals by title index."""
+
+    expected = store.expected_title_indexes_for_disc(disc_fingerprint)
+    by_title: dict[int, EpisodeCatalogEntry] = {}
+    for title_index, outcome in store.catalogue_title_history(disc_fingerprint).items():
+        if expected and title_index not in expected:
+            continue
+        episode_id = outcome.get("episode_id")
+        if isinstance(episode_id, str):
+            entry = catalog_by_id.get(episode_id.upper())
+            if entry is not None:
+                by_title[title_index] = entry
+    for item, payload in selected:
+        entry = proposed.get(item.media_id)
+        title_index = payload.get("title_index")
+        if (
+            entry is not None
+            and isinstance(title_index, int)
+            and not isinstance(title_index, bool)
+        ):
+            by_title[title_index] = entry
+    return tuple(by_title[index] for index in sorted(by_title))
 
 
 def _history_disc_range_anchors(
@@ -1401,6 +1446,8 @@ def assigned_disc_episodes(
 
 
 def classify_gemini_failure(exc: Exception) -> GeminiAnalysisError:
+    if isinstance(exc, GeminiAnalysisError):
+        return exc
     if isinstance(exc, ApiCredentialError):
         status = f" (HTTP {exc.status_code})" if exc.status_code else ""
         return GeminiAnalysisError(
@@ -2508,8 +2555,15 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
                 gemini_catalog_by_id[str(match.episode_id)]
                 for match in resolved_matches.values()
             )
-            if season is not None and not _gemini_disc_assignments_coherent(
-                gemini_entries,
+            # Gemini evaluates each title independently. Before any of those
+            # choices may advance, validate the complete proposed disc set,
+            # including independently established sibling assignments. This
+            # guard must also run when the saved context has no explicit
+            # season: a missing season is not permission for one disc to span
+            # multiple seasons or a wider episode range than its title count.
+            combined_disc_entries = tuple(proposed.values()) + gemini_entries
+            if not _disc_assignments_coherent(
+                combined_disc_entries,
                 disc_title_count=disc_episode_title_count,
                 required_season=season,
             ):
@@ -2520,7 +2574,8 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
                     analysis_run_id=analysis_run_id,
                     summary={
                         "candidate_scope": effective_gemini_scope,
-                        "candidate_count": len(gemini_entries),
+                        "candidate_count": len(combined_disc_entries),
+                        "gemini_candidate_count": len(gemini_entries),
                         "disc_title_count": disc_episode_title_count,
                         "requested_season": season,
                         "disc_number": disc_number,
@@ -2586,6 +2641,8 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
                     },
                 )
             if not resolved_matches and not proposed:
+                if gemini_entries:
+                    raise DiscCoherenceError()
                 raise PipelineQueueError(
                     "Gemini did not identify any disc title confidently"
                 )
@@ -2739,6 +2796,32 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
                 raise failure from exc
     elif not proposed:
         raise PipelineQueueError("Independent episode evidence requires review")
+    combined_disc_entries = _combined_disc_assignments(
+        store,
+        disc_fingerprint,
+        selected,
+        proposed,
+        full_catalog_by_id,
+    )
+    if not _disc_assignments_coherent(
+        combined_disc_entries,
+        disc_title_count=disc_episode_title_count,
+        required_season=season,
+    ):
+        dossier.record_attempt(
+            tuple(proposed),
+            branch="tv-disc-range",
+            disposition="review",
+            analysis_run_id=analysis_run_id,
+            summary={
+                "candidate_count": len(combined_disc_entries),
+                "disc_title_count": disc_episode_title_count,
+                "requested_season": season,
+                "disc_number": disc_number,
+                "reason": "whole_disc_assignments_incoherent",
+            },
+        )
+        raise DiscCoherenceError()
     matched_evidence = tuple(
         MatchedEpisodeEvidence(
             file_id=file_id,
