@@ -379,6 +379,23 @@ def test_episode_match_review_can_enter_all_season_analysis(tmp_path):
     assert selected.review_code == "all_season_analysis_running"
 
 
+def test_incoherent_whole_disc_analysis_becomes_a_durable_review(tmp_path):
+    store = _store(tmp_path)
+    original = _artifact(tmp_path, "media-1", "rip")
+    store.enqueue_verified_rip("media-1", original)
+    store.claim_next()
+    store.require_review("media-1", "unmatched_disc_analysis_required")
+    store.choose_review_path("media-1", "all_season_analysis_running")
+
+    selected = store.choose_review_path(
+        "media-1", "whole_disc_coherence_review_required"
+    )
+
+    assert selected.state == "review_required"
+    assert selected.stage == "identify"
+    assert selected.review_code == "whole_disc_coherence_review_required"
+
+
 def test_changed_contract_and_path_leaking_events_are_refused(tmp_path):
     store = _store(tmp_path)
     original = _artifact(tmp_path, "media-1", "rip")
