@@ -9,6 +9,37 @@
 > *Note: A full snapshot of all uncommitted files as of 2026-08-23 has been safely saved to the local branch `emergency-backup-20260823`. If you accidentally destroy the working tree, you can recover from that branch.*
 
 
+## 2026-08-25 - Alternate-release subtitle failover
+
+Disc-level episode identification now has a universal, bounded second subtitle
+pass for confidently resolved TV series. The initial pass continues to use its
+preferred edition and canonical/TMDb references. Only when usable Whisper
+dialogue leaves titles unresolved after every normal season in scope has been
+tested may the provider request previously untested release variants.
+
+- Recognized edition context now includes Superfan, extended/uncut, unrated,
+  supercut, and director's-cut labels. Peacock/PCOK/PlayWeb metadata remains a
+  compatible altered-cut signal.
+- Failover uses at most six edition-alias searches, downloads at most two new
+  release variants per episode, and runs only once per season in one analysis.
+- Cached references are excluded from the alternate result, so the retry is a
+  genuinely different transcript set rather than a repeat of the first pass.
+- Neighboring normal seasons are exhausted before any altered-cut fallback can
+  run. Outside-season diagnostic review does not invoke the fallback.
+- Initial and alternate scores are combined per episode before acceptance.
+  The existing confidence floor, two qualifying independent windows, margin,
+  runtime, one-to-one assignment, residual-elimination, and whole-disc
+  coherence rules are unchanged.
+- Identification audit records label the retry as
+  `alternate-release-failover`; logs retain path-free query/result counts.
+
+Synthetic tests cover edition inference, bounded alias generation, exclusion
+of already tested cached releases, successful matching from a new release, and
+the requirement that a normal neighboring-season match runs first. No live
+provider, disc, media, Whisper, Gemini, transcode, organization, or ejection
+operation was used for validation.
+
+
 ## 2026-08-24 - Substantial unresolved titles remain recovery obligations
 
 TV recovery no longer treats every title outside the dominant episode-runtime

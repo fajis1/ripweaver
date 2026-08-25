@@ -19,10 +19,29 @@ _SUPERFAN = re.compile(r"\bsuper[ ._-]*fan(?:[ ._-]+episodes?)?\b", re.IGNORECAS
 _EXTENDED = re.compile(
     r"\b(?:extended(?:[ ._-]+cut|[ ._-]+edition)?|uncut)\b", re.IGNORECASE
 )
+_UNRATED = re.compile(r"\bunrated(?:[ ._-]+cut|[ ._-]+edition)?\b", re.IGNORECASE)
+_SUPERCUT = re.compile(r"\bsuper[ ._-]*cut\b", re.IGNORECASE)
+_DIRECTORS_CUT = re.compile(r"\bdirector'?s[ ._-]+cut\b", re.IGNORECASE)
 _PEACOCK = re.compile(r"\b(?:peacock|pcok|playweb)\b", re.IGNORECASE)
 _EDITION_WORDS = re.compile(
-    r"\b(?:super[ ._-]*fan|extended|uncut|director'?s[ ._-]+cut)\b",
+    r"\b(?:super[ ._-]*fan|super[ ._-]*cut|extended|uncut|unrated"
+    r"|director'?s[ ._-]+cut)\b",
     re.IGNORECASE,
+)
+_ALTERED_CUT = re.compile(
+    r"\b(?:super[ ._-]*fan(?:[ ._-]+episodes?)?|super[ ._-]*cut"
+    r"|extended(?:[ ._-]+cut|[ ._-]+edition)?|uncut"
+    r"|unrated(?:[ ._-]+cut|[ ._-]+edition)?|director'?s[ ._-]+cut)\b",
+    re.IGNORECASE,
+)
+
+_FAILOVER_QUERY_LABELS = (
+    ("superfan", "Superfan Episodes"),
+    ("extended", "Extended"),
+    ("extended", "Uncut"),
+    ("unrated", "Unrated"),
+    ("supercut", "Supercut"),
+    ("directors_cut", "Director's Cut"),
 )
 
 
@@ -77,6 +96,21 @@ def infer_subtitle_release_profile(
             display_name="Extended edition",
             canonical_series_name=canonical,
         )
+    for pattern, key, display_name in (
+        (_UNRATED, "unrated", "Unrated edition"),
+        (_SUPERCUT, "supercut", "Supercut edition"),
+        (_DIRECTORS_CUT, "directors_cut", "Director's cut"),
+    ):
+        if pattern.search(combined):
+            canonical = pattern.sub(" ", show_name)
+            canonical = (
+                _clean_name(canonical).strip(" -:()[]") or _clean_name(show_name)
+            )
+            return SubtitleReleaseProfile(
+                key=key,
+                display_name=display_name,
+                canonical_series_name=canonical,
+            )
     return SubtitleReleaseProfile(
         key=None,
         display_name="Unresolved edition",
@@ -124,11 +158,30 @@ def classify_subtitle_release(
     if profile.key == "superfan":
         if _SUPERFAN.search(release_name):
             return "exact"
-        if _EXTENDED.search(release_name) or _PEACOCK.search(release_name):
+        if _ALTERED_CUT.search(release_name) or _PEACOCK.search(release_name):
             return "compatible"
         return "generic"
     if profile.key == "extended":
-        return "exact" if _EXTENDED.search(release_name) else "generic"
+        if _EXTENDED.search(release_name):
+            return "exact"
+        return (
+            "compatible"
+            if _ALTERED_CUT.search(release_name) or _PEACOCK.search(release_name)
+            else "generic"
+        )
+    exact_pattern = {
+        "unrated": _UNRATED,
+        "supercut": _SUPERCUT,
+        "directors_cut": _DIRECTORS_CUT,
+    }.get(profile.key)
+    if exact_pattern is not None:
+        if exact_pattern.search(release_name):
+            return "exact"
+        return (
+            "compatible"
+            if _ALTERED_CUT.search(release_name) or _PEACOCK.search(release_name)
+            else "generic"
+        )
     return "unresolved"
 
 
@@ -190,6 +243,26 @@ def release_profile_query(profile: SubtitleReleaseProfile, season: int) -> str:
     """Return a canonical fallback query without edition packaging words."""
 
     return f"{profile.canonical_series_name} S{season:02d}".strip()
+
+
+def alternate_release_queries(
+    profile: SubtitleReleaseProfile, season: int
+) -> tuple[str, ...]:
+    """Return a bounded set of edition aliases for a failed evidence pass.
+
+    These queries are deliberately separate from the normal lookup.  Callers
+    should use them only after the canonical series and season are established
+    and usable dialogue fails against the already-retained references.
+    """
+
+    queries = []
+    for key, label in _FAILOVER_QUERY_LABELS:
+        if profile.key == key:
+            continue
+        queries.append(
+            f"{profile.canonical_series_name} {label} S{season:02d}".strip()
+        )
+    return tuple(queries[:6])
 
 
 def release_metadata_present(value: str) -> bool:

@@ -1404,6 +1404,188 @@ def test_opensubtitles_matches_independently_and_only_falls_forward(tmp_path):
     }
 
 
+def test_opensubtitles_tries_untested_release_after_normal_references_fail(tmp_path):
+    catalog = (
+        EpisodeCatalogEntry("S07E20", 7, 20, "First", "", 1200),
+        EpisodeCatalogEntry("S07E21", 7, 21, "Second", "", 1200),
+    )
+    files = (
+        UnmatchedFileEvidence(
+            "extended-title",
+            1200,
+            ("alternate cut dialogue", "alternate cut dialogue"),
+        ),
+    )
+    calls = []
+
+    class Provider:
+        def get_subtitles(self, _series, season, _files, _tmdb_id):
+            calls.append(("initial", season))
+            return [
+                SubtitleFile(
+                    path=tmp_path / "regular-20.srt",
+                    content="unrelated regular dialogue",
+                    episode_info=EpisodeInfo(
+                        series_name="Example", season=season, episode=20
+                    ),
+                    release_match="generic",
+                ),
+                SubtitleFile(
+                    path=tmp_path / "regular-21.srt",
+                    content="different regular dialogue",
+                    episode_info=EpisodeInfo(
+                        series_name="Example", season=season, episode=21
+                    ),
+                    release_match="generic",
+                ),
+            ]
+
+        def get_alternate_subtitles(self, _series, season, _files, _tmdb_id):
+            calls.append(("alternate", season))
+            return [
+                SubtitleFile(
+                    path=tmp_path / "supercut-20.srt",
+                    content="alternate cut dialogue",
+                    episode_info=EpisodeInfo(
+                        series_name="Example", season=season, episode=20
+                    ),
+                    release_match="compatible",
+                )
+            ]
+
+    class ASR:
+        @staticmethod
+        def calculate_match_score(transcript, reference):
+            return 0.95 if transcript in reference else 0.1
+
+    details = {}
+    evaluations = {}
+    matched, _diagnostics = analysis.match_opensubtitles_seasons(
+        files,
+        catalog,
+        "Example",
+        123,
+        (7,),
+        ASR(),
+        min_confidence=0.7,
+        provider=Provider(),
+        diagnostic_details=details,
+        candidate_evaluations=evaluations,
+    )
+
+    assert calls == [("initial", 7), ("alternate", 7)]
+    assert matched["extended-title"].episode_id == "S07E20"
+    assert details["extended-title"]["subtitle_reference_pass"] == (
+        "alternate-release-failover"
+    )
+    assert any(
+        record["phase"] == "alternate-release-failover"
+        and record["disposition"] == "selected"
+        for record in evaluations["extended-title"]
+    )
+
+
+def test_opensubtitles_does_not_fail_over_before_normal_neighbor_season_succeeds(
+    tmp_path,
+):
+    catalog = tuple(
+        EpisodeCatalogEntry(f"S0{season}E01", season, 1, "", "", 1200)
+        for season in (1, 2)
+    )
+    files = (
+        UnmatchedFileEvidence("title", 1200, ("season two", "season two")),
+    )
+    alternate_calls = []
+
+    class Provider:
+        def get_subtitles(self, _series, season, _files, _tmdb_id):
+            return [
+                SubtitleFile(
+                    path=tmp_path / f"season-{season}.srt",
+                    content="season two" if season == 2 else "season one",
+                    episode_info=EpisodeInfo(
+                        series_name="Example", season=season, episode=1
+                    ),
+                )
+            ]
+
+        def get_alternate_subtitles(self, _series, season, _files, _tmdb_id):
+            alternate_calls.append(season)
+            return []
+
+    class ASR:
+        @staticmethod
+        def calculate_match_score(transcript, reference):
+            return 0.95 if transcript in reference else 0.1
+
+    matched, _diagnostics = analysis.match_opensubtitles_seasons(
+        files,
+        catalog,
+        "Example",
+        123,
+        (1, 2),
+        ASR(),
+        min_confidence=0.7,
+        provider=Provider(),
+    )
+
+    assert matched["title"].episode_id == "S02E01"
+    assert alternate_calls == []
+
+
+def test_alternate_release_failover_does_not_lower_two_window_requirement(tmp_path):
+    catalog = (EpisodeCatalogEntry("S01E01", 1, 1, "First", "", 1200),)
+    files = (UnmatchedFileEvidence("title", 1200, ("matching dialogue",)),)
+
+    class Provider:
+        def get_subtitles(self, _series, season, _files, _tmdb_id):
+            return [
+                SubtitleFile(
+                    path=tmp_path / "regular.srt",
+                    content="different dialogue",
+                    episode_info=EpisodeInfo(
+                        series_name="Example", season=season, episode=1
+                    ),
+                )
+            ]
+
+        def get_alternate_subtitles(self, _series, season, _files, _tmdb_id):
+            return [
+                SubtitleFile(
+                    path=tmp_path / "alternate.srt",
+                    content="matching dialogue",
+                    episode_info=EpisodeInfo(
+                        series_name="Example", season=season, episode=1
+                    ),
+                    release_match="compatible",
+                )
+            ]
+
+    class ASR:
+        @staticmethod
+        def calculate_match_score(transcript, reference):
+            return 0.95 if transcript in reference else 0.1
+
+    details = {}
+    matched, _diagnostics = analysis.match_opensubtitles_seasons(
+        files,
+        catalog,
+        "Example",
+        123,
+        (1,),
+        ASR(),
+        min_confidence=0.7,
+        provider=Provider(),
+        diagnostic_details=details,
+    )
+
+    assert matched == {}
+    assert details["title"]["reason"] == "insufficient_qualifying_windows"
+    assert details["title"]["subtitle_reference_pass"] == (
+        "alternate-release-failover"
+    )
+
+
 def test_opensubtitles_records_exact_review_reason():
     best = EpisodeCatalogEntry("S01E01", 1, 1, "First", "", 1200)
     runner_up = EpisodeCatalogEntry("S01E02", 1, 2, "Second", "", 1200)

@@ -7,6 +7,16 @@ All notable changes to MKV Episode Matcher are documented here.
 
 ## Unreleased - 2026-08-11
 
+- Added bounded alternate-release subtitle failover for confidently resolved TV
+  series and seasons. When usable Whisper evidence fails against every normal
+  reference, RipWeaver now searches previously untested Superfan, extended,
+  uncut, unrated, supercut, and director's-cut release aliases and retries only
+  the unresolved titles.
+- Alternate-release matching retains at most two new references per episode,
+  runs at most once per season in an analysis, and keeps the normal two-window,
+  confidence, margin, runtime, one-to-one, residual, and whole-disc coherence
+  requirements. Normal references for the entire season scope are always tried
+  before the failover can run.
 - Added TV-related movie detection before generic bonus-feature naming.
   Feature-length TV-disc titles now compare bounded, runtime-compatible TMDb
   movie candidates against ordinary OpenSubtitles movie dialogue. Confident

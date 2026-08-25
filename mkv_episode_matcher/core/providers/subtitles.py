@@ -25,6 +25,7 @@ from mkv_episode_matcher.core.credentials import (
 from mkv_episode_matcher.core.models import EpisodeInfo, SubtitleFile
 from mkv_episode_matcher.core.subtitle_releases import (
     SubtitleReleaseProfile,
+    alternate_release_queries,
     infer_subtitle_release_profile,
     release_profile_query,
     select_subtitle_release_options,
@@ -126,8 +127,10 @@ def _rank_episode_release_options(
     candidates: list[object],
     season: int,
     profile: SubtitleReleaseProfile,
+    *,
+    maximum_per_episode: int = 2,
 ) -> tuple[tuple[int, object, str, str], ...]:
-    """Select at most two provider releases for each episode."""
+    """Select a bounded number of provider releases for each episode."""
 
     by_episode: dict[int, list[object]] = {}
     for candidate in candidates:
@@ -137,7 +140,7 @@ def _rank_episode_release_options(
     selected = []
     for episode in sorted(by_episode):
         for option in select_subtitle_release_options(
-            by_episode[episode], profile, maximum=2
+            by_episode[episode], profile, maximum=maximum_per_episode
         ):
             selected.append(
                 (
@@ -148,6 +151,22 @@ def _rank_episode_release_options(
                 )
             )
     return tuple(selected)
+
+
+def _subtitle_cache_target(
+    cache_dir: Path,
+    show_name: str,
+    season: int,
+    episode: int,
+    release_name: str,
+    release_match: str,
+) -> Path:
+    digest = hashlib.sha256(release_name.encode("utf-8")).hexdigest()[:10]
+    cache_name = safe_cache_component(show_name)
+    return cache_dir / (
+        f"{cache_name} - S{season:02d}E{episode:02d} - "
+        f"{release_match}-{digest}.srt"
+    )
 
 
 def retry_with_backoff(
@@ -422,7 +441,7 @@ class OpenSubtitlesProvider(SubtitleProvider):
             if hasattr(signal, "SIGALRM"):
                 signal.alarm(0)  # Cancel the alarm
 
-    def get_subtitles(  # noqa: C901 - provider metadata and retry guards
+    def get_subtitles(
         self,
         show_name: str,
         season: int,
@@ -430,12 +449,47 @@ class OpenSubtitlesProvider(SubtitleProvider):
         tmdb_id: int | None = None,
     ) -> list[SubtitleFile]:
         """Get bounded, release-aware subtitle variants for a show/season."""
+
+        return self._get_subtitles(
+            show_name,
+            season,
+            video_files,
+            tmdb_id,
+            alternate_only=False,
+        )
+
+    def get_alternate_subtitles(
+        self,
+        show_name: str,
+        season: int,
+        video_files: list[Path] = None,
+        tmdb_id: int | None = None,
+    ) -> list[SubtitleFile]:
+        """Fetch only untested release variants after an evidence failure."""
+
+        return self._get_subtitles(
+            show_name,
+            season,
+            video_files,
+            tmdb_id,
+            alternate_only=True,
+        )
+
+    def _get_subtitles(  # noqa: C901 - provider metadata and retry guards
+        self,
+        show_name: str,
+        season: int,
+        video_files: list[Path] | None,
+        tmdb_id: int | None,
+        *,
+        alternate_only: bool,
+    ) -> list[SubtitleFile]:
         release_profile = infer_subtitle_release_profile(show_name, video_files)
         cache_dir = self.config.cache_dir / "data" / safe_cache_component(show_name)
         cached_subtitles = LocalSubtitleProvider(self.config.cache_dir).get_subtitles(
             show_name, season, video_files, tmdb_id
         )
-        if _complete_cached_season(
+        if not alternate_only and _complete_cached_season(
             cache_dir,
             season,
             cached_subtitles,
@@ -452,6 +506,13 @@ class OpenSubtitlesProvider(SubtitleProvider):
             )
             return cached_subtitles
         if not self.client:
+            if alternate_only:
+                logger.info(
+                    "Alternate subtitle release lookup is unavailable for {} S{:02d}",
+                    show_name,
+                    season,
+                )
+                return []
             if cached_subtitles:
                 logger.info(
                     "Using {} cached subtitle references for {} S{:02d}",
@@ -468,7 +529,7 @@ class OpenSubtitlesProvider(SubtitleProvider):
 
         # Check for manual TMDB ID first and get correct show name
         search_show_name = show_name
-        if tmdb_id:
+        if tmdb_id and not alternate_only:
             logger.info(
                 f"Using manual TMDB ID: {tmdb_id} for {show_name} S{season:02d}"
             )
@@ -489,17 +550,27 @@ class OpenSubtitlesProvider(SubtitleProvider):
                 logger.error(f"Error looking up TMDB ID {tmdb_id}: {type(e).__name__}")
 
         logger.info(
-            "Searching OpenSubtitles for {} S{:02d} with release profile {}",
+            "Searching OpenSubtitles for {} S{:02d} with release profile {} ({})",
             search_show_name,
             season,
             release_profile.key or "unresolved",
+            "alternate-release failover" if alternate_only else "initial pass",
         )
         cache_dir.mkdir(parents=True, exist_ok=True)
-        downloaded_subtitles = list(cached_subtitles)
+        downloaded_subtitles = [] if alternate_only else list(cached_subtitles)
 
         try:
             search_specs: list[dict[str, object]] = []
-            if release_profile.understood:
+            if alternate_only:
+                search_specs.extend(
+                    {
+                        "query": query,
+                        "season_number": season,
+                        "type": "episode",
+                    }
+                    for query in alternate_release_queries(release_profile, season)
+                )
+            elif release_profile.understood:
                 # The edition-bearing query is intentionally first.  A TMDb
                 # series ID normally describes the broadcast series and can
                 # otherwise hide Superfan/extended releases.
@@ -564,19 +635,45 @@ class OpenSubtitlesProvider(SubtitleProvider):
 
             if not provider_candidates:
                 logger.warning("No subtitle release options were returned")
-                _write_season_manifest(
-                    cache_dir,
-                    season=season,
-                    tmdb_id=tmdb_id,
-                    episode_numbers=set(),
-                    complete=False,
-                    release_profile_key=release_profile.key,
-                )
+                if not alternate_only:
+                    _write_season_manifest(
+                        cache_dir,
+                        season=season,
+                        tmdb_id=tmdb_id,
+                        episode_numbers=set(),
+                        complete=False,
+                        release_profile_key=release_profile.key,
+                    )
                 return downloaded_subtitles
 
             selected_options = _rank_episode_release_options(
-                provider_candidates, season, release_profile
+                provider_candidates,
+                season,
+                release_profile,
+                maximum_per_episode=8 if alternate_only else 2,
             )
+            if alternate_only:
+                untested_options = []
+                selected_per_episode: dict[int, int] = {}
+                for option in selected_options:
+                    ep_num, _subtitle, release_name, release_match = option
+                    target_path = _subtitle_cache_target(
+                        cache_dir,
+                        show_name,
+                        season,
+                        ep_num,
+                        release_name,
+                        release_match,
+                    )
+                    if target_path.is_file():
+                        continue
+                    if selected_per_episode.get(ep_num, 0) >= 2:
+                        continue
+                    selected_per_episode[ep_num] = (
+                        selected_per_episode.get(ep_num, 0) + 1
+                    )
+                    untested_options.append(option)
+                selected_options = tuple(untested_options)
             available_episodes = {
                 episode
                 for candidate in provider_candidates
@@ -584,11 +681,13 @@ class OpenSubtitlesProvider(SubtitleProvider):
             }
             expected_targets: set[Path] = set()
             for ep_num, subtitle, release_name, release_match in selected_options:
-                digest = hashlib.sha256(release_name.encode("utf-8")).hexdigest()[:10]
-                cache_name = safe_cache_component(show_name)
-                target_path = cache_dir / (
-                    f"{cache_name} - S{season:02d}E{ep_num:02d} - "
-                    f"{release_match}-{digest}.srt"
+                target_path = _subtitle_cache_target(
+                    cache_dir,
+                    show_name,
+                    season,
+                    ep_num,
+                    release_name,
+                    release_match,
                 )
                 expected_targets.add(target_path)
                 if target_path.is_file():
@@ -644,8 +743,8 @@ class OpenSubtitlesProvider(SubtitleProvider):
                     release_variant_counts.get(item.release_match, 0) + 1
                 )
             logger.info(
-                "Release-aware subtitle selection retained {} variants across "
-                "{} episodes: {}",
+                "{} subtitle selection retained {} variants across {} episodes: {}",
+                "Alternate-release" if alternate_only else "Release-aware",
                 len(downloaded_subtitles),
                 len({
                     item.episode_info.episode
@@ -657,17 +756,18 @@ class OpenSubtitlesProvider(SubtitleProvider):
                     for key in sorted(release_variant_counts)
                 ),
             )
-            _write_season_manifest(
-                cache_dir,
-                season=season,
-                tmdb_id=tmdb_id,
-                episode_numbers=available_episodes,
-                complete=bool(available_episodes)
-                and bool(expected_targets)
-                and all(path.is_file() for path in expected_targets),
-                release_profile_key=release_profile.key,
-                release_variant_counts=release_variant_counts,
-            )
+            if not alternate_only:
+                _write_season_manifest(
+                    cache_dir,
+                    season=season,
+                    tmdb_id=tmdb_id,
+                    episode_numbers=available_episodes,
+                    complete=bool(available_episodes)
+                    and bool(expected_targets)
+                    and all(path.is_file() for path in expected_targets),
+                    release_profile_key=release_profile.key,
+                    release_variant_counts=release_variant_counts,
+                )
             return downloaded_subtitles
 
         except ApiCredentialError as error:
@@ -678,7 +778,13 @@ class OpenSubtitlesProvider(SubtitleProvider):
                 self.client = None
                 self._authenticate()
                 if self.client:
-                    return self.get_subtitles(show_name, season, video_files, tmdb_id)
+                    return self._get_subtitles(
+                        show_name,
+                        season,
+                        video_files,
+                        tmdb_id,
+                        alternate_only=alternate_only,
+                    )
             logger.error(str(error))
             return downloaded_subtitles
         except Exception as e:

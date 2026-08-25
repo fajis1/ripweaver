@@ -7,6 +7,7 @@ from mkv_episode_matcher.core.matcher import MultiSegmentMatcher
 from mkv_episode_matcher.core.models import EpisodeInfo, MatchCandidate, SubtitleFile
 from mkv_episode_matcher.core.providers.subtitles import OpenSubtitlesProvider
 from mkv_episode_matcher.core.subtitle_releases import (
+    alternate_release_queries,
     classify_subtitle_release,
     infer_subtitle_release_profile,
     select_subtitle_release_options,
@@ -67,6 +68,39 @@ def test_superfan_profile_keeps_canonical_series_and_classifies_releases():
     assert classify_subtitle_release("The.Office.S05E10.HDTV", profile) == "generic"
 
 
+@pytest.mark.parametrize(
+    ("label", "expected_key"),
+    (
+        ("Extended Edition", "extended"),
+        ("Uncut", "extended"),
+        ("Unrated", "unrated"),
+        ("Supercut", "supercut"),
+        ("Director's Cut", "directors_cut"),
+    ),
+)
+def test_alternate_cut_profiles_preserve_the_canonical_series(label, expected_key):
+    profile = infer_subtitle_release_profile(f"Example Show {label}")
+
+    assert profile.key == expected_key
+    assert profile.canonical_series_name == "Example Show"
+    assert classify_subtitle_release(f"Example.Show.{label}.S01E01", profile) == (
+        "exact"
+    )
+
+
+def test_failover_queries_are_bounded_and_exclude_the_already_requested_profile():
+    profile = infer_subtitle_release_profile("The Office Superfan Episodes")
+
+    queries = alternate_release_queries(profile, 7)
+
+    assert 1 <= len(queries) <= 6
+    assert all(query.startswith("The Office ") for query in queries)
+    assert all("Superfan" not in query for query in queries)
+    assert any("Unrated" in query for query in queries)
+    assert any("Supercut" in query for query in queries)
+    assert any("Director's Cut" in query for query in queries)
+
+
 def test_release_ranking_keeps_two_options_and_prefers_exact_metadata():
     profile = infer_subtitle_release_profile("The Office Superfan Episodes")
     regular = _candidate("The.Office.S05E10.HDTV.srt")
@@ -121,6 +155,33 @@ def test_provider_downloads_bounded_superfan_variants_and_restores_metadata(tmp_
     cached = provider.get_subtitles("The Office Superfan Episodes", 5, [])
     assert len(cached) == 2
     assert {item.release_match for item in cached} == {"exact", "compatible"}
+
+
+def test_provider_failover_downloads_only_previously_untested_release(tmp_path):
+    provider, searches = _provider(
+        tmp_path,
+        (
+            _candidate("The.Office.S05E10.HDTV.srt"),
+            _candidate("The.Office.S05E10.Extended.Cut.srt"),
+            _candidate("The.Office.Superfan.Episodes.S05E10.PCOK.srt"),
+        ),
+    )
+    initial = provider.get_subtitles("The Office Superfan Episodes", 5, [])
+    initial_search_count = len(searches)
+
+    alternates = provider.get_alternate_subtitles(
+        "The Office Superfan Episodes", 5, []
+    )
+
+    assert {item.release_match for item in initial} == {"exact", "compatible"}
+    assert len(alternates) == 1
+    assert alternates[0].release_match == "generic"
+    failover_queries = [
+        str(spec["query"]) for spec in searches[initial_search_count:]
+    ]
+    assert 1 <= len(failover_queries) <= 6
+    assert any("Supercut" in query for query in failover_queries)
+    assert any("Unrated" in query for query in failover_queries)
 
 
 def test_matcher_collapses_release_variants_to_one_vote_per_episode(

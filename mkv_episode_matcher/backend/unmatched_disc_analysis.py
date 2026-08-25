@@ -1008,6 +1008,20 @@ def _accept_residual_subtitle_candidates(
     return accepted
 
 
+def _merge_subtitle_candidate_rankings(
+    *rankings: list[tuple[float, int, EpisodeCatalogEntry]],
+) -> list[tuple[float, int, EpisodeCatalogEntry]]:
+    """Keep the strongest independently scored reference for each episode."""
+
+    by_episode: dict[str, tuple[float, int, EpisodeCatalogEntry]] = {}
+    for ranking in rankings:
+        for candidate in ranking:
+            prior = by_episode.get(candidate[2].episode_id)
+            if prior is None or candidate[:2] > prior[:2]:
+                by_episode[candidate[2].episode_id] = candidate
+    return sorted(by_episode.values(), key=lambda value: value[0], reverse=True)
+
+
 def _ordered_neighbor_scope(
     season: int,
     episodes: tuple[int, ...],
@@ -1141,6 +1155,8 @@ def match_opensubtitles_seasons(  # noqa: C901 - direct and residual audit ledge
     diagnostic_details: dict[str, dict[str, object]] | None = None,
     prior_disc_assignments: bool = False,
     candidate_evaluations: dict[str, list[dict[str, object]]] | None = None,
+    release_failover_attempted: set[int] | None = None,
+    allow_release_failover: bool = True,
 ) -> tuple[dict[str, EpisodeCatalogEntry], dict[str, tuple[float, float]]]:
     """Match cached Whisper excerpts independently against bounded season subtitles."""
 
@@ -1148,12 +1164,20 @@ def match_opensubtitles_seasons(  # noqa: C901 - direct and residual audit ledge
         return {}, {}
     provider = provider or provider_factory()
     reference_cache = reference_cache if reference_cache is not None else {}
+    release_failover_attempted = (
+        release_failover_attempted
+        if release_failover_attempted is not None
+        else set()
+    )
     catalog_by_number = {(entry.season, entry.episode): entry for entry in catalog}
     remaining = {item.file_id: item for item in files}
     accepted = {}
     diagnostics = {}
     used = set()
     residual_scored: dict[str, list[tuple[float, int, EpisodeCatalogEntry]]] = {}
+    initial_scored_by_season: dict[
+        int, dict[str, list[tuple[float, int, EpisodeCatalogEntry]]]
+    ] = {}
     for season in seasons:
         if not remaining:
             break
@@ -1177,9 +1201,11 @@ def match_opensubtitles_seasons(  # noqa: C901 - direct and residual audit ledge
             rejected_candidates=rejected_candidates,
             phase="direct",
         )
+        initial_scored_by_season[season] = scored
         for file_id, candidates in scored.items():
-            residual_scored.setdefault(file_id, []).extend(candidates)
-            residual_scored[file_id].sort(key=lambda value: value[0], reverse=True)
+            residual_scored[file_id] = _merge_subtitle_candidate_rankings(
+                residual_scored.get(file_id, []), candidates
+            )
         season_matches, season_diagnostics = _accept_subtitle_candidates(
             scored,
             min_confidence,
@@ -1200,6 +1226,114 @@ def match_opensubtitles_seasons(  # noqa: C901 - direct and residual audit ledge
                 candidate_evaluations[file_id].extend(scored_audit.get(file_id, []))
         for file_id in season_matches:
             remaining.pop(file_id, None)
+    # Only broaden provider releases after every normal season reference has
+    # failed for the remaining titles. This prevents an alternate cut from one
+    # season pre-empting a valid normal reference in the neighboring season.
+    for season in seasons:
+        if not remaining:
+            break
+        alternate_getter = getattr(provider, "get_alternate_subtitles", None)
+        should_try_alternates = (
+            allow_release_failover
+            and bool(remaining)
+            and season not in release_failover_attempted
+            and tmdb_id > 0
+            and callable(alternate_getter)
+            and any(item.transcript_excerpts for item in remaining.values())
+        )
+        if should_try_alternates:
+            release_failover_attempted.add(season)
+            alternate_failure_reason = None
+            try:
+                alternate_references = tuple(
+                    alternate_getter(series_name, season, [], tmdb_id)
+                )
+            except Exception as exc:
+                logger.info(
+                    "Alternate subtitle release lookup failed safely: {}",
+                    type(exc).__name__,
+                )
+                alternate_failure_reason = "alternate_release_lookup_failed"
+                alternate_references = ()
+            if diagnostic_details is not None:
+                for file_id in remaining:
+                    diagnostic_details.setdefault(file_id, {})[
+                        "subtitle_reference_pass"
+                    ] = "alternate-release-failover"
+            if not alternate_references and candidate_evaluations is not None:
+                for file_id in remaining:
+                    candidate_evaluations.setdefault(file_id, []).append({
+                        "phase": "alternate-release-failover",
+                        "candidate_episode_id": None,
+                        "candidate_episode_title": None,
+                        "season": season,
+                        "episode": None,
+                        "disposition": "review",
+                        "reason": alternate_failure_reason
+                        or "no_untested_subtitle_references",
+                    })
+            if alternate_references:
+                references = (
+                    tuple(reference_cache.get(season, ())) + alternate_references
+                )
+                reference_cache[season] = references
+                failover_rejected = _missing_subtitle_reference_audit(
+                    tuple(remaining.values()),
+                    references,
+                    catalog,
+                    season,
+                    phase="alternate-release-failover",
+                )
+                failover_scored = _subtitle_candidates(
+                    tuple(remaining.values()),
+                    alternate_references,
+                    catalog_by_number,
+                    asr,
+                    min_confidence=min_confidence,
+                    rejected_candidates=failover_rejected,
+                    phase="alternate-release-failover",
+                )
+                combined_scored = {}
+                for file_id in remaining:
+                    combined_scored[file_id] = _merge_subtitle_candidate_rankings(
+                        initial_scored_by_season.get(season, {}).get(file_id, []),
+                        failover_scored.get(file_id, []),
+                    )
+                    residual_scored[file_id] = _merge_subtitle_candidate_rankings(
+                        residual_scored.get(file_id, []),
+                        failover_scored.get(file_id, []),
+                    )
+                failover_matches, failover_diagnostics = _accept_subtitle_candidates(
+                    combined_scored,
+                    min_confidence,
+                    used,
+                    diagnostic_details=diagnostic_details,
+                )
+                if diagnostic_details is not None:
+                    for file_id in combined_scored:
+                        if file_id in diagnostic_details:
+                            diagnostic_details[file_id]["subtitle_reference_pass"] = (
+                                "alternate-release-failover"
+                            )
+                accepted.update(failover_matches)
+                diagnostics.update(failover_diagnostics)
+                if candidate_evaluations is not None:
+                    details = diagnostic_details or {}
+                    failover_audit = _scored_candidate_audit(
+                        combined_scored,
+                        failover_matches,
+                        details,
+                        phase="alternate-release-failover",
+                    )
+                    for file_id in {**failover_rejected, **failover_audit}:
+                        candidate_evaluations.setdefault(file_id, []).extend(
+                            failover_rejected.get(file_id, [])
+                        )
+                        candidate_evaluations[file_id].extend(
+                            failover_audit.get(file_id, [])
+                        )
+                for file_id in failover_matches:
+                    remaining.pop(file_id, None)
     residual_details = diagnostic_details if diagnostic_details is not None else {}
     used_before_residual = set(used)
     residual_matches = (
@@ -2023,6 +2157,7 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
     )
     subtitle_provider = None
     subtitle_reference_cache: dict[int, tuple] = {}
+    subtitle_release_failover_attempted: set[int] = set()
     anchors = _anchor_titles(selected)
     anchor_evidence: tuple[UnmatchedFileEvidence, ...] = ()
     collected_dossier = None
@@ -2242,6 +2377,7 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
                 diagnostic_details=opensubtitles_details,
                 prior_disc_assignments=bool(disc_episodes),
                 candidate_evaluations=opensubtitles_candidate_evaluations,
+                release_failover_attempted=subtitle_release_failover_attempted,
             )
             unresolved_ids = {
                 item.file_id for item in gemini_evidence if item.file_id not in proposed
@@ -2302,6 +2438,9 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
                             diagnostic_details=supplemental_details,
                             prior_disc_assignments=bool(disc_episodes or proposed),
                             candidate_evaluations=supplemental_evaluations,
+                            release_failover_attempted=(
+                                subtitle_release_failover_attempted
+                            ),
                         )
                     )
                     proposed.update(supplemental_matches)
@@ -2361,10 +2500,13 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
                         ),
                         "transcript_window_count": len(item.transcript_excerpts),
                         "subtitle_pass": (
-                            "offset-six-window-retry"
-                            if len(item.transcript_excerpts)
-                            > first_pass_window_counts.get(item.file_id, 0)
-                            else "initial-six-window"
+                            details.get("subtitle_reference_pass")
+                            or (
+                                "offset-six-window-retry"
+                                if len(item.transcript_excerpts)
+                                > first_pass_window_counts.get(item.file_id, 0)
+                                else "initial-six-window"
+                            )
                         ),
                         "candidate_episode_id": details.get("candidate_episode_id"),
                         "candidate_episode_title": (
@@ -2780,6 +2922,7 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
                                     reference_cache=subtitle_reference_cache,
                                     diagnostic_details=outside_details,
                                     candidate_evaluations=outside_evaluations,
+                                    allow_release_failover=False,
                                 )
                             )
                             outside_by_id = {
