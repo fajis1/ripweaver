@@ -137,6 +137,133 @@ def test_identification_outcome_is_remembered_by_disc_title(tmp_path):
         )
 
 
+def _seed_incoherent_disc_queue(tmp_path, *, coherent=False):
+    store = PipelineQueueStore(tmp_path / "quarantine-pipeline.sqlite3")
+    fingerprint = "0123456789abcdef"
+    media_ids = {index: f"disc-title-{index:03d}" for index in range(1, 9)}
+    wrong_episodes = (8, 12, 14, 4, 16, 17, 7, 19)
+    episodes = tuple(range(1, 9)) if coherent else wrong_episodes
+    store.remember_disc_matching_scope(fingerprint, tuple(range(1, 9)))
+
+    for title_index in range(1, 9):
+        source = tmp_path / f"title-{title_index:03d}.mkv"
+        source.write_bytes(f"verified-title-{title_index}".encode())
+        contract = tmp_path / f"title-{title_index:03d}.verified-rip.json"
+        contract.write_text(
+            json.dumps({
+                "mode": "verified-rip-contract",
+                "disc_fingerprint": fingerprint,
+                "title_index": title_index,
+                "source_path": str(source),
+                "source_size_bytes": source.stat().st_size,
+            }),
+            encoding="utf-8",
+        )
+        store.enqueue_verified_rip(
+            media_ids[title_index], build_artifact("rip", contract)
+        )
+
+    for title_index, episode in enumerate(episodes, start=1):
+        media_id = media_ids[title_index]
+        claimed = store.claim_next(
+            allowed_stages=("identify",), allowed_media_ids=(media_id,)
+        )
+        assert claimed is not None
+        identified = tmp_path / f"title-{title_index:03d}.identified.json"
+        identified.write_text(
+            json.dumps({
+                "mode": "identified-episode-contract",
+                "episode_id": f"S08E{episode:02d}",
+                "library_relative": (
+                    f"The Office/Season 08/The Office - S08E{episode:02d} - Test.mkv"
+                ),
+                "identification_order": ["tv-gemini"],
+            }),
+            encoding="utf-8",
+        )
+        store.complete_stage(
+            media_id, "identify", build_artifact("identify", identified)
+        )
+
+    for title_index in (1, 7):
+        media_id = media_ids[title_index]
+        claimed = store.claim_next(
+            allowed_stages=("transcode",), allowed_media_ids=(media_id,)
+        )
+        assert claimed is not None
+        transcode = tmp_path / f"title-{title_index:03d}.transcoded.json"
+        transcode.write_text(
+            json.dumps({
+                "mode": "verified-transcode-contract",
+                "episode_id": f"S08E{episodes[title_index - 1]:02d}",
+            }),
+            encoding="utf-8",
+        )
+        store.complete_stage(
+            media_id, "transcode", build_artifact("transcode", transcode)
+        )
+
+    title_seven = media_ids[7]
+    claimed = store.claim_next(
+        allowed_stages=("organize",), allowed_media_ids=(title_seven,)
+    )
+    assert claimed is not None
+    store.complete_stage(
+        title_seven, "organize", _artifact(tmp_path, title_seven, "organize")
+    )
+    return store, fingerprint, media_ids
+
+
+def test_incoherent_disc_identifications_are_atomically_quarantined(tmp_path):
+    store, fingerprint, media_ids = _seed_incoherent_disc_queue(tmp_path)
+    store.set_paused(True)
+
+    quarantined = store.quarantine_incoherent_disc_identifications(
+        fingerprint, (1, 2, 3, 4, 5, 6, 8)
+    )
+
+    assert [item.media_id for item in quarantined] == [
+        media_ids[index] for index in (1, 2, 3, 4, 5, 6, 8)
+    ]
+    assert all(
+        item.state == "queued" and item.stage == "identify" for item in quarantined
+    )
+    assert all(item.artifact.stage == "rip" for item in quarantined)
+    completed = store.get(media_ids[7])
+    assert completed.state == "completed"
+    assert completed.stage == "organize"
+    assert store.title_history(fingerprint) == {
+        7: {
+            "outcome_name": "The Office - S08E07 - Test.mkv",
+            "library_relative": ("The Office/Season 08/The Office - S08E07 - Test.mkv"),
+            "episode_id": "S08E07",
+        }
+    }
+    assert store.is_paused() is True
+    assert all(
+        store.list_events(media_ids[index])[-1].event_type
+        == "incoherent_disc_identification_quarantined"
+        for index in (1, 2, 3, 4, 5, 6, 8)
+    )
+
+
+def test_disc_identification_quarantine_refuses_unpaused_or_coherent_queue(tmp_path):
+    store, fingerprint, _media_ids = _seed_incoherent_disc_queue(tmp_path / "unpaused")
+    with pytest.raises(PipelineQueueError, match="requires a paused queue"):
+        store.quarantine_incoherent_disc_identifications(
+            fingerprint, (1, 2, 3, 4, 5, 6, 8)
+        )
+
+    coherent, fingerprint, _media_ids = _seed_incoherent_disc_queue(
+        tmp_path / "coherent", coherent=True
+    )
+    coherent.set_paused(True)
+    with pytest.raises(PipelineQueueError, match="history is coherent"):
+        coherent.quarantine_incoherent_disc_identifications(
+            fingerprint, (1, 2, 3, 4, 5, 6, 8)
+        )
+
+
 def _store(tmp_path):
     return PipelineQueueStore(tmp_path / "private-pipeline.sqlite3")
 
