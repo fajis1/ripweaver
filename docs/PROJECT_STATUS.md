@@ -4213,7 +4213,8 @@ for review rather than forcing a TV identity.
 - The reviewed range is path-free and dialogue-free in the identification
   audit and API response. Invalid, incomplete, seasonless, reversed, or overly
   broad ranges stop before the background analysis begins.
-- Focused Python tests, Ruff, and frontend lint cover the release-hint handoff,
+- The full Python suite, focused Ruff checks, frontend lint/type checking, and
+  the production build pass with coverage for the release-hint handoff,
   candidate filtering, and request forwarding. Diagnosis used only saved,
   dialogue-redacted audit data; no optical disc, MKV, transcode, organization,
   or live provider operation was performed.

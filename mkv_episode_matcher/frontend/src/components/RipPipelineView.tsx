@@ -3120,6 +3120,10 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
   }, [selectedJobId, selectedJobState]);
   const suggestedUnmatchedSeries = inferCanonicalSeriesFromDiscLabel(selectedDriveLabel);
   const suggestedSeason = inferDiscSeason(selectedDriveLabel);
+  useEffect(() => {
+    setUnmatchedEpisodeStart('');
+    setUnmatchedEpisodeEnd('');
+  }, [selectedDiscFingerprint]);
   const reviewedCoverageSeries = unmatchedSeriesName.trim() || suggestedUnmatchedSeries;
   useEffect(() => {
     if (!reviewedCoverageSeries) {
