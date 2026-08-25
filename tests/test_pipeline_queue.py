@@ -143,7 +143,7 @@ def _seed_incoherent_disc_queue(tmp_path, *, coherent=False):
     media_ids = {index: f"disc-title-{index:03d}" for index in range(1, 9)}
     wrong_episodes = (8, 12, 14, 4, 16, 17, 7, 19)
     episodes = tuple(range(1, 9)) if coherent else wrong_episodes
-    store.remember_disc_matching_scope(fingerprint, tuple(range(1, 9)))
+    store.remember_disc_matching_scope(fingerprint, (1, 2, 3, 4, 5, 6, 8))
 
     for title_index in range(1, 9):
         source = tmp_path / f"title-{title_index:03d}.mkv"

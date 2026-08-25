@@ -2881,6 +2881,10 @@ class PipelineQueueStore:
                 ):
                     raise PipelineQueueError("Disc matching scope is invalid")
                 scope = set(scope_values)
+                if scope != expected_set:
+                    raise PipelineQueueError(
+                        "Current disc matching scope differs from authorization"
+                    )
 
                 history_rows = connection.execute(
                     "SELECT title_index, episode_id FROM disc_title_history "
@@ -2890,39 +2894,9 @@ class PipelineQueueStore:
                 history = {
                     int(row["title_index"]): row["episode_id"] for row in history_rows
                 }
-                if set(history) != scope:
+                if not scope.issubset(history):
                     raise PipelineQueueError(
                         "Complete disc identification history is unavailable"
-                    )
-                parsed_assignments: list[tuple[int, int]] = []
-                for title_index in sorted(scope):
-                    episode_id = history[title_index]
-                    match = (
-                        _EPISODE_ID.fullmatch(episode_id)
-                        if isinstance(episode_id, str)
-                        else None
-                    )
-                    if match is None:
-                        raise PipelineQueueError(
-                            "Complete disc episode assignments are unavailable"
-                        )
-                    parsed_assignments.append((
-                        int(match.group(1)),
-                        int(match.group(2)),
-                    ))
-                seasons = {season for season, _episode in parsed_assignments}
-                episodes = [episode for _season, episode in parsed_assignments]
-                coherent = (
-                    len(seasons) == 1
-                    and len(set(episodes)) == len(episodes)
-                    and (
-                        len(episodes) < 2
-                        or max(episodes) - min(episodes) + 1 <= len(scope)
-                    )
-                )
-                if coherent:
-                    raise PipelineQueueError(
-                        "Disc identification history is coherent; quarantine refused"
                     )
 
                 rows = connection.execute(
@@ -2961,6 +2935,21 @@ class PipelineQueueStore:
                     raise PipelineQueueError(
                         "Exact verified disc title set is unavailable"
                     )
+                if not set(history).issubset(disc_items):
+                    raise PipelineQueueError(
+                        "Complete verified disc history is unavailable"
+                    )
+                preserved_history_titles = set(history) - scope
+                completed_history_titles = {
+                    title_index
+                    for title_index in preserved_history_titles
+                    if disc_items[title_index][0]["state"] == "completed"
+                    and disc_items[title_index][0]["stage"] == "organize"
+                }
+                if preserved_history_titles != completed_history_titles:
+                    raise PipelineQueueError(
+                        "Unselected disc history is not completed organization"
+                    )
                 mutable_titles = {
                     title_index
                     for title_index, (row, _payload) in disc_items.items()
@@ -2970,6 +2959,37 @@ class PipelineQueueStore:
                 if mutable_titles != expected_set:
                     raise PipelineQueueError(
                         "Current mutable disc title set differs from authorization"
+                    )
+
+                parsed_assignments: list[tuple[int, int]] = []
+                for title_index in sorted(history):
+                    episode_id = history[title_index]
+                    match = (
+                        _EPISODE_ID.fullmatch(episode_id)
+                        if isinstance(episode_id, str)
+                        else None
+                    )
+                    if match is None:
+                        raise PipelineQueueError(
+                            "Complete disc episode assignments are unavailable"
+                        )
+                    parsed_assignments.append((
+                        int(match.group(1)),
+                        int(match.group(2)),
+                    ))
+                seasons = {season for season, _episode in parsed_assignments}
+                episodes = [episode for _season, episode in parsed_assignments]
+                coherent = (
+                    len(seasons) == 1
+                    and len(set(episodes)) == len(episodes)
+                    and (
+                        len(episodes) < 2
+                        or max(episodes) - min(episodes) + 1 <= len(history)
+                    )
+                )
+                if coherent:
+                    raise PipelineQueueError(
+                        "Disc identification history is coherent; quarantine refused"
                     )
 
                 selected: list[tuple[int, sqlite3.Row]] = []
