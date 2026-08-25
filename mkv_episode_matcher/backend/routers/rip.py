@@ -5226,6 +5226,7 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
                 "independent_episode_evidence_required",
                 "whole_disc_coherence_review_required",
                 "gemini_descriptive_review_required",
+                "gemini_analysis_interrupted",
                 "gemini_analysis_failed",
                 "gemini_audio_evidence_insufficient",
                 "gemini_catalog_unavailable",
@@ -5608,6 +5609,7 @@ def apply_manual_episode_identification(  # noqa: C901 - guarded review boundary
                 "all_season_sequence_review_required",
                 "independent_episode_evidence_required",
                 "whole_disc_coherence_review_required",
+                "gemini_analysis_interrupted",
                 "gemini_analysis_failed",
                 "special_feature_manual_assignment_required",
                 "gemini_descriptive_review_required",
@@ -7462,6 +7464,7 @@ def execute_pipeline_gemini_fallback(  # noqa: C901
         raise HTTPException(status_code=400, detail="Gemini media IDs must be unique")
     eligible_codes = {
         "gemini_evidence_required",
+        "gemini_analysis_interrupted",
         "gemini_analysis_failed",
         "gemini_audio_evidence_insufficient",
         "gemini_catalog_unavailable",

@@ -28,6 +28,7 @@ _AUTOMATIC_UNMATCHED_CODES = frozenset({
 })
 _AUTOMATIC_DISC_RETRY_CODES = frozenset({
     "all_season_analysis_failed",
+    "gemini_analysis_interrupted",
     "gemini_analysis_failed",
 })
 

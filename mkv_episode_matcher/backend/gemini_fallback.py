@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from inspect import signature
 from pathlib import Path
 from uuid import uuid4
 
@@ -73,6 +74,7 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
 
     if not media_ids:
         raise PipelineQueueError("No Gemini-held items were selected")
+    analysis_run_id = analysis_run_id or uuid4().hex
     requested_media_ids = media_ids
     held = [store.get(media_id) for media_id in media_ids]
     payloads = []
@@ -129,9 +131,9 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
         store.record_silent_video_review(media_id, category)
         visual_categories[media_id] = category
 
-    evidence_options = (
-        {"analysis_run_id": analysis_run_id} if analysis_run_id is not None else {}
-    )
+    evidence_options = {}
+    if "analysis_run_id" in signature(collect_dossier_evidence).parameters:
+        evidence_options["analysis_run_id"] = analysis_run_id
     evidence, dossier = collect_dossier_evidence(
         tuple(zip(held, payloads, strict=True)),
         config,
@@ -255,25 +257,47 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
             summary={"catalogue_available": catalogue is not None},
         )
     if descriptive and comparison_evidence:
-        review = GeminiDescriptiveRanker(
-            model=config.gemini_model
-        ).describe_with_configured_keys(
-            comparison_evidence,
-            release_hint=release_hint,
-            prior_attempts={
+        ranker = GeminiDescriptiveRanker(model=config.gemini_model)
+        ranker_kwargs = {
+            "release_hint": release_hint,
+            "prior_attempts": {
                 media_id: dossier.safe_attempts(media_id) for media_id in comparison_ids
             },
+        }
+        if (
+            "transaction_recorder"
+            in signature(ranker.describe_with_configured_keys).parameters
+        ):
+            ranker_kwargs["transaction_recorder"] = (
+                lambda transaction: dossier.record_gemini_provider_transaction(
+                    analysis_run_id, transaction
+                )
+            )
+        review = ranker.describe_with_configured_keys(
+            comparison_evidence,
+            **ranker_kwargs,
         )
         results.update({item.file_id: item for item in review.matches})
     elif not descriptive:
-        review = GeminiEpisodeRanker(
-            model=config.gemini_model
-        ).rank_with_configured_keys(
-            comparison_evidence,
-            candidates,
-            prior_attempts={
+        ranker = GeminiEpisodeRanker(model=config.gemini_model)
+        ranker_kwargs = {
+            "prior_attempts": {
                 media_id: dossier.safe_attempts(media_id) for media_id in comparison_ids
             },
+        }
+        if (
+            "transaction_recorder"
+            in signature(ranker.rank_with_configured_keys).parameters
+        ):
+            ranker_kwargs["transaction_recorder"] = (
+                lambda transaction: dossier.record_gemini_provider_transaction(
+                    analysis_run_id, transaction
+                )
+            )
+        review = ranker.rank_with_configured_keys(
+            comparison_evidence,
+            candidates,
+            **ranker_kwargs,
         )
         results.update({item.file_id: item for item in review.matches})
     for media_id, movie_match in related_matches.items():

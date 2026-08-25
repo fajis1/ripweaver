@@ -5,6 +5,7 @@ import pytest
 
 from mkv_episode_matcher.backend import identification_dossier as dossier_module
 from mkv_episode_matcher.backend.identification_dossier import (
+    MAX_GEMINI_RAW_RESPONSE_BYTES,
     IdentificationDossierStore,
     collect_dossier_evidence,
     collect_supplemental_dossier_evidence,
@@ -512,3 +513,38 @@ def test_private_gemini_review_cache_reuses_exact_request_digest(tmp_path):
 
     assert restored == review
     assert store.load_gemini_review(digest, model="different-model") is None
+
+
+def test_private_gemini_provider_trace_retains_and_bounds_raw_response(tmp_path):
+    store = IdentificationDossierStore(tmp_path / "private")
+    analysis_run_id = "a" * 32
+    raw_response = "private returned dialogue " + ("x" * MAX_GEMINI_RAW_RESPONSE_BYTES)
+
+    store.record_gemini_provider_transaction(
+        analysis_run_id,
+        {
+            "schema_version": 1,
+            "model": "gemini-test",
+            "phase": "initial",
+            "attempt": 1,
+            "request_sha256": "b" * 64,
+            "file_ids": ["media-1"],
+            "candidate_episode_ids": ["S07E22", "S07E23"],
+            "status_code": 200,
+            "elapsed_ms": 123,
+            "outcome": "response_invalid",
+            "error_type": "GeminiResponseError",
+            "diagnostic": "Gemini returned invalid structured output",
+            "raw_response_text": raw_response,
+        },
+    )
+
+    events = store.private_gemini_provider_transactions(analysis_run_id)
+    assert len(events) == 1
+    assert events[0]["raw_response_text"].startswith("private returned dialogue")
+    assert events[0]["raw_response_bytes"] == len(raw_response.encode("utf-8"))
+    assert events[0]["raw_response_truncated"] is True
+    assert len(events[0]["raw_response_text"].encode("utf-8")) == (
+        MAX_GEMINI_RAW_RESPONSE_BYTES
+    )
+    assert store.audit_events("media-1") == ()

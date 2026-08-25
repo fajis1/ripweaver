@@ -51,6 +51,8 @@ _AUDIT_PHASE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _ANALYSIS_RUN_ID = re.compile(r"^[0-9a-f]{32}$")
 SCHEMA_VERSION = 1
 AUDIT_SCHEMA_VERSION = 1
+GEMINI_TRANSACTION_SCHEMA_VERSION = 1
+MAX_GEMINI_RAW_RESPONSE_BYTES = 1024 * 1024
 SAMPLING_VERSION = "twelve-window-fallback-v3"
 
 
@@ -120,6 +122,11 @@ class IdentificationDossierStore:
     def _audit_path(self, media_id: str) -> Path:
         return self.root / f"{self._check_id(media_id)}.identification-audit.jsonl"
 
+    def _gemini_transaction_path(self, analysis_run_id: str) -> Path:
+        if _ANALYSIS_RUN_ID.fullmatch(analysis_run_id) is None:
+            raise PipelineQueueError("Identification analysis run ID is invalid")
+        return self.root / "gemini-provider-traces" / f"{analysis_run_id}.private.jsonl"
+
     @staticmethod
     def _validate_safe_summary(
         summary: dict[str, str | int | float | bool | None | list[str]],
@@ -159,6 +166,151 @@ class IdentificationDossierStore:
                 )
             stream.flush()
             os.fsync(stream.fileno())
+
+    def record_gemini_provider_transaction(
+        self,
+        analysis_run_id: str,
+        transaction: dict[str, object],
+    ) -> None:
+        """Append one bounded raw provider response to private diagnostics only."""
+
+        path = self._gemini_transaction_path(analysis_run_id)
+        required = {
+            "schema_version",
+            "model",
+            "phase",
+            "attempt",
+            "request_sha256",
+            "file_ids",
+            "candidate_episode_ids",
+            "status_code",
+            "elapsed_ms",
+            "outcome",
+            "error_type",
+            "diagnostic",
+            "raw_response_text",
+        }
+        if set(transaction) != required:
+            raise PipelineQueueError("Gemini provider transaction is invalid")
+        model = transaction["model"]
+        phase = transaction["phase"]
+        attempt = transaction["attempt"]
+        request_sha256 = transaction["request_sha256"]
+        file_ids = transaction["file_ids"]
+        candidate_ids = transaction["candidate_episode_ids"]
+        status_code = transaction["status_code"]
+        elapsed_ms = transaction["elapsed_ms"]
+        outcome = transaction["outcome"]
+        error_type = transaction["error_type"]
+        diagnostic = transaction["diagnostic"]
+        raw_text = transaction["raw_response_text"]
+        if (
+            transaction["schema_version"] != GEMINI_TRANSACTION_SCHEMA_VERSION
+            or not isinstance(model, str)
+            or not 1 <= len(model) <= 120
+            or not isinstance(phase, str)
+            or _AUDIT_PHASE.fullmatch(phase) is None
+            or isinstance(attempt, bool)
+            or not isinstance(attempt, int)
+            or not 1 <= attempt <= 20
+            or not isinstance(request_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", request_sha256) is None
+            or not isinstance(file_ids, list)
+            or not 1 <= len(file_ids) <= 32
+            or any(
+                not isinstance(value, str) or _SAFE_ID.fullmatch(value) is None
+                for value in file_ids
+            )
+            or not isinstance(candidate_ids, list)
+            or len(candidate_ids) > 500
+            or any(
+                not isinstance(value, str) or _SAFE_ID.fullmatch(value) is None
+                for value in candidate_ids
+            )
+            or (
+                status_code is not None
+                and (
+                    isinstance(status_code, bool)
+                    or not isinstance(status_code, int)
+                    or not 100 <= status_code <= 599
+                )
+            )
+            or isinstance(elapsed_ms, bool)
+            or not isinstance(elapsed_ms, int)
+            or elapsed_ms < 0
+            or outcome
+            not in {
+                "accepted",
+                "credential_rejected",
+                "network_failure",
+                "provider_unavailable",
+                "rate_limited",
+                "request_rejected",
+                "response_invalid",
+            }
+            or (
+                error_type is not None
+                and (
+                    not isinstance(error_type, str)
+                    or _SAFE_ID.fullmatch(error_type) is None
+                )
+            )
+            or (
+                diagnostic is not None
+                and (not isinstance(diagnostic, str) or len(diagnostic) > 500)
+            )
+            or (raw_text is not None and not isinstance(raw_text, str))
+        ):
+            raise PipelineQueueError("Gemini provider transaction is invalid")
+
+        raw_bytes = raw_text.encode("utf-8") if raw_text is not None else b""
+        truncated = len(raw_bytes) > MAX_GEMINI_RAW_RESPONSE_BYTES
+        retained_raw = (
+            raw_bytes[:MAX_GEMINI_RAW_RESPONSE_BYTES].decode("utf-8", errors="replace")
+            if truncated
+            else raw_text
+        )
+        event = {
+            **transaction,
+            "analysis_run_id": analysis_run_id,
+            "raw_response_text": retained_raw,
+            "raw_response_bytes": len(raw_bytes),
+            "raw_response_sha256": hashlib.sha256(raw_bytes).hexdigest()
+            if raw_text is not None
+            else None,
+            "raw_response_truncated": truncated,
+            "recorded_at": datetime.now(UTC).isoformat(),
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8", newline="\n") as stream:
+            stream.write(json.dumps(event, ensure_ascii=True, sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+
+    def private_gemini_provider_transactions(
+        self, analysis_run_id: str
+    ) -> tuple[dict[str, object], ...]:
+        """Read private raw diagnostics for local troubleshooting and tests."""
+
+        path = self._gemini_transaction_path(analysis_run_id)
+        if not path.is_file():
+            return ()
+        try:
+            events = tuple(
+                json.loads(line)
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            raise PipelineQueueError("Gemini provider trace is unreadable") from exc
+        if any(
+            not isinstance(event, dict)
+            or event.get("schema_version") != GEMINI_TRANSACTION_SCHEMA_VERSION
+            or event.get("analysis_run_id") != analysis_run_id
+            for event in events
+        ):
+            raise PipelineQueueError("Gemini provider trace is unreadable")
+        return events
 
     def _load(self, media_id: str) -> dict | None:
         path = self._path(media_id)

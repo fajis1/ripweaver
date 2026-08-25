@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Protocol
 
 import requests
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from mkv_episode_matcher.core.credentials import (
@@ -194,6 +195,7 @@ class _DescriptiveResponseModel(BaseModel):
 class TransportResponse:
     status_code: int
     payload: dict
+    raw_text: str | None = None
 
 
 class GeminiTransport(Protocol):
@@ -204,6 +206,9 @@ class GeminiTransport(Protocol):
         body: dict,
         timeout_seconds: float,
     ) -> TransportResponse: ...
+
+
+GeminiTransactionRecorder = Callable[[dict[str, object]], None]
 
 
 class RequestsGeminiTransport:
@@ -226,13 +231,75 @@ class RequestsGeminiTransport:
             timeout=timeout_seconds,
         )
         try:
-            payload = response.json()
+            decoded = response.json()
         except ValueError:
             payload = {}
-        return TransportResponse(response.status_code, payload)
+        else:
+            payload = decoded if isinstance(decoded, dict) else {}
+        raw_text = response.text if isinstance(response.text, str) else None
+        if raw_text is None:
+            raw_text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        return TransportResponse(response.status_code, payload, raw_text)
 
 
 Sleep = Callable[[float], None]
+
+
+def _record_provider_transaction(
+    recorder: GeminiTransactionRecorder | None,
+    *,
+    model: str,
+    phase: str,
+    attempt: int,
+    body: dict,
+    files: tuple[UnmatchedFileEvidence, ...],
+    catalog: tuple[EpisodeCatalogEntry, ...],
+    status_code: int | None,
+    elapsed_ms: int,
+    outcome: str,
+    response: TransportResponse | None = None,
+    error_type: str | None = None,
+    diagnostic: str | None = None,
+) -> None:
+    """Emit one private provider transaction without affecting matching."""
+
+    if recorder is None:
+        return
+    encoded_request = json.dumps(
+        body, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    raw_text = None
+    if response is not None:
+        raw_text = response.raw_text
+        if raw_text is None:
+            raw_text = json.dumps(
+                response.payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+    event: dict[str, object] = {
+        "schema_version": 1,
+        "model": model,
+        "phase": phase,
+        "attempt": attempt,
+        "request_sha256": hashlib.sha256(encoded_request).hexdigest(),
+        "file_ids": [item.file_id for item in files],
+        "candidate_episode_ids": [item.episode_id for item in catalog],
+        "status_code": status_code,
+        "elapsed_ms": elapsed_ms,
+        "outcome": outcome,
+        "error_type": error_type,
+        "diagnostic": diagnostic,
+        "raw_response_text": raw_text,
+    }
+    try:
+        recorder(event)
+    except Exception as exc:  # Private diagnostics must never change a decision.
+        logger.warning(
+            "Gemini provider transaction was not persisted safely: {}",
+            type(exc).__name__,
+        )
 
 
 def _validate_file_evidence(item: UnmatchedFileEvidence) -> None:
@@ -252,9 +319,7 @@ def _validate_file_evidence(item: UnmatchedFileEvidence) -> None:
 def _safe_subtitle_comparisons(
     files: tuple[UnmatchedFileEvidence, ...],
     catalog: tuple[EpisodeCatalogEntry, ...],
-    comparisons: Mapping[
-        str, tuple[GeminiSubtitleComparisonEvidence, ...]
-    ] | None,
+    comparisons: Mapping[str, tuple[GeminiSubtitleComparisonEvidence, ...]] | None,
 ) -> dict[str, list[dict[str, object]]]:
     if comparisons is None:
         return {}
@@ -390,9 +455,8 @@ def build_gemini_request(  # noqa: C901 - strict request validation
     prior_attempts: Mapping[str, tuple[dict[str, object], ...]] | None = None,
     existing_episode_ids: frozenset[str] | None = None,
     reviewer_scene_descriptions: Mapping[str, str] | None = None,
-    subtitle_comparisons: Mapping[
-        str, tuple[GeminiSubtitleComparisonEvidence, ...]
-    ] | None = None,
+    subtitle_comparisons: Mapping[str, tuple[GeminiSubtitleComparisonEvidence, ...]]
+    | None = None,
     review_phase: str = "initial",
     proposed_assignments: Mapping[str, str | None] | None = None,
 ) -> dict:
@@ -914,11 +978,11 @@ class GeminiEpisodeRanker:
         prior_attempts: Mapping[str, tuple[dict[str, object], ...]] | None = None,
         existing_episode_ids: frozenset[str] | None = None,
         reviewer_scene_descriptions: Mapping[str, str] | None = None,
-        subtitle_comparisons: Mapping[
-            str, tuple[GeminiSubtitleComparisonEvidence, ...]
-        ] | None = None,
+        subtitle_comparisons: Mapping[str, tuple[GeminiSubtitleComparisonEvidence, ...]]
+        | None = None,
         review_phase: str = "initial",
         proposed_assignments: Mapping[str, str | None] | None = None,
+        transaction_recorder: GeminiTransactionRecorder | None = None,
     ) -> GeminiReviewPlan:
         if credential not in ("gemini-primary", "gemini-paid"):
             raise ValueError("Gemini credential name is invalid")
@@ -936,6 +1000,7 @@ class GeminiEpisodeRanker:
             proposed_assignments=proposed_assignments,
         )
         for attempt in range(self.max_retries + 1):
+            request_started = time.perf_counter()
             try:
                 response = self.transport.send(
                     api_key=api_key,
@@ -943,6 +1008,20 @@ class GeminiEpisodeRanker:
                     timeout_seconds=self.timeout_seconds,
                 )
             except (requests.RequestException, ConnectionError, TimeoutError) as exc:
+                _record_provider_transaction(
+                    transaction_recorder,
+                    model=self.model,
+                    phase=review_phase,
+                    attempt=attempt + 1,
+                    body=body,
+                    files=files,
+                    catalog=catalog,
+                    status_code=None,
+                    elapsed_ms=round((time.perf_counter() - request_started) * 1000),
+                    outcome="network_failure",
+                    error_type=type(exc).__name__,
+                    diagnostic="provider request did not return a response",
+                )
                 if attempt >= self.max_retries:
                     raise ApiServiceError(
                         "Gemini", None, f"network failure: {type(exc).__name__}"
@@ -951,12 +1030,44 @@ class GeminiEpisodeRanker:
                 continue
 
             if response.status_code in (401, 403):
+                _record_provider_transaction(
+                    transaction_recorder,
+                    model=self.model,
+                    phase=review_phase,
+                    attempt=attempt + 1,
+                    body=body,
+                    files=files,
+                    catalog=catalog,
+                    status_code=response.status_code,
+                    elapsed_ms=round((time.perf_counter() - request_started) * 1000),
+                    outcome="credential_rejected",
+                    response=response,
+                    diagnostic="provider rejected the configured credential",
+                )
                 raise ApiCredentialError(
                     credential,
                     "rejected by the provider",
                     status_code=response.status_code,
                 )
             if response.status_code == 429 or response.status_code >= 500:
+                _record_provider_transaction(
+                    transaction_recorder,
+                    model=self.model,
+                    phase=review_phase,
+                    attempt=attempt + 1,
+                    body=body,
+                    files=files,
+                    catalog=catalog,
+                    status_code=response.status_code,
+                    elapsed_ms=round((time.perf_counter() - request_started) * 1000),
+                    outcome=(
+                        "rate_limited"
+                        if response.status_code == 429
+                        else "provider_unavailable"
+                    ),
+                    response=response,
+                    diagnostic="provider requested a bounded retry",
+                )
                 if attempt < self.max_retries:
                     self.sleep(2**attempt)
                     continue
@@ -967,6 +1078,20 @@ class GeminiEpisodeRanker:
                 )
                 raise ApiServiceError("Gemini", response.status_code, reason)
             if response.status_code >= 400:
+                _record_provider_transaction(
+                    transaction_recorder,
+                    model=self.model,
+                    phase=review_phase,
+                    attempt=attempt + 1,
+                    body=body,
+                    files=files,
+                    catalog=catalog,
+                    status_code=response.status_code,
+                    elapsed_ms=round((time.perf_counter() - request_started) * 1000),
+                    outcome="request_rejected",
+                    response=response,
+                    diagnostic="provider did not accept the request",
+                )
                 raise ApiServiceError(
                     "Gemini",
                     response.status_code,
@@ -975,10 +1100,38 @@ class GeminiEpisodeRanker:
             try:
                 matches = _parse_provider_response(response.payload, files, catalog)
             except GeminiResponseError as exc:
+                _record_provider_transaction(
+                    transaction_recorder,
+                    model=self.model,
+                    phase=review_phase,
+                    attempt=attempt + 1,
+                    body=body,
+                    files=files,
+                    catalog=catalog,
+                    status_code=response.status_code,
+                    elapsed_ms=round((time.perf_counter() - request_started) * 1000),
+                    outcome="response_invalid",
+                    response=response,
+                    error_type=type(exc).__name__,
+                    diagnostic=str(exc),
+                )
                 if attempt >= self.max_retries:
                     raise
                 body = _validation_retry_body(body, exc, attempt)
                 continue
+            _record_provider_transaction(
+                transaction_recorder,
+                model=self.model,
+                phase=review_phase,
+                attempt=attempt + 1,
+                body=body,
+                files=files,
+                catalog=catalog,
+                status_code=response.status_code,
+                elapsed_ms=round((time.perf_counter() - request_started) * 1000),
+                outcome="accepted",
+                response=response,
+            )
             return GeminiReviewPlan(
                 mode="gemini-unmatched-review-plan",
                 model=self.model,
@@ -994,11 +1147,11 @@ class GeminiEpisodeRanker:
         prior_attempts: Mapping[str, tuple[dict[str, object], ...]] | None = None,
         existing_episode_ids: frozenset[str] | None = None,
         reviewer_scene_descriptions: Mapping[str, str] | None = None,
-        subtitle_comparisons: Mapping[
-            str, tuple[GeminiSubtitleComparisonEvidence, ...]
-        ] | None = None,
+        subtitle_comparisons: Mapping[str, tuple[GeminiSubtitleComparisonEvidence, ...]]
+        | None = None,
         review_phase: str = "initial",
         proposed_assignments: Mapping[str, str | None] | None = None,
+        transaction_recorder: GeminiTransactionRecorder | None = None,
     ) -> GeminiReviewPlan:
         """Try primary then paid key, with one interactive auth recovery each."""
 
@@ -1024,6 +1177,7 @@ class GeminiEpisodeRanker:
                         subtitle_comparisons=subtitle_comparisons,
                         review_phase=review_phase,
                         proposed_assignments=proposed_assignments,
+                        transaction_recorder=transaction_recorder,
                     )
                 except ApiCredentialError as exc:
                     if auth_attempt == 0 and request_credential_recovery(exc):
@@ -1046,7 +1200,7 @@ class GeminiEpisodeRanker:
 class GeminiDescriptiveRanker(GeminiEpisodeRanker):
     """Bounded catalogue-free classifier producing provisional safe names."""
 
-    def describe_with_key(
+    def describe_with_key(  # noqa: C901 - bounded provider status handling
         self,
         files: tuple[UnmatchedFileEvidence, ...],
         *,
@@ -1054,6 +1208,7 @@ class GeminiDescriptiveRanker(GeminiEpisodeRanker):
         api_key: str,
         credential: CredentialName,
         prior_attempts: Mapping[str, tuple[dict[str, object], ...]] | None = None,
+        transaction_recorder: GeminiTransactionRecorder | None = None,
     ) -> GeminiDescriptivePlan:
         if credential not in ("gemini-primary", "gemini-paid"):
             raise ValueError("Gemini credential name is invalid")
@@ -1066,6 +1221,7 @@ class GeminiDescriptiveRanker(GeminiEpisodeRanker):
             prior_attempts=prior_attempts,
         )
         for attempt in range(self.max_retries + 1):
+            request_started = time.perf_counter()
             try:
                 response = self.transport.send(
                     api_key=api_key,
@@ -1073,6 +1229,20 @@ class GeminiDescriptiveRanker(GeminiEpisodeRanker):
                     timeout_seconds=self.timeout_seconds,
                 )
             except (requests.RequestException, ConnectionError, TimeoutError) as exc:
+                _record_provider_transaction(
+                    transaction_recorder,
+                    model=self.model,
+                    phase="descriptive",
+                    attempt=attempt + 1,
+                    body=body,
+                    files=files,
+                    catalog=(),
+                    status_code=None,
+                    elapsed_ms=round((time.perf_counter() - request_started) * 1000),
+                    outcome="network_failure",
+                    error_type=type(exc).__name__,
+                    diagnostic="provider request did not return a response",
+                )
                 if attempt >= self.max_retries:
                     raise ApiServiceError(
                         "Gemini", None, f"network failure: {type(exc).__name__}"
@@ -1080,12 +1250,44 @@ class GeminiDescriptiveRanker(GeminiEpisodeRanker):
                 self.sleep(2**attempt)
                 continue
             if response.status_code in (401, 403):
+                _record_provider_transaction(
+                    transaction_recorder,
+                    model=self.model,
+                    phase="descriptive",
+                    attempt=attempt + 1,
+                    body=body,
+                    files=files,
+                    catalog=(),
+                    status_code=response.status_code,
+                    elapsed_ms=round((time.perf_counter() - request_started) * 1000),
+                    outcome="credential_rejected",
+                    response=response,
+                    diagnostic="provider rejected the configured credential",
+                )
                 raise ApiCredentialError(
                     credential,
                     "rejected by the provider",
                     status_code=response.status_code,
                 )
             if response.status_code == 429 or response.status_code >= 500:
+                _record_provider_transaction(
+                    transaction_recorder,
+                    model=self.model,
+                    phase="descriptive",
+                    attempt=attempt + 1,
+                    body=body,
+                    files=files,
+                    catalog=(),
+                    status_code=response.status_code,
+                    elapsed_ms=round((time.perf_counter() - request_started) * 1000),
+                    outcome=(
+                        "rate_limited"
+                        if response.status_code == 429
+                        else "provider_unavailable"
+                    ),
+                    response=response,
+                    diagnostic="provider requested a bounded retry",
+                )
                 if attempt < self.max_retries:
                     self.sleep(2**attempt)
                     continue
@@ -1096,13 +1298,59 @@ class GeminiDescriptiveRanker(GeminiEpisodeRanker):
                 )
                 raise ApiServiceError("Gemini", response.status_code, reason)
             if response.status_code >= 400:
+                _record_provider_transaction(
+                    transaction_recorder,
+                    model=self.model,
+                    phase="descriptive",
+                    attempt=attempt + 1,
+                    body=body,
+                    files=files,
+                    catalog=(),
+                    status_code=response.status_code,
+                    elapsed_ms=round((time.perf_counter() - request_started) * 1000),
+                    outcome="request_rejected",
+                    response=response,
+                    diagnostic="provider did not accept the request",
+                )
                 raise ApiServiceError(
                     "Gemini", response.status_code, "request was not accepted"
                 )
+            try:
+                matches = _parse_descriptive_response(response.payload, files)
+            except GeminiResponseError as exc:
+                _record_provider_transaction(
+                    transaction_recorder,
+                    model=self.model,
+                    phase="descriptive",
+                    attempt=attempt + 1,
+                    body=body,
+                    files=files,
+                    catalog=(),
+                    status_code=response.status_code,
+                    elapsed_ms=round((time.perf_counter() - request_started) * 1000),
+                    outcome="response_invalid",
+                    response=response,
+                    error_type=type(exc).__name__,
+                    diagnostic=str(exc),
+                )
+                raise
+            _record_provider_transaction(
+                transaction_recorder,
+                model=self.model,
+                phase="descriptive",
+                attempt=attempt + 1,
+                body=body,
+                files=files,
+                catalog=(),
+                status_code=response.status_code,
+                elapsed_ms=round((time.perf_counter() - request_started) * 1000),
+                outcome="accepted",
+                response=response,
+            )
             return GeminiDescriptivePlan(
                 mode="gemini-descriptive-review-plan",
                 model=self.model,
-                matches=_parse_descriptive_response(response.payload, files),
+                matches=matches,
             )
         raise ApiServiceError("Gemini", None, "retry loop ended unexpectedly")
 
@@ -1112,6 +1360,7 @@ class GeminiDescriptiveRanker(GeminiEpisodeRanker):
         *,
         release_hint: str,
         prior_attempts: Mapping[str, tuple[dict[str, object], ...]] | None = None,
+        transaction_recorder: GeminiTransactionRecorder | None = None,
     ) -> GeminiDescriptivePlan:
         provider_errors: list[ApiServiceError | GeminiResponseError] = []
         for credential, field in (
@@ -1129,6 +1378,7 @@ class GeminiDescriptiveRanker(GeminiEpisodeRanker):
                     api_key=api_key,
                     credential=credential,
                     prior_attempts=prior_attempts,
+                    transaction_recorder=transaction_recorder,
                 )
             except ApiCredentialError:
                 continue

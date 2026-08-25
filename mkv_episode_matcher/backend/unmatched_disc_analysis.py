@@ -1368,6 +1368,12 @@ def _rank_gemini_chunks(  # noqa: C901 - batched request/cache/audit boundary
         and "proposed_assignments" in extended_parameters
     ):
         kwargs["proposed_assignments"] = proposed_assignments
+    if analysis_run_id is not None and "transaction_recorder" in extended_parameters:
+        kwargs["transaction_recorder"] = (
+            lambda transaction: dossier.record_gemini_provider_transaction(
+                analysis_run_id, transaction
+            )
+        )
     review = None
     request_digest = None
     if isinstance(dossier, IdentificationDossierStore):

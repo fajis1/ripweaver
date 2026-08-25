@@ -611,6 +611,26 @@ def test_restart_restores_interrupted_all_season_analysis_to_review(tmp_path):
     assert recovered.review_code == "all_season_analysis_failed"
 
 
+def test_restart_marks_interrupted_gemini_analysis_as_not_running(tmp_path):
+    store = _store(tmp_path)
+    original = _artifact(tmp_path, "media-1", "rip")
+    store.enqueue_verified_rip("media-1", original)
+    store.claim_next()
+    store.require_review("media-1", "gemini_evidence_required")
+    store.choose_review_path("media-1", "gemini_analysis_running")
+    store.set_paused(True)
+
+    reopened = PipelineQueueStore(store.database_path)
+    assert reopened.reconcile_incomplete() == ("media-1",)
+    recovered = reopened.get("media-1")
+    assert recovered.state == "review_required"
+    assert recovered.review_code == "gemini_analysis_interrupted"
+    assert reopened.is_paused() is True
+    assert reopened.list_events("media-1")[-1].details == {
+        "review_code": "gemini_analysis_interrupted"
+    }
+
+
 def test_episode_match_review_can_enter_all_season_analysis(tmp_path):
     store = _store(tmp_path)
     original = _artifact(tmp_path, "media-1", "rip")

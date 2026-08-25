@@ -6,6 +6,7 @@ interface PipelineEvent {
 }
 
 const reasonText: Record<string, string> = {
+  gemini_analysis_interrupted: 'RipWeaver restarted or stopped after marking Gemini analysis as active. No provider task is currently running; the saved item can be retried.',
   gemini_analysis_failed: 'This older run recorded only a general pipeline failure. The exact reason was not retained.',
   gemini_audio_evidence_insufficient: 'Local transcription did not produce enough usable dialogue to make a safe Gemini request.',
   gemini_catalog_unavailable: 'The reviewed bonus-feature catalogue was missing or no longer matched this disc.',

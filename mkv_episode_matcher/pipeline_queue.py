@@ -2609,6 +2609,7 @@ class PipelineQueueStore:
         if code not in {
             "gemini_evidence_required",
             "gemini_analysis_running",
+            "gemini_analysis_interrupted",
             "gemini_analysis_failed",
             "gemini_audio_evidence_insufficient",
             "gemini_catalog_unavailable",
@@ -2651,6 +2652,7 @@ class PipelineQueueStore:
                     "special_feature_evidence_required",
                     "gemini_evidence_required",
                     "gemini_analysis_running",
+                    "gemini_analysis_interrupted",
                     "gemini_analysis_failed",
                     "gemini_audio_evidence_insufficient",
                     "gemini_catalog_unavailable",
@@ -2716,6 +2718,7 @@ class PipelineQueueStore:
                 not in {
                     "gemini_evidence_required",
                     "gemini_analysis_running",
+                    "gemini_analysis_interrupted",
                     "gemini_analysis_failed",
                     "gemini_descriptive_review_required",
                     "special_feature_manual_assignment_required",
@@ -2952,6 +2955,7 @@ class PipelineQueueStore:
                         or row["review_code"]
                         not in {
                             "gemini_response_invalid",
+                            "gemini_analysis_interrupted",
                             "gemini_analysis_failed",
                             "all_season_analysis_failed",
                             "all_season_sequence_review_required",
@@ -3383,20 +3387,27 @@ class PipelineQueueStore:
                 recovered.append(row["media_id"])
             interrupted_reviews = connection.execute(
                 """
-                SELECT media_id FROM pipeline_items
+                SELECT media_id, review_code FROM pipeline_items
                 WHERE state = 'review_required'
                   AND stage = 'identify'
-                  AND review_code = 'all_season_analysis_running'
+                  AND review_code IN (
+                    'all_season_analysis_running', 'gemini_analysis_running'
+                  )
                 """
             ).fetchall()
             for row in interrupted_reviews:
+                review_code = (
+                    "gemini_analysis_interrupted"
+                    if row["review_code"] == "gemini_analysis_running"
+                    else "all_season_analysis_failed"
+                )
                 connection.execute(
                     """
                     UPDATE pipeline_items
-                    SET review_code = 'all_season_analysis_failed', updated_at = ?
+                    SET review_code = ?, updated_at = ?
                     WHERE media_id = ?
                     """,
-                    (self._now(), row["media_id"]),
+                    (review_code, self._now(), row["media_id"]),
                 )
                 self._append_event(
                     connection,
@@ -3404,7 +3415,7 @@ class PipelineQueueStore:
                     event_type="analysis_restart_review_required",
                     stage="identify",
                     state="review_required",
-                    details={"review_code": "all_season_analysis_failed"},
+                    details={"review_code": review_code},
                 )
                 recovered.append(row["media_id"])
             connection.commit()

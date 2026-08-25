@@ -63,6 +63,7 @@ def test_failed_all_season_analysis_is_a_bounded_restart_retry():
     assert "all_season_analysis_running" not in _AUTOMATIC_UNMATCHED_CODES
     assert _AUTOMATIC_DISC_RETRY_CODES == {
         "all_season_analysis_failed",
+        "gemini_analysis_interrupted",
         "gemini_analysis_failed",
     }
 
@@ -280,14 +281,15 @@ def test_durable_processing_pause_still_observes_loaded_discs(monkeypatch):
     )
     snapshot = _snapshot(0)
 
-    assert observe_automatic_drives(
-        snapshot, enabled=True, processing_paused=True
-    ) is True
+    assert (
+        observe_automatic_drives(snapshot, enabled=True, processing_paused=True) is True
+    )
     assert observed == [(snapshot, True)]
 
-    assert observe_automatic_drives(
-        snapshot, enabled=True, processing_paused=False
-    ) is True
+    assert (
+        observe_automatic_drives(snapshot, enabled=True, processing_paused=False)
+        is True
+    )
     assert observed == [(snapshot, True), (snapshot, True)]
 
 

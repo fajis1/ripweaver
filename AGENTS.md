@@ -430,6 +430,17 @@ the application log but must never change or stop an identification decision.
 Gemini's safe trace may report the candidates supplied, returned selection,
 confidence, two-pass consistency, runtime check, and pipeline rejection rule;
 it must not claim an unreturned per-candidate score or hidden provider rationale.
+Each live Gemini HTTP attempt must also retain a separate bounded raw provider
+transaction under the private identification-evidence root. That private trace
+may contain returned dialogue and therefore must never appear in routine logs,
+API responses, Git, or emergency checkpoints. It records the model, phase,
+request digest, path-free file/candidate IDs, HTTP status, latency, validation
+outcome, and at most 1 MiB of the raw response plus its full size and SHA-256.
+It must never retain request headers, API keys, environment values, or local
+paths. Failure to write the private trace is logged by exception type only and
+must never alter the identification decision. Startup reconciliation must
+replace a stale `gemini_analysis_running` marker with an explicit interrupted
+review state; a persisted marker alone is never proof of a live provider task.
 
 `pipeline_adapters.py` contains explicit identify, transcode, and organization
 adapters. Identification must call the legacy engine with `dry_run=True` and
