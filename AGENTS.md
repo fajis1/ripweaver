@@ -412,6 +412,9 @@ one-worker-per-drive parallelism is unchanged. Failed and review-required items
 release their stage claim so unrelated items continue. Restart reconciliation
 returns a running downstream item to the beginning of its current stage. Public
 queue responses and events must never expose private artifact or media paths.
+An already-paused durable downstream queue must remain paused across backend
+restart and require an explicit user resume. The startup grace-period timer may
+arm only when the durable queue was active before startup.
 
 All-season identification also keeps a private append-only per-title audit
 under the identification-evidence root. Each analysis retry has a fresh opaque

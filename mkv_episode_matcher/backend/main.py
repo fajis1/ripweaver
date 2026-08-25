@@ -104,6 +104,11 @@ def _arm_startup_queue_resume(config, pipeline_store) -> bool:
     if automatic_rip_startup_held():
         logger.info("Startup queue activation remained held for exact-plan review")
         return False
+    if pipeline_store.is_paused():
+        logger.info(
+            "Processing queue remained durably paused; explicit resume is required"
+        )
+        return False
 
     pipeline_store.set_paused(True)
 

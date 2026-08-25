@@ -4134,6 +4134,10 @@ for review rather than forcing a TV identity.
 - Pipeline response composition reads the current item contract once, reuses
   the already-loaded configuration for every visible row, and queries series
   proposal events only for the one review state that can display them.
+- A durable queue pause now survives backend restart. Normal active startup
+  still uses the one-minute grace period, but startup no longer converts an
+  already-paused queue into an automatic delayed resume; the user must choose
+  Resume explicitly.
   Synthetic focused tests, Ruff, frontend lint/type checking, and the production
   build cover these changes; no optical disc or media was read or modified.
 

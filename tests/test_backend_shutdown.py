@@ -46,7 +46,10 @@ def test_normal_startup_arms_one_minute_queue_resume(monkeypatch):
     scheduled = {}
     observed = []
     snapshot = object()
-    store = SimpleNamespace(set_paused=lambda value: pauses.append(value))
+    store = SimpleNamespace(
+        is_paused=lambda: False,
+        set_paused=lambda value: pauses.append(value),
+    )
     config = SimpleNamespace(automatic_processing_enabled=True)
 
     monkeypatch.setattr(main, "cancel_startup_queue_resume", lambda: False)
@@ -80,6 +83,28 @@ def test_normal_startup_arms_one_minute_queue_resume(monkeypatch):
             {"enabled": True, "processing_paused": False},
         )
     ]
+
+
+def test_durable_queue_pause_survives_backend_restart(monkeypatch):
+    scheduled = []
+    pauses = []
+    store = SimpleNamespace(
+        is_paused=lambda: True,
+        set_paused=lambda value: pauses.append(value),
+    )
+    config = SimpleNamespace(automatic_processing_enabled=True)
+
+    monkeypatch.setattr(main, "cancel_startup_queue_resume", lambda: False)
+    monkeypatch.setattr(main, "automatic_rip_startup_held", lambda: False)
+    monkeypatch.setattr(
+        main,
+        "schedule_startup_queue_resume",
+        lambda *_args, **_kwargs: scheduled.append(True),
+    )
+
+    assert main._arm_startup_queue_resume(config, store) is False
+    assert pauses == []
+    assert scheduled == []
 
 
 def test_held_review_startup_skips_unattended_workers(tmp_path, monkeypatch):
