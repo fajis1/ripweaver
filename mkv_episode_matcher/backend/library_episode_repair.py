@@ -15,7 +15,7 @@ import os
 import re
 import threading
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -25,6 +25,7 @@ from mkv_episode_matcher.backend.identification_dossier import (
     collect_dossier_evidence,
 )
 from mkv_episode_matcher.backend.unmatched_disc_analysis import _score_subtitle
+from mkv_episode_matcher.core.datetime_compat import UTC
 from mkv_episode_matcher.core.models import Config
 from mkv_episode_matcher.core.providers.subtitles import OpenSubtitlesProvider
 from mkv_episode_matcher.core.utils import SubtitleReader

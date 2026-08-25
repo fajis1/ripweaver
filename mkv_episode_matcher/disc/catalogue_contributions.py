@@ -7,9 +7,10 @@ import json
 import re
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
 
+from mkv_episode_matcher.core.datetime_compat import UTC
 from mkv_episode_matcher.disc.preflight import DiscInventory
 from mkv_episode_matcher.disc.title_selector import parse_duration_seconds
 from mkv_episode_matcher.pipeline_queue import PipelineQueueStore

@@ -1,8 +1,9 @@
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
+from mkv_episode_matcher.core.datetime_compat import UTC
 from mkv_episode_matcher.disc.image_acquisition import VerifiedLocalSource
 from mkv_episode_matcher.disc.local_image_ripper import run_local_image_titles
 from mkv_episode_matcher.disc.ripper import (

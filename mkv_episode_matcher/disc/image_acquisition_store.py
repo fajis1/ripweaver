@@ -6,10 +6,11 @@ import json
 import sqlite3
 import threading
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
+from mkv_episode_matcher.core.datetime_compat import UTC
 from mkv_episode_matcher.disc.image_acquisition import DiscImagePlan, plan_sha256
 from mkv_episode_matcher.disc.ripper import RipError
 

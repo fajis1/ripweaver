@@ -1,6 +1,6 @@
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -9,6 +9,7 @@ from mkv_episode_matcher.backend.routers.rip import (
     _pipeline_activity_snapshot,
     _rip_activity_snapshot,
 )
+from mkv_episode_matcher.core.datetime_compat import UTC
 from mkv_episode_matcher.disc.orchestration_store import OrchestrationStore
 from mkv_episode_matcher.disc.rip_manifest import MediaContext
 from mkv_episode_matcher.disc.rip_preview import build_rip_preview

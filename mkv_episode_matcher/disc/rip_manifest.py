@@ -7,10 +7,11 @@ import hmac
 import json
 import re
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from mkv_episode_matcher.core.datetime_compat import UTC
 from mkv_episode_matcher.disc.batch_ripper import (
     BatchInventoryTitle,
     SingleOpenBatchPlan,

@@ -1,9 +1,10 @@
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import datetime
 from threading import Event
 
 import pytest
 
+from mkv_episode_matcher.core.datetime_compat import UTC
 from mkv_episode_matcher.disc.rip_dispatcher import BoundRipDispatch
 from mkv_episode_matcher.disc.rip_execution_adapter import (
     ProductionRipExecutor,

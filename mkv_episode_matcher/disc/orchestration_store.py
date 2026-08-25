@@ -9,10 +9,11 @@ import sqlite3
 import threading
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from mkv_episode_matcher.core.datetime_compat import UTC
 from mkv_episode_matcher.disc.rip_preview import RipPreview
 from mkv_episode_matcher.disc.ripper import RipError
 

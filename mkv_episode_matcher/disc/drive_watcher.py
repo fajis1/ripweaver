@@ -10,9 +10,10 @@ import threading
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 
+from mkv_episode_matcher.core.datetime_compat import UTC
 from mkv_episode_matcher.disc.drive_mapping import (
     DriveMappingError,
     DriveMappingStore,

@@ -1,8 +1,9 @@
 import json
-from datetime import UTC, datetime
+from datetime import datetime
 
 import pytest
 
+from mkv_episode_matcher.core.datetime_compat import UTC
 from mkv_episode_matcher.disc.orchestration_store import OrchestrationStore
 from mkv_episode_matcher.disc.private_bindings import PrivateBindingStore
 from mkv_episode_matcher.disc.rip_dispatcher import (

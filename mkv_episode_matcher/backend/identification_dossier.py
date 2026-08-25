@@ -8,10 +8,11 @@ import os
 import re
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
+from mkv_episode_matcher.core.datetime_compat import UTC
 from mkv_episode_matcher.core.models import Config
 from mkv_episode_matcher.media.ffprobe_runner import inspect_mkv, resolve_ffprobe_path
 from mkv_episode_matcher.media.gemini_matcher import (
