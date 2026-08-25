@@ -299,6 +299,12 @@ def run_automatic_drive(drive_index: int) -> bool:
             public_store,
         )
         job_id = job.job_id
+        if pipeline_store.is_paused():
+            logger.info(
+                "Automatic disc inventory restored saved status while processing "
+                "remained paused"
+            )
+            return True
         if not _automatic_job_can_advance(job, public_store):
             return True
         if job.state == "awaiting_review":
@@ -563,9 +569,15 @@ def observe_automatic_drives(
     enabled: bool,
     processing_paused: bool = False,
 ) -> bool:
-    """Observe loaded media unless startup or durable processing is held."""
+    """Observe loaded media unless all unattended disc access is held.
 
-    if automatic_rip_startup_held() or processing_paused:
+    A durable processing pause still permits the existing read-only inventory
+    worker to recognize an inserted disc and restore its saved dashboard
+    binding.  The worker checks the durable pause immediately after preparation
+    and cannot advance the job while that pause remains set.
+    """
+
+    if automatic_rip_startup_held():
         return False
     automatic_rip_coordinator.observe(snapshot, enabled=enabled)
     return True

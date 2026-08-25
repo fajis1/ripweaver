@@ -272,7 +272,7 @@ def test_startup_hold_suppresses_observation_and_direct_worker_launch(monkeypatc
     assert observed == [(snapshot, True)]
 
 
-def test_durable_processing_pause_does_not_observe_loaded_discs(monkeypatch):
+def test_durable_processing_pause_still_observes_loaded_discs(monkeypatch):
     observed = []
     monkeypatch.setattr(
         "mkv_episode_matcher.backend.automatic_rip.automatic_rip_coordinator.observe",
@@ -280,17 +280,71 @@ def test_durable_processing_pause_does_not_observe_loaded_discs(monkeypatch):
     )
     snapshot = _snapshot(0)
 
-    assert (
-        observe_automatic_drives(snapshot, enabled=True, processing_paused=True)
-        is False
-    )
-    assert observed == []
-
-    assert (
-        observe_automatic_drives(snapshot, enabled=True, processing_paused=False)
-        is True
-    )
+    assert observe_automatic_drives(
+        snapshot, enabled=True, processing_paused=True
+    ) is True
     assert observed == [(snapshot, True)]
+
+    assert observe_automatic_drives(
+        snapshot, enabled=True, processing_paused=False
+    ) is True
+    assert observed == [(snapshot, True), (snapshot, True)]
+
+
+def test_durable_processing_pause_allows_inventory_but_stops_advancement(monkeypatch):
+    job = SimpleNamespace(job_id="prepared-job", state="awaiting_review")
+    prepared = []
+    advanced = []
+
+    class Store:
+        def get_job(self, _job_id):
+            return job
+
+        def authorize(self, *_args, **_kwargs):
+            advanced.append("authorize")
+
+        def queue(self, *_args, **_kwargs):
+            advanced.append("queue")
+
+    public_store = Store()
+    pipeline_store = SimpleNamespace(is_paused=lambda: True)
+    monkeypatch.setattr(
+        "mkv_episode_matcher.core.config_manager.get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(automatic_processing_enabled=True)
+        ),
+    )
+    dependency_values = {
+        "get_drive_watcher": object(),
+        "get_orchestration_store": public_store,
+        "get_private_binding_store": object(),
+        "get_pipeline_queue_store": pipeline_store,
+        "get_disc_inventory_runner": object(),
+        "get_rip_execution_registry": object(),
+        "get_rip_queue_runner": object(),
+        "get_pipeline_contract_root": object(),
+    }
+    for name, value in dependency_values.items():
+        monkeypatch.setattr(
+            f"mkv_episode_matcher.backend.dependencies.{name}",
+            lambda value=value: value,
+        )
+
+    def prepare(*_args, **_kwargs):
+        prepared.append(True)
+        return {"job_id": job.job_id}
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.routers.rip.prepare_drive_pipeline", prepare
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.routers.rip.execute_rip_job",
+        lambda *_args, **_kwargs: advanced.append("execute"),
+    )
+
+    assert run_automatic_drive(0) is True
+    assert prepared == [True]
+    assert advanced == []
 
 
 def test_unavailable_unmapped_or_ignored_devices_never_launch_automatic_work(
@@ -589,7 +643,7 @@ def test_worker_resumes_same_clean_job_after_preparation_return_fails(monkeypatc
         "get_drive_watcher": watcher,
         "get_orchestration_store": store,
         "get_private_binding_store": object(),
-        "get_pipeline_queue_store": object(),
+        "get_pipeline_queue_store": SimpleNamespace(is_paused=lambda: False),
         "get_disc_inventory_runner": object(),
         "get_rip_execution_registry": object(),
         "get_rip_queue_runner": object(),
