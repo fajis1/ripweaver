@@ -4323,3 +4323,30 @@ for review rather than forcing a TV identity.
   consistency, confidence, runtime decision, and response hashes without raw
   dialogue. Successful single-title residual analyses are now also valid
   matching-performance telemetry records.
+
+### Held live remaining-disc identification validation (2026-08-25)
+
+- A separately user-authorized follow-up kept automatic ripping and every
+  downstream worker held while processing the two remaining inserted Season 8
+  discs sequentially. The durable queue stayed paused throughout; no rip,
+  transcode, organization, deletion, overwrite, or eject operation ran.
+- Season 8 Disc 1 independently matched its seven unresolved titles as
+  S08E01-E06 and S08E08. The existing S08E07 result participated only in the
+  final whole-disc coherence check. The run established three direct anchors,
+  applied seven proposals, and left zero unresolved titles after about 9.8
+  minutes.
+- Season 8 Disc 2 independently matched all eight titles as S08E09-E16. It also
+  established three direct anchors, applied eight proposals, and left zero
+  unresolved titles after about 11.9 minutes. Both successful runs demonstrate
+  why the previous ten-minute total deadline was unsafe; provider calls remain
+  bounded while finite CPU analysis has no arbitrary disc-wide cutoff.
+- The second live run exposed a release-context loss after TMDb canonicalized
+  the reviewed `Superfan Episodes` name to the broadcast series name. The
+  canonical metadata remains unchanged, but subtitle lookup now retains the
+  reviewed edition across that resolution boundary. The same path covers
+  Superfan, Extended, Unrated, Supercut, and Director's Cut labels and avoids
+  duplicating an edition suffix already present in a canonical input.
+- Focused regressions and Ruff checks pass. RipWeaver was restarted in held mode
+  with the corrected code, the startup read-only drive refresh settled, and all
+  three validated disc outcomes remained durable while the downstream queue
+  stayed paused.
