@@ -1,11 +1,19 @@
 # tmdb_client.py
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from functools import wraps
 from threading import Lock
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 import requests
 from loguru import logger
+
+from mkv_episode_matcher.core.credentials import (
+    ApiCredentialError,
+    ApiServiceError,
+    request_credential_recovery,
+)
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -26,19 +34,24 @@ def retry_network_operation(
                     return func(*args, **kwargs)
                 except (requests.RequestException, ConnectionError, TimeoutError) as e:
                     last_exception = e
+                    safe_error = type(e).__name__
                     if attempt == max_retries:
                         logger.error(
-                            f"Max retries ({max_retries}) exceeded for {func.__name__}: {e}"
+                            f"Max retries ({max_retries}) exceeded for "
+                            f"{func.__name__}: {safe_error}"
                         )
                         raise e
 
                     logger.warning(
-                        f"Network retry {attempt + 1}/{max_retries + 1} for {func.__name__}: {e}"
+                        f"Network retry {attempt + 1}/{max_retries + 1} for "
+                        f"{func.__name__}: {safe_error}"
                     )
                     time.sleep(delay)
                     delay = min(delay * 2, 30)  # Cap at 30 seconds
 
-            raise last_exception
+            if last_exception is not None:
+                raise last_exception
+            raise RuntimeError("Network retry loop ended without an exception")
 
         return wrapper  # type: ignore
 
@@ -48,6 +61,28 @@ def retry_network_operation(
 from mkv_episode_matcher.core.config_manager import get_config_manager
 
 BASE_IMAGE_URL = "https://image.tmdb.org/t/p/original"
+BASE_API_URL = "https://api.themoviedb.org/3"
+
+
+@dataclass(frozen=True)
+class TvShowCandidate:
+    tmdb_id: int
+    name: str
+    original_name: str
+    first_air_year: int | None
+    overview: str
+
+
+@dataclass(frozen=True)
+class MovieCandidate:
+    """One path-free TMDb movie candidate with validated runtime metadata."""
+
+    tmdb_id: int
+    title: str
+    original_title: str
+    release_year: int | None
+    overview: str
+    runtime_seconds: float | None
 
 
 class RateLimitedRequest:
@@ -97,6 +132,54 @@ class RateLimitedRequest:
 rate_limited_request = RateLimitedRequest(rate_limit=30, period=1)
 
 
+def _tmdb_get_json(path: str, **parameters: Any) -> dict:
+    """Request TMDb JSON, recovering once from a missing or rejected key."""
+
+    for attempt in range(2):
+        config = get_config_manager().load()
+        api_key = config.tmdb_api_key
+        if not api_key:
+            error = ApiCredentialError("tmdb", "not configured")
+            if attempt == 0 and request_credential_recovery(error):
+                continue
+            raise error
+
+        try:
+            response = requests.get(
+                f"{BASE_API_URL}{path}",
+                params={**parameters, "api_key": api_key},
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            raise ApiServiceError(
+                "TMDb",
+                None,
+                f"network failure: {type(exc).__name__}",
+            ) from exc
+        if response.status_code in (401, 403):
+            error = ApiCredentialError(
+                "tmdb",
+                "rejected by the provider",
+                status_code=response.status_code,
+            )
+            if attempt == 0 and request_credential_recovery(error):
+                continue
+            raise error
+        if response.status_code == 429:
+            raise ApiServiceError("TMDb", 429, "rate limit reached; retry later")
+        if response.status_code >= 500:
+            raise ApiServiceError(
+                "TMDb", response.status_code, "provider is temporarily unavailable"
+            )
+        if response.status_code >= 400:
+            raise ApiServiceError(
+                "TMDb", response.status_code, "request was not accepted"
+            )
+        return response.json()
+
+    raise ApiCredentialError("tmdb", "replacement key was not accepted")
+
+
 @retry_network_operation(max_retries=3, base_delay=1.0)
 def fetch_show_id(show_name: str) -> str | None:
     """
@@ -108,15 +191,137 @@ def fetch_show_id(show_name: str) -> str | None:
     Returns:
         str: The TMDb ID of the show, or None if not found.
     """
-    config = get_config_manager().load()
-    tmdb_api_key = config.tmdb_api_key
-    url = f"https://api.themoviedb.org/3/search/tv?query={show_name}&api_key={tmdb_api_key}"
-    response = requests.get(url)
-    if response.status_code == 200:
-        results = response.json().get("results", [])
-        if results:
-            return str(results[0]["id"])
+    results = _tmdb_get_json("/search/tv", query=show_name).get("results", [])
+    if results:
+        return str(results[0]["id"])
     return None
+
+
+def search_tv_show_candidates(
+    show_name: str, *, limit: int = 8
+) -> tuple[TvShowCandidate, ...]:
+    """Return a bounded, path-free TMDb TV candidate set."""
+
+    if limit < 1 or limit > 20:
+        raise ValueError("TMDb TV candidate limit is invalid")
+    results = _tmdb_get_json("/search/tv", query=show_name).get("results", [])
+    candidates = []
+    for item in results[:limit] if isinstance(results, list) else []:
+        if not isinstance(item, dict):
+            continue
+        tmdb_id = item.get("id")
+        name = item.get("name")
+        if (
+            not isinstance(tmdb_id, int)
+            or not isinstance(name, str)
+            or not name.strip()
+        ):
+            continue
+        first_air_date = item.get("first_air_date")
+        year = (
+            int(first_air_date[:4])
+            if isinstance(first_air_date, str)
+            and len(first_air_date) >= 4
+            and first_air_date[:4].isdigit()
+            else None
+        )
+        original_name = item.get("original_name")
+        overview = item.get("overview")
+        candidates.append(
+            TvShowCandidate(
+                tmdb_id=tmdb_id,
+                name=" ".join(name.split())[:160],
+                original_name=(
+                    " ".join(original_name.split())[:160]
+                    if isinstance(original_name, str)
+                    else ""
+                ),
+                first_air_year=year,
+                overview=(
+                    " ".join(overview.split())[:500]
+                    if isinstance(overview, str)
+                    else ""
+                ),
+            )
+        )
+    return tuple(candidates)
+
+
+def search_movie_candidates(
+    movie_name: str, *, limit: int = 8
+) -> tuple[MovieCandidate, ...]:
+    """Return a bounded TMDb movie set with runtime data for local matching."""
+
+    query = " ".join(movie_name.split())
+    if not query:
+        raise ValueError("TMDb movie query is empty")
+    if limit < 1 or limit > 12:
+        raise ValueError("TMDb movie candidate limit is invalid")
+    results = _tmdb_get_json("/search/movie", query=query).get("results", [])
+    candidates = []
+    for item in results[:limit] if isinstance(results, list) else []:
+        if not isinstance(item, dict):
+            continue
+        tmdb_id = item.get("id")
+        if not isinstance(tmdb_id, int) or tmdb_id <= 0:
+            continue
+        details = _tmdb_get_json(f"/movie/{tmdb_id}")
+        title = details.get("title") or item.get("title")
+        if not isinstance(title, str) or not title.strip():
+            continue
+        original_title = details.get("original_title") or item.get("original_title")
+        release_date = details.get("release_date") or item.get("release_date")
+        release_year = (
+            int(release_date[:4])
+            if isinstance(release_date, str)
+            and len(release_date) >= 4
+            and release_date[:4].isdigit()
+            else None
+        )
+        runtime = details.get("runtime")
+        overview = details.get("overview") or item.get("overview")
+        candidates.append(
+            MovieCandidate(
+                tmdb_id=tmdb_id,
+                title=" ".join(title.split())[:160],
+                original_title=(
+                    " ".join(original_title.split())[:160]
+                    if isinstance(original_title, str)
+                    else ""
+                ),
+                release_year=release_year,
+                overview=(
+                    " ".join(overview.split())[:500]
+                    if isinstance(overview, str)
+                    else ""
+                ),
+                runtime_seconds=(
+                    float(runtime) * 60.0
+                    if isinstance(runtime, int | float)
+                    and not isinstance(runtime, bool)
+                    and runtime > 0
+                    else None
+                ),
+            )
+        )
+    return tuple(candidates)
+
+
+def fetch_aired_episode_catalog(show_id: int):
+    """Return the validated aired catalogue for one reviewed TMDb TV ID."""
+
+    from mkv_episode_matcher.media.episode_catalog import build_tmdb_aired_catalog
+
+    return build_tmdb_aired_catalog(show_id, _tmdb_get_json)
+
+
+def fetch_aired_episode_catalog_for_show(show_name: str):
+    """Return one validated, all-season aired catalogue for a reviewed TV name."""
+
+    show_id = fetch_show_id(show_name)
+    if show_id is None:
+        return None
+    return fetch_aired_episode_catalog(int(show_id))
 
 
 @retry_network_operation(max_retries=3, base_delay=1.0)
@@ -131,19 +336,17 @@ def fetch_show_details(show_id: int) -> dict | None:
         dict: Show details including 'name', 'number_of_seasons', etc.
         None: If request fails or API key not configured
     """
-    config = get_config_manager().load()
-    if not config.tmdb_api_key:
-        logger.warning("TMDB API key not configured")
-        return None
-
-    url = f"https://api.themoviedb.org/3/tv/{show_id}?api_key={config.tmdb_api_key}"
-
     try:
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        return response.json()
+        return _tmdb_get_json(f"/tv/{show_id}")
+    except ApiCredentialError:
+        raise
     except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to fetch show details for ID {show_id}: {e}")
+        logger.error(
+            f"Failed to fetch show details for ID {show_id}: {type(e).__name__}"
+        )
+        return None
+    except ApiServiceError as e:
+        logger.error(str(e))
         return None
 
 
@@ -160,23 +363,36 @@ def fetch_season_details(show_id: str, season_number: int) -> int:
         int: The total number of episodes in the season, or 0 if the API request failed.
     """
     logger.info(f"Fetching season details for Season {season_number}...")
-    config = get_config_manager().load()
-    tmdb_api_key = config.tmdb_api_key
-    url = f"https://api.themoviedb.org/3/tv/{show_id}/season/{season_number}?api_key={tmdb_api_key}"
     try:
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        season_data = response.json()
+        season_data = _tmdb_get_json(f"/tv/{show_id}/season/{season_number}")
         total_episodes = len(season_data.get("episodes", []))
         return total_episodes
+    except ApiCredentialError:
+        raise
     except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to fetch season details for Season {season_number}: {e}")
+        logger.error(
+            f"Failed to fetch season details for Season {season_number}: "
+            f"{type(e).__name__}"
+        )
+        return 0
+    except ApiServiceError as e:
+        logger.error(str(e))
         return 0
     except KeyError:
         logger.error(
             f"Missing 'episodes' key in response JSON data for Season {season_number}"
         )
         return 0
+
+
+def fetch_episode_details(
+    show_id: str, season_number: int, episode_number: int
+) -> dict:
+    """Fetch one episode without putting the TMDb key in a URL string."""
+
+    return _tmdb_get_json(
+        f"/tv/{show_id}/season/{season_number}/episode/{episode_number}"
+    )
 
 
 @retry_network_operation(max_retries=3, base_delay=1.0)
@@ -193,12 +409,7 @@ def get_number_of_seasons(show_id: str) -> int:
     Raises:
     - requests.HTTPError: If there is an error while making the API request.
     """
-    config = get_config_manager().load()
-    tmdb_api_key = config.tmdb_api_key
-    url = f"https://api.themoviedb.org/3/tv/{show_id}?api_key={tmdb_api_key}"
-    response = requests.get(url, timeout=30)
-    response.raise_for_status()
-    show_data = response.json()
+    show_data = _tmdb_get_json(f"/tv/{show_id}")
     num_seasons = show_data.get("number_of_seasons", 0)
     logger.info(f"Found {num_seasons} seasons")
     return num_seasons

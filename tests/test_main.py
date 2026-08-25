@@ -153,8 +153,36 @@ class TestConfiguration:
         cm.save(config)
 
         loaded_config = cm.load()
-        assert loaded_config.tmdb_api_key == mock_config["tmdb_api_key"]
+        assert loaded_config.tmdb_api_key is None
+        assert loaded_config.open_subtitles_password is None
         assert str(loaded_config.show_dir) == str(Path(mock_config["show_dir"]))
+
+    def test_environment_secrets_override_json(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.json"
+        monkeypatch.setenv("TMDB_API_KEY", "environment-key")
+
+        from mkv_episode_matcher.core.config_manager import ConfigManager
+
+        cm = ConfigManager(config_path=config_file)
+        cm.save(Config(tmdb_api_key="must-not-be-persisted"))
+
+        assert "must-not-be-persisted" not in config_file.read_text(encoding="utf-8")
+        assert cm.load().tmdb_api_key == "environment-key"
+
+    def test_persisted_json_credentials_are_ignored(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(
+            '{"tmdb_api_key": "legacy-fake-key", '
+            '"open_subtitles_password": "legacy-fake-password"}',
+            encoding="utf-8",
+        )
+
+        from mkv_episode_matcher.core.config_manager import ConfigManager
+
+        loaded = ConfigManager(config_path=config_file).load()
+
+        assert loaded.tmdb_api_key is None
+        assert loaded.open_subtitles_password is None
 
 
 class TestEpisodeMatcher:
@@ -168,9 +196,10 @@ class TestEpisodeMatcher:
         assert extract_season_episode("invalid.mkv") == (None, None)
 
     @patch("mkv_episode_matcher.tmdb_client.requests.get")
-    def test_fetch_show_id(self, mock_get):
+    def test_fetch_show_id(self, mock_get, monkeypatch):
         from mkv_episode_matcher.tmdb_client import fetch_show_id
 
+        monkeypatch.setenv("TMDB_API_KEY", "fake-test-key")
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.json.return_value = {"results": [{"id": 12345}]}

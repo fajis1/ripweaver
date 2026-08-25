@@ -124,9 +124,7 @@ class FasterWhisperModel(ASRModel):
         "large-v3": {"params": "1550M", "vram": "~10GB", "speed": "slowest"},
     }
 
-    def __init__(
-        self, model_name: str = "small", device: str | None = None
-    ):
+    def __init__(self, model_name: str = "small", device: str | None = None):
         """
         Initialize Faster Whisper model.
 
@@ -137,7 +135,7 @@ class FasterWhisperModel(ASRModel):
         # Normalize model name
         if model_name.startswith("openai/whisper-"):
             model_name = model_name.replace("openai/whisper-", "")
-        
+
         super().__init__(model_name, device)
 
     def _get_compute_type(self) -> str:
@@ -167,7 +165,7 @@ class FasterWhisperModel(ASRModel):
             from faster_whisper import WhisperModel
 
             compute_type = self._get_compute_type()
-            
+
             logger.info(
                 f"Loading Faster Whisper model: {self.model_name} on {self.device} "
                 f"(compute_type={compute_type})"
@@ -180,22 +178,27 @@ class FasterWhisperModel(ASRModel):
                     compute_type=compute_type,
                     download_root=None,  # Use default cache location
                 )
-                
+
                 # Eagerly verify CUDA execution to trigger potential DLL errors immediately
                 if self.device == "cuda":
                     try:
                         # Attempt a dummy encode to check if libraries are actually loadable
                         # Create a small dummy feature vector [1, 80, 30] (typical mel spectrogram shape)
                         # We just need to trigger the engine
-                        logger.debug("Verifying CUDA availability by running dummy encoding...")
+                        logger.debug(
+                            "Verifying CUDA availability by running dummy encoding..."
+                        )
                         # Simply accessing the model properties or running a tiny transcribe might be safer
                         # Let's try to transcribe a 1-second silence if possible, or just rely on ctranslate2 check
-                        # Actually, just checking if we can encode a dummy tensor is best, but easier is 
+                        # Actually, just checking if we can encode a dummy tensor is best, but easier is
                         # to let the first transcribe fail? No better to catch it here.
                         # Using a minimal transcribe on a dummy array
                         import numpy as np
+
                         dummy_audio = np.zeros(16000, dtype=np.float32)
-                        next(self._model.transcribe(dummy_audio, language="en")[0], None)
+                        next(
+                            self._model.transcribe(dummy_audio, language="en")[0], None
+                        )
                     except Exception as e:
                         # If verifying fails, raise it to be caught by the outer try/except
                         logger.warning(f"CUDA verification failed: {e}")
@@ -205,10 +208,10 @@ class FasterWhisperModel(ASRModel):
                 # Fallback to CPU if CUDA libraries are missing or unsupported compute type
                 error_msg = str(e).lower()
                 if self.device == "cuda" and (
-                    "library" in error_msg or 
-                    "verification failed" in error_msg or 
-                    "float16 compute type" in error_msg or
-                    "do not support efficient float16" in error_msg
+                    "library" in error_msg
+                    or "verification failed" in error_msg
+                    or "float16 compute type" in error_msg
+                    or "do not support efficient float16" in error_msg
                 ):
                     logger.warning(
                         f"Failed to load/run on CUDA ({e}). Falling back to CPU."
@@ -276,11 +279,13 @@ class FasterWhisperModel(ASRModel):
             # Save preprocessed audio
             sf.write(str(temp_audio_path), audio, target_sr)
 
-            logger.debug(f"Preprocessed audio saved to {temp_audio_path}")
+            logger.debug("Preprocessed audio sample created")
             return str(temp_audio_path)
 
         except Exception as e:
-            logger.warning(f"Audio preprocessing failed, using original: {e}")
+            logger.warning(
+                "Audio preprocessing failed; using original ({})", type(e).__name__
+            )
             return str(audio_path)
 
     def _clean_transcription_text(self, text: str) -> str:
@@ -317,7 +322,7 @@ class FasterWhisperModel(ASRModel):
 
         preprocessed_audio = None
         try:
-            logger.debug(f"Starting Faster Whisper transcription for {audio_path}")
+            logger.debug("Starting Faster Whisper transcription")
 
             # Preprocess audio
             preprocessed_audio = self._preprocess_audio(audio_path)
@@ -336,7 +341,7 @@ class FasterWhisperModel(ASRModel):
             # Collect all segment texts
             segment_list = []
             full_text_parts = []
-            
+
             for segment in segments:
                 segment_list.append({
                     "start": segment.start,
@@ -348,21 +353,23 @@ class FasterWhisperModel(ASRModel):
             raw_text = " ".join(full_text_parts).strip()
             cleaned_text = self._clean_transcription_text(raw_text)
 
-            logger.debug(f"Raw transcription: '{raw_text}'")
-            logger.debug(f"Cleaned transcription: '{cleaned_text}'")
+            logger.debug(
+                "Transcription completed (raw_chars={}, cleaned_chars={})",
+                len(raw_text),
+                len(cleaned_text),
+            )
 
             return {
                 "text": cleaned_text,
                 "raw_text": raw_text,
                 "segments": segment_list,
-                "language": info.language if hasattr(info, 'language') else "en",
+                "language": info.language if hasattr(info, "language") else "en",
             }
 
         except Exception as e:
-            logger.error(
-                f"Faster Whisper transcription failed for {audio_path}: {type(e).__name__}: {e}"
-            )
+            logger.error("Faster Whisper transcription failed ({})", type(e).__name__)
             import traceback
+
             traceback.print_exc()
             # Return empty result instead of raising to allow fallback
             return {"text": "", "raw_text": "", "segments": [], "language": "en"}
@@ -397,17 +404,17 @@ def create_asr_model(model_config: dict) -> ASRModel:
     if model_type in ("whisper", "faster-whisper", "openai-whisper"):
         if not model_name:
             model_name = "small"
-        
+
         logger.info(f"Creating Faster Whisper model: {model_name}")
         return FasterWhisperModel(model_name, device)
-    
+
     # Legacy parakeet support - redirect to whisper
     elif model_type == "parakeet":
         logger.warning(
             "Parakeet models are no longer supported. Using Whisper 'small' model instead."
         )
         return FasterWhisperModel("small", device)
-    
+
     else:
         raise ValueError(
             f"Unsupported model type: {model_type}. Supported types: 'whisper', 'faster-whisper'"

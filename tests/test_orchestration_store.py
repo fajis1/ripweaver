@@ -1,0 +1,482 @@
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
+
+import pytest
+
+from mkv_episode_matcher.backend.routers.rip import (
+    _job_response,
+    _pipeline_activity_snapshot,
+    _rip_activity_snapshot,
+)
+from mkv_episode_matcher.core.datetime_compat import UTC
+from mkv_episode_matcher.disc.orchestration_store import OrchestrationStore
+from mkv_episode_matcher.disc.rip_manifest import MediaContext
+from mkv_episode_matcher.disc.rip_preview import build_rip_preview
+from mkv_episode_matcher.disc.ripper import RipError
+from tests.test_rip_manifest import (
+    _inventory,
+    _make_batch_names,
+    _write_report,
+)
+
+
+def test_activity_snapshots_warn_without_changing_state():
+    now = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
+
+    rip = _rip_activity_snapshot(
+        state="running",
+        updated_at=(now - timedelta(minutes=6)).isoformat(),
+        now=now,
+    )
+    pipeline = _pipeline_activity_snapshot(
+        state="running",
+        stage="identify",
+        updated_at=(now - timedelta(minutes=46)).isoformat(),
+        review_code=None,
+        now=now,
+    )
+    waiting = _pipeline_activity_snapshot(
+        state="queued",
+        stage="transcode",
+        updated_at=(now - timedelta(days=1)).isoformat(),
+        review_code=None,
+        now=now,
+    )
+
+    assert rip["rip_activity_status"] == "possibly_stalled"
+    assert rip["rip_possibly_stalled"] is True
+    assert pipeline["activity_status"] == "possibly_stalled"
+    assert pipeline["possibly_stalled"] is True
+    assert waiting["activity_status"] == "waiting"
+    assert waiting["possibly_stalled"] is False
+
+
+def _preview(tmp_path):
+    payload = _make_batch_names(_inventory(3, "Private Disc Label", [1300, 1300, 1300]))
+    report = _write_report(tmp_path, "private-report.json", payload)
+    output_root = tmp_path / "private-output"
+    output_root.mkdir()
+    preview = build_rip_preview(
+        [report],
+        {
+            "disc-01": MediaContext(
+                disc_id="disc-01",
+                series_name="Test Show",
+                season=1,
+            )
+        },
+        output_root=output_root,
+    )
+    return preview, report, output_root
+
+
+def test_control_store_uses_wal_for_concurrent_progress_and_dashboard_reads(tmp_path):
+    database = tmp_path / "state" / "jobs.sqlite3"
+
+    OrchestrationStore(database)
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+
+
+def test_create_is_idempotent_and_database_is_path_redacted(tmp_path):
+    preview, report, output_root = _preview(tmp_path)
+    database = tmp_path / "state" / "jobs.sqlite3"
+    store = OrchestrationStore(database)
+
+    first = store.create_job(preview, idempotency_key="create-request-0001")
+    retry = store.create_job(preview, idempotency_key="create-request-0001")
+    serialized_database = database.read_bytes()
+
+    assert first.job_id == retry.job_id
+    assert first.state == "awaiting_review"
+    assert first.executor_attached is False
+    assert len(store.list_events(first.job_id)) == 1
+    assert str(report).encode() not in serialized_database
+    assert str(output_root).encode() not in serialized_database
+    assert b"Private Disc Label" not in serialized_database
+
+
+def test_forget_disc_jobs_removes_exact_inactive_metadata(tmp_path):
+    preview, _report, _output_root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+    first = store.create_job(preview, idempotency_key="forget-disc-job-0001")
+    second = store.create_job(preview, idempotency_key="forget-disc-job-0002")
+    destination = preview.jobs[0].staging_destination
+    fingerprint = next(
+        part for part in destination.replace("\\", "/").split("/") if len(part) == 16
+    )
+
+    forgotten = store.forget_disc_jobs(fingerprint)
+
+    assert set(forgotten) == {first.job_id, second.job_id}
+    assert store.list_jobs() == ()
+
+
+def test_exact_digest_authorizes_then_queue_pause_resume(tmp_path):
+    preview, _report, _root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+    job = store.create_job(preview, idempotency_key="create-request-0002")
+
+    with pytest.raises(RipError, match="does not match"):
+        store.authorize(
+            job.job_id,
+            expected_plan_sha256="0" * 64,
+            idempotency_key="authorize-request-0002",
+        )
+
+    authorized = store.authorize(
+        job.job_id,
+        expected_plan_sha256=job.plan_sha256,
+        idempotency_key="authorize-request-0003",
+    )
+    queued = store.queue(
+        job.job_id,
+        idempotency_key="start-request-0003",
+    )
+    retry = store.queue(
+        job.job_id,
+        idempotency_key="start-request-0003",
+    )
+    paused = store.pause(
+        job.job_id,
+        idempotency_key="pause-request-0003",
+    )
+    resumed = store.resume(
+        job.job_id,
+        idempotency_key="resume-request-0003",
+    )
+
+    assert authorized.state == "authorized"
+    assert authorized.authorization_sha256 is not None
+    assert queued.state == "queued"
+    assert retry.state == "queued"
+    assert paused.state == "paused"
+    assert resumed.state == "queued"
+    events = store.list_events(job.job_id)
+    assert [event.sequence for event in events] == [1, 2, 3, 4, 5]
+    assert [event.event_type for event in events] == [
+        "job_created",
+        "job_authorized",
+        "job_queued",
+        "job_paused",
+        "job_resumed",
+    ]
+
+
+def test_start_before_authorization_is_refused(tmp_path):
+    preview, _report, _root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+    job = store.create_job(preview, idempotency_key="create-request-0004")
+
+    with pytest.raises(RipError, match="awaiting_review"):
+        store.queue(job.job_id, idempotency_key="start-request-0004")
+
+    assert store.get_job(job.job_id).state == "awaiting_review"
+    assert len(store.list_events(job.job_id)) == 1
+
+
+def test_queued_job_can_return_to_review_without_changing_plan(tmp_path):
+    preview, _report, _root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+    job = store.create_job(preview, idempotency_key="create-return-0001")
+    store.authorize(
+        job.job_id,
+        expected_plan_sha256=job.plan_sha256,
+        idempotency_key="authorize-return-0001",
+    )
+    store.queue(job.job_id, idempotency_key="queue-return-0001")
+
+    reviewed = store.return_to_review(job.job_id, idempotency_key="return-review-0001")
+
+    assert reviewed.state == "awaiting_review"
+    assert reviewed.plan_sha256 == job.plan_sha256
+    assert reviewed.executor_attached is False
+    assert store.list_events(job.job_id)[-1].event_type == "job_returned_to_review"
+
+
+def test_non_running_job_can_be_cancelled_without_changing_media(tmp_path):
+    preview, _report, _root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+    job = store.create_job(preview, idempotency_key="create-cancel-0001")
+
+    cancelled = store.cancel(job.job_id, idempotency_key="cancel-job-0001")
+
+    assert cancelled.state == "cancelled"
+    event = store.list_events(job.job_id)[-1]
+    assert event.event_type == "job_cancelled"
+    assert event.details == {"media_changed": False}
+
+
+def test_running_job_records_path_free_progress_and_updates_timestamp(tmp_path):
+    preview, _report, _root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+    job = store.create_job(preview, idempotency_key="create-progress-0001")
+    store.authorize(
+        job.job_id,
+        expected_plan_sha256=job.plan_sha256,
+        idempotency_key="authorize-progress-0001",
+    )
+    store.queue(job.job_id, idempotency_key="queue-progress-0001")
+    store.claim_for_dispatch(job.job_id, idempotency_key="claim-progress-0001")
+
+    store.record_progress(job.job_id, "progress", "disc-01-title-000: 25%")
+    store.record_progress(job.job_id, "throughput", "disc-01-title-000: 12.34 MiB/s")
+
+    progress, throughput = store.list_events(job.job_id)[-2:]
+    assert progress.event_type == "rip_progress"
+    assert progress.details == {"percent": 25, "scope": "disc-01-title-000"}
+    assert throughput.event_type == "rip_throughput"
+    assert throughput.details == {
+        "mib_per_second": 12.34,
+        "scope": "disc-01-title-000",
+    }
+    assert store.get_job(job.job_id).updated_at >= job.updated_at
+
+
+def test_pipeline_handoff_status_is_visible_without_changing_rip_state(tmp_path):
+    preview, _report, _root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+    job = store.create_job(preview, idempotency_key="create-handoff-status-0001")
+    store.authorize(
+        job.job_id,
+        expected_plan_sha256=job.plan_sha256,
+        idempotency_key="authorize-handoff-status-0001",
+    )
+    store.queue(job.job_id, idempotency_key="queue-handoff-status-0001")
+    store.claim_for_dispatch(job.job_id, idempotency_key="claim-handoff-status-0001")
+    first, second, _third = preview.jobs
+
+    store.record_pipeline_handoff(job.job_id, first.job_id, queued=True)
+    store.record_pipeline_handoff(
+        job.job_id,
+        second.job_id,
+        queued=False,
+        error_type="PipelineQueueError",
+    )
+    running = _job_response(store.get_job(job.job_id), store)
+
+    assert store.get_job(job.job_id).state == "running"
+    assert running["pipeline_handoff_status"] == "attention_required"
+    assert running["pipeline_queued_title_count"] == 1
+    assert running["pipeline_handoff_pending_title_count"] == 1
+
+    store.complete(
+        job.job_id,
+        idempotency_key="complete-handoff-status-0001",
+        completed_count=3,
+        pipeline_queued_count=2,
+        pipeline_handoff_pending_job_ids=(second.job_id,),
+    )
+    completed = _job_response(store.get_job(job.job_id), store)
+    assert completed["pipeline_handoff_status"] == "attention_required"
+    assert completed["pipeline_queued_title_count"] == 2
+    assert completed["pipeline_handoff_pending_title_count"] == 1
+
+
+def test_job_response_reports_size_weighted_whole_disc_progress(tmp_path):
+    preview, _report, _root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+    job = store.create_job(preview, idempotency_key="create-overall-progress-0001")
+    store.authorize(
+        job.job_id,
+        expected_plan_sha256=job.plan_sha256,
+        idempotency_key="authorize-overall-progress-0001",
+    )
+    store.queue(job.job_id, idempotency_key="queue-overall-progress-0001")
+    store.claim_for_dispatch(job.job_id, idempotency_key="claim-overall-progress-0001")
+    first, second, _third = preview.jobs
+
+    store.record_progress(job.job_id, "progress", f"{first.job_id}: 100%")
+    store.record_progress(job.job_id, "completed", f"{first.job_id}: completed")
+    store.record_progress(job.job_id, "progress", f"{second.job_id}: 50%")
+
+    response = _job_response(store.get_job(job.job_id), store)
+
+    assert response["rip_progress_percent"] == 50
+    assert response["rip_progress_scope"] == second.job_id
+    assert response["rip_overall_progress_percent"] == 50
+    assert response["rip_completed_title_count"] == 1
+    assert response["rip_total_title_count"] == 3
+
+
+def test_job_response_uses_batch_progress_as_whole_disc_progress(tmp_path):
+    preview, _report, _root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+    job = store.create_job(preview, idempotency_key="create-batch-progress-0001")
+    store.authorize(
+        job.job_id,
+        expected_plan_sha256=job.plan_sha256,
+        idempotency_key="authorize-batch-progress-0001",
+    )
+    store.queue(job.job_id, idempotency_key="queue-batch-progress-0001")
+    store.claim_for_dispatch(job.job_id, idempotency_key="claim-batch-progress-0001")
+
+    store.record_progress(job.job_id, "progress", "batch: 37%")
+
+    response = _job_response(store.get_job(job.job_id), store)
+
+    assert response["rip_progress_percent"] == 37
+    assert response["rip_overall_progress_percent"] == 37
+    assert response["rip_completed_title_count"] == 0
+    assert response["rip_total_title_count"] == 3
+
+
+def test_job_response_separates_batch_phase_from_monotonic_overall_progress(
+    tmp_path,
+):
+    preview, _report, _root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+    job = store.create_job(preview, idempotency_key="create-batch-overall-0001")
+    store.authorize(
+        job.job_id,
+        expected_plan_sha256=job.plan_sha256,
+        idempotency_key="authorize-batch-overall-0001",
+    )
+    store.queue(job.job_id, idempotency_key="queue-batch-overall-0001")
+    store.claim_for_dispatch(job.job_id, idempotency_key="claim-batch-overall-0001")
+
+    store.record_progress(job.job_id, "progress", "batch-phase: 100%")
+    store.record_progress(job.job_id, "progress", "overall: 19%")
+    first_scope = preview.jobs[0].job_id
+    store.record_progress(job.job_id, "output-closed", f"{first_scope}: completed")
+    store.record_progress(job.job_id, "progress", "batch-phase: 40%")
+
+    response = _job_response(store.get_job(job.job_id), store)
+
+    assert response["rip_progress_percent"] == 40
+    assert response["rip_progress_scope"] == "batch-phase"
+    assert response["rip_overall_progress_percent"] == 19
+    assert response["rip_completed_title_count"] == 1
+
+
+def test_pipeline_settings_are_idempotent_and_changeable_while_running(tmp_path):
+    preview, _report, _root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+    job = store.create_job(preview, idempotency_key="create-settings-0001")
+    store.authorize(
+        job.job_id,
+        expected_plan_sha256=job.plan_sha256,
+        idempotency_key="authorize-settings-0001",
+    )
+    store.queue(job.job_id, idempotency_key="queue-settings-0001")
+    store.claim_for_dispatch(job.job_id, idempotency_key="claim-settings-0001")
+
+    running = store.update_pipeline_settings(
+        job.job_id,
+        content_hint="tv",
+        handbrake_profile_id="default",
+        idempotency_key="settings-update-0001",
+    )
+    retry = store.update_pipeline_settings(
+        job.job_id,
+        content_hint="tv",
+        handbrake_profile_id="default",
+        idempotency_key="settings-update-0001",
+    )
+
+    assert running.state == "running"
+    assert retry.job_id == running.job_id
+    assert store.get_pipeline_settings(job.job_id) == {
+        "content_hint": "tv",
+        "handbrake_profile_id": "default",
+    }
+    assert store.list_events(job.job_id)[-1].event_type == (
+        "job_pipeline_settings_updated"
+    )
+
+
+def test_pipeline_settings_are_refused_after_job_completion(tmp_path):
+    preview, _report, _root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+    job = store.create_job(preview, idempotency_key="create-settings-0002")
+    store.authorize(
+        job.job_id,
+        expected_plan_sha256=job.plan_sha256,
+        idempotency_key="authorize-settings-0002",
+    )
+    store.queue(job.job_id, idempotency_key="queue-settings-0002")
+    store.claim_for_dispatch(job.job_id, idempotency_key="claim-settings-0002")
+    store.complete(
+        job.job_id,
+        idempotency_key="complete-settings-0002",
+        completed_count=1,
+    )
+
+    with pytest.raises(RipError, match="can no longer change"):
+        store.update_pipeline_settings(
+            job.job_id,
+            content_hint="movie",
+            handbrake_profile_id=None,
+            idempotency_key="settings-update-0002",
+        )
+
+
+def test_failed_job_can_be_queued_for_collision_safe_retry(tmp_path):
+    preview, _report, _root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+    job = store.create_job(preview, idempotency_key="create-retry-store-0001")
+    store.authorize(
+        job.job_id,
+        expected_plan_sha256=job.plan_sha256,
+        idempotency_key="authorize-retry-store-0001",
+    )
+    store.queue(job.job_id, idempotency_key="queue-retry-store-0001")
+    store.fail(
+        job.job_id,
+        idempotency_key="fail-retry-store-0001",
+        error_type="RipError",
+        error_category="timeout",
+        failed_drive_indexes=(2,),
+        completed_job_ids=("disc-01-title-000",),
+    )
+    retried = store.retry_failed(job.job_id, idempotency_key="retry-retry-store-0001")
+    assert retried.state == "queued"
+    assert store.list_events(job.job_id)[-1].event_type == "job_retry_queued"
+
+
+def test_restart_recovers_job_and_events(tmp_path):
+    preview, _report, _root = _preview(tmp_path)
+    database = tmp_path / "jobs.sqlite3"
+    first_store = OrchestrationStore(database)
+    created = first_store.create_job(
+        preview,
+        idempotency_key="create-request-0005",
+    )
+
+    reopened = OrchestrationStore(database)
+
+    assert reopened.get_job(created.job_id) == created
+    assert reopened.list_events(created.job_id)[0].event_type == "job_created"
+
+
+def test_recent_job_listing_is_path_redacted_and_newest_first(tmp_path):
+    preview, _report, _root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+    first = store.create_job(preview, idempotency_key="list-create-0001")
+    second = store.create_job(preview, idempotency_key="list-create-0002")
+
+    listed = store.list_jobs(limit=2)
+
+    assert {job.job_id for job in listed} == {first.job_id, second.job_id}
+    assert all("report_paths" not in str(job.preview) for job in listed)
+
+
+def test_concurrent_creation_retry_produces_one_job(tmp_path):
+    preview, _report, _root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        jobs = list(
+            executor.map(
+                lambda _index: store.create_job(
+                    preview,
+                    idempotency_key="concurrent-create-0001",
+                ),
+                range(8),
+            )
+        )
+
+    assert len({job.job_id for job in jobs}) == 1
+    assert len(store.list_events(jobs[0].job_id)) == 1

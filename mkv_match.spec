@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 import sys
 import os
-from PyInstaller.utils.hooks import collect_data_files, collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_all, copy_metadata
 
 block_cipher = None
 
@@ -17,6 +17,22 @@ hiddenimports = [
     'websockets',  # Required for WebSocket support
     'websockets.legacy',
     'websockets.legacy.server',
+]
+
+# Retain license and package metadata for bundled runtime dependencies.
+for distribution in (
+    'mkv-episode-matcher', 'chardet', 'configparser', 'ffmpeg', 'librosa',
+    'loguru', 'faster-whisper', 'opensubtitlescom', 'rapidfuzz', 'requests',
+    'rich', 'soundfile', 'tmdb-client', 'typer', 'customtkinter', 'packaging',
+    'pydantic', 'pydantic-settings', 'python-dotenv', 'fastapi', 'uvicorn',
+    'python-multipart',
+):
+    datas += copy_metadata(distribution, recursive=True)
+
+datas += [
+    ('LICENSE', '.'),
+    ('THIRD_PARTY_NOTICES.md', '.'),
+    ('docs/ATTRIBUTIONS.md', 'docs'),
 ]
 
 # Collect opensubtitlescom

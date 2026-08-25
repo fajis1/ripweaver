@@ -134,7 +134,7 @@ const OnboardingModal: React.FC<OnboardingModalProps> = ({ onComplete, onSkip })
                                         <p className="mt-1 text-amber-300/80">
                                             Get one free at{' '}
                                             <a
-                                                href="https://www.opensubtitles.com/consumers"
+                                                href="https://www.opensubtitles.com/en/consumers"
                                                 target="_blank"
                                                 rel="noopener noreferrer"
                                                 className="underline hover:text-white"
