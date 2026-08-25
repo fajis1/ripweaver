@@ -1,6 +1,7 @@
 import json
 import wave
 from array import array
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +13,7 @@ from mkv_episode_matcher.media.transcript_batch import (
     TranscriptBatchError,
     TranscriptBatchItem,
     TranscriptBatchResult,
+    _collection_windows,
     build_ffmpeg_sample_command,
     collect_transcript_batch,
     validate_new_report_paths,
@@ -30,6 +32,24 @@ def _stream(index, *, channels=6, default=True):
         channel_layout="5.1" if channels == 6 else "stereo",
         is_default=default,
         is_commentary=False,
+    )
+
+
+def test_offset_expanded_windows_are_distinct_from_initial_six():
+    media = ProbedMedia(
+        duration_seconds=1400,
+        size_bytes=1,
+        container="matroska",
+        audio_streams=(_stream(0),),
+    )
+    item = TranscriptBatchItem("media-1", Path("synthetic.mkv"), media)
+
+    initial = _collection_windows(item, "expanded", intro_start_seconds=60)
+    retry = _collection_windows(item, "expanded-offset", intro_start_seconds=60)
+
+    assert len(initial) == len(retry) == 6
+    assert {window.start_seconds for window in initial}.isdisjoint(
+        window.start_seconds for window in retry
     )
 
 

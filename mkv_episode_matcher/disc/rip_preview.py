@@ -121,6 +121,7 @@ def compatible_manifest_sha256s(manifest: RipManifest) -> frozenset[str]:
     identity.pop("created_at", None)
     legacy_defaults = {
         "selected_title_indexes": None,
+        "downstream_skip_title_indexes": (),
         "special_feature_catalog_id": None,
         "special_feature_release_id": None,
         "special_feature_library_title": None,

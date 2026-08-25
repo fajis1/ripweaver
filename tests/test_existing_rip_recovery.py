@@ -174,12 +174,10 @@ def test_recovery_rejects_large_special_feature_size_difference(tmp_path):
 def test_recovery_maps_verified_prefix_of_failed_single_open_batch(tmp_path):
     indexes = (1, 2, 7, 8)
     jobs = tuple(
-        RipJob(
-            **{
-                **_job(index).__dict__,
-                "estimated_bytes": 100_000_000 + index,
-            }
-        )
+        RipJob(**{
+            **_job(index).__dict__,
+            "estimated_bytes": 100_000_000 + index,
+        })
         for index in indexes
     )
     parent = (
@@ -203,6 +201,37 @@ def test_recovery_maps_verified_prefix_of_failed_single_open_batch(tmp_path):
 
     assert [candidate.title_index for candidate in plan.candidates] == [1, 2, 7]
     assert plan.missing_title_indexes == (8,)
+
+
+def test_recovery_keeps_original_batch_ordinals_after_scope_is_narrowed(tmp_path):
+    jobs = tuple(
+        RipJob(**{**_job(index).__dict__, "estimated_bytes": 100_000_000})
+        for index in (1, 3, 4)
+    )
+    parent = (
+        tmp_path
+        / ".staging"
+        / "disc-01"
+        / "attempt-abc123"
+        / "0123456789abcdef"
+        / "title-000"
+    )
+    parent.mkdir(parents=True)
+    for ordinal in range(5):
+        path = parent / f"Disc Name_t{ordinal:02d}.mkv"
+        path.write_bytes(b"x")
+        with path.open("r+b") as stream:
+            stream.truncate(100_000_000)
+
+    plan = discover_existing_rips(tmp_path, jobs)
+
+    assert [candidate.title_index for candidate in plan.candidates] == [1, 3, 4]
+    assert [candidate.basename for candidate in plan.candidates] == [
+        "Disc Name_t01.mkv",
+        "Disc Name_t03.mkv",
+        "Disc Name_t04.mkv",
+    ]
+    assert plan.missing_title_indexes == ()
 
 
 def test_recovery_stops_failed_batch_mapping_at_first_missing_suffix(tmp_path):

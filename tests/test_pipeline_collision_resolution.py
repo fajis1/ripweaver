@@ -1,7 +1,11 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from mkv_episode_matcher.backend.routers import rip
+from mkv_episode_matcher.media.ffprobe_runner import FFprobeInspection
+from mkv_episode_matcher.media.probe import ProbedAudioStream, ProbedMedia
 from mkv_episode_matcher.pipeline_queue import PipelineQueueStore, build_artifact
 
 
@@ -149,3 +153,129 @@ def test_verified_replacement_backs_up_old_library_file(tmp_path, monkeypatch):
     backup = deletion / "library-replacements" / "media-1" / existing.name
     assert backup.read_bytes() == b"old-library"
     assert raw.read_bytes() == b"raw"
+
+
+def test_collision_comparison_reports_path_free_file_differences(tmp_path, monkeypatch):
+    store, _contracts, _raw, encoded, held = _held_collision(tmp_path)
+    library = tmp_path / "library"
+    season = library / "Show" / "Season 01"
+    season.mkdir(parents=True)
+    existing = season / "Show - S01E01 - Existing - 720p.mkv"
+    existing.write_bytes(b"old-library-file")
+    ffprobe = tmp_path / "ffprobe.exe"
+    ffprobe.write_bytes(b"synthetic executable marker")
+    config = SimpleNamespace(
+        jellyfin_tv_root=library,
+        jellyfin_movie_root=None,
+        ffprobe_path=ffprobe,
+    )
+    monkeypatch.setattr(
+        rip, "get_config_manager", lambda: SimpleNamespace(load=lambda: config)
+    )
+    inspected = []
+
+    def fake_inspector(_executable, source, *, timeout_seconds):
+        inspected.append(source)
+        is_new = source == encoded.resolve()
+        media = ProbedMedia(
+            duration_seconds=1200,
+            size_bytes=source.stat().st_size,
+            container="matroska,webm",
+            audio_streams=(
+                ProbedAudioStream(
+                    1,
+                    "aac" if is_new else "ac3",
+                    "eng",
+                    "Main Audio",
+                    2,
+                    "stereo",
+                    True,
+                    False,
+                    256000 if is_new else 384000,
+                    48000,
+                ),
+            ),
+            video_codec="hevc" if is_new else "h264",
+            video_width=1920 if is_new else 1280,
+            video_height=1080 if is_new else 720,
+            video_field_order="progressive",
+            overall_bit_rate=8_000_000 if is_new else None,
+            video_bit_rate=7_500_000 if is_new else 5_000_000,
+            video_frame_rate=24000 / 1001,
+            video_profile="Main 10" if is_new else "High",
+            video_pixel_format="yuv420p10le" if is_new else "yuv420p",
+            video_bit_depth=10 if is_new else 8,
+            video_hdr_format="HDR (PQ / SMPTE ST 2084)" if is_new else None,
+            video_color_primaries="bt2020" if is_new else "bt709",
+            video_color_transfer="smpte2084" if is_new else "bt709",
+            video_color_space="bt2020nc" if is_new else "bt709",
+            video_color_range="tv",
+            video_encoder="HandBrake 1.11" if is_new else "x264 core",
+            format_encoder="Lavf",
+        )
+        return FFprobeInspection(0, "{}", "", "start", "finish", media)
+
+    response = rip.inspect_pipeline_library_collision(
+        "media-1",
+        rip.InspectLibraryCollisionRequest(
+            expected_artifact_sha256=held.artifact.contract_sha256,
+            confirm_media_read=True,
+        ),
+        store,
+        fake_inspector,
+    )
+
+    assert inspected == [encoded.resolve(), existing.resolve()]
+    assert response.new_pipeline_file.video_codec == "hevc"
+    assert response.new_pipeline_file.height == 1080
+    assert response.new_pipeline_file.duration_seconds == 1200
+    assert response.new_pipeline_file.overall_bitrate_bps == 8_000_000
+    assert response.existing_jellyfin_file.overall_bitrate_source == "size-duration"
+    assert response.new_pipeline_file.frame_rate_fps == pytest.approx(24000 / 1001)
+    assert response.new_pipeline_file.bit_depth == 10
+    assert response.new_pipeline_file.hdr_format == "HDR (PQ / SMPTE ST 2084)"
+    assert response.new_pipeline_file.audio_tracks[0].language == "eng"
+    assert response.new_pipeline_file.audio_tracks[0].bitrate_bps == 256000
+    assert response.existing_jellyfin_file.video_codec == "h264"
+    assert response.existing_jellyfin_file.audio_codecs == ["ac3"]
+    serialized = response.model_dump_json()
+    assert str(tmp_path) not in serialized
+    assert encoded.name not in serialized
+
+
+def test_collision_playback_opens_only_the_explicitly_selected_file(
+    tmp_path, monkeypatch
+):
+    store, _contracts, _raw, encoded, held = _held_collision(tmp_path)
+    library = tmp_path / "library"
+    season = library / "Show" / "Season 01"
+    season.mkdir(parents=True)
+    existing = season / "Show - S01E01 - Existing - 720p.mkv"
+    existing.write_bytes(b"old-library-file")
+    config = SimpleNamespace(
+        jellyfin_tv_root=library,
+        jellyfin_movie_root=None,
+    )
+    monkeypatch.setattr(
+        rip, "get_config_manager", lambda: SimpleNamespace(load=lambda: config)
+    )
+    opened = []
+    monkeypatch.setattr(rip.os, "startfile", opened.append)
+
+    for target in ("new-encode", "existing-jellyfin"):
+        response = rip.play_pipeline_library_collision_file(
+            "media-1",
+            rip.PlayLibraryCollisionFileRequest(
+                target=target,
+                expected_artifact_sha256=held.artifact.contract_sha256,
+                confirm_play=True,
+            ),
+            store,
+        )
+        assert response == {
+            "started": True,
+            "media_id": "media-1",
+            "target": target,
+        }
+
+    assert opened == [encoded.resolve(), existing.resolve()]

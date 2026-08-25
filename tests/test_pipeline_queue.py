@@ -5,6 +5,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from mkv_episode_matcher.backend.identification_dossier import (
+    IdentificationDossierStore,
+)
+from mkv_episode_matcher.backend.legacy_context_repair import (
+    upgrade_legacy_disc_context,
+)
 from mkv_episode_matcher.backend.routers.rip import (
     AmbiguityChoiceRequest,
     ManualEpisodeIdentificationRequest,
@@ -12,9 +18,11 @@ from mkv_episode_matcher.backend.routers.rip import (
     _delete_exact_queued_rip,
     _disc_range_elimination_candidate,
     _exact_queued_rip_source,
+    _pipeline_identification_attempts,
     apply_manual_episode_identification,
     restart_placeholder_identification,
 )
+from mkv_episode_matcher.disc.rip_manifest import MediaContext
 from mkv_episode_matcher.disc.ripper import RipJob, RipResult, resolve_final_output
 from mkv_episode_matcher.media.handbrake import HandBrakeError
 from mkv_episode_matcher.pipeline_adapters import IdentifyStageAdapter
@@ -132,6 +140,248 @@ def test_identification_outcome_is_remembered_by_disc_title(tmp_path):
         )
 
 
+def _seed_incoherent_disc_queue(tmp_path, *, coherent=False):
+    store = PipelineQueueStore(tmp_path / "quarantine-pipeline.sqlite3")
+    fingerprint = "0123456789abcdef"
+    media_ids = {index: f"disc-title-{index:03d}" for index in range(1, 9)}
+    wrong_episodes = (8, 12, 14, 4, 16, 17, 7, 19)
+    episodes = tuple(range(1, 9)) if coherent else wrong_episodes
+    store.remember_disc_matching_scope(fingerprint, (1, 2, 3, 4, 5, 6, 8))
+
+    for title_index in range(1, 9):
+        source = tmp_path / f"title-{title_index:03d}.mkv"
+        source.write_bytes(f"verified-title-{title_index}".encode())
+        contract = tmp_path / f"title-{title_index:03d}.verified-rip.json"
+        contract.write_text(
+            json.dumps({
+                "mode": "verified-rip-contract",
+                "disc_fingerprint": fingerprint,
+                "title_index": title_index,
+                "source_path": str(source),
+                "source_size_bytes": source.stat().st_size,
+            }),
+            encoding="utf-8",
+        )
+        store.enqueue_verified_rip(
+            media_ids[title_index], build_artifact("rip", contract)
+        )
+
+    for title_index, episode in enumerate(episodes, start=1):
+        media_id = media_ids[title_index]
+        claimed = store.claim_next(
+            allowed_stages=("identify",), allowed_media_ids=(media_id,)
+        )
+        assert claimed is not None
+        identified = tmp_path / f"title-{title_index:03d}.identified.json"
+        identified.write_text(
+            json.dumps({
+                "mode": "identified-episode-contract",
+                "episode_id": f"S08E{episode:02d}",
+                "library_relative": (
+                    f"The Office/Season 08/The Office - S08E{episode:02d} - Test.mkv"
+                ),
+                "identification_order": ["tv-gemini"],
+            }),
+            encoding="utf-8",
+        )
+        store.complete_stage(
+            media_id, "identify", build_artifact("identify", identified)
+        )
+
+    for title_index in (1, 7):
+        media_id = media_ids[title_index]
+        claimed = store.claim_next(
+            allowed_stages=("transcode",), allowed_media_ids=(media_id,)
+        )
+        assert claimed is not None
+        transcode = tmp_path / f"title-{title_index:03d}.transcoded.json"
+        transcode.write_text(
+            json.dumps({
+                "mode": "verified-transcode-contract",
+                "episode_id": f"S08E{episodes[title_index - 1]:02d}",
+            }),
+            encoding="utf-8",
+        )
+        store.complete_stage(
+            media_id, "transcode", build_artifact("transcode", transcode)
+        )
+
+    title_seven = media_ids[7]
+    claimed = store.claim_next(
+        allowed_stages=("organize",), allowed_media_ids=(title_seven,)
+    )
+    assert claimed is not None
+    store.complete_stage(
+        title_seven, "organize", _artifact(tmp_path, title_seven, "organize")
+    )
+    return store, fingerprint, media_ids
+
+
+def test_incoherent_disc_identifications_are_atomically_quarantined(tmp_path):
+    store, fingerprint, media_ids = _seed_incoherent_disc_queue(tmp_path)
+    store.set_paused(True)
+
+    quarantined = store.quarantine_incoherent_disc_identifications(
+        fingerprint, (1, 2, 3, 4, 5, 6, 8)
+    )
+
+    assert [item.media_id for item in quarantined] == [
+        media_ids[index] for index in (1, 2, 3, 4, 5, 6, 8)
+    ]
+    assert all(
+        item.state == "queued" and item.stage == "identify" for item in quarantined
+    )
+    assert all(item.artifact.stage == "rip" for item in quarantined)
+    completed = store.get(media_ids[7])
+    assert completed.state == "completed"
+    assert completed.stage == "organize"
+    assert store.title_history(fingerprint) == {
+        7: {
+            "outcome_name": "The Office - S08E07 - Test.mkv",
+            "library_relative": ("The Office/Season 08/The Office - S08E07 - Test.mkv"),
+            "episode_id": "S08E07",
+        }
+    }
+    assert store.is_paused() is True
+    assert all(
+        store.list_events(media_ids[index])[-1].event_type
+        == "incoherent_disc_identification_quarantined"
+        for index in (1, 2, 3, 4, 5, 6, 8)
+    )
+
+
+def test_disc_identification_quarantine_refuses_unpaused_or_coherent_queue(tmp_path):
+    store, fingerprint, _media_ids = _seed_incoherent_disc_queue(tmp_path / "unpaused")
+    with pytest.raises(PipelineQueueError, match="requires a paused queue"):
+        store.quarantine_incoherent_disc_identifications(
+            fingerprint, (1, 2, 3, 4, 5, 6, 8)
+        )
+
+    coherent, fingerprint, _media_ids = _seed_incoherent_disc_queue(
+        tmp_path / "coherent", coherent=True
+    )
+    coherent.set_paused(True)
+    with pytest.raises(PipelineQueueError, match="history is coherent"):
+        coherent.quarantine_incoherent_disc_identifications(
+            fingerprint, (1, 2, 3, 4, 5, 6, 8)
+        )
+
+
+def _seed_legacy_seasonless_disc(tmp_path):
+    store = PipelineQueueStore(tmp_path / "legacy-context.sqlite3")
+    fingerprint = "0123456789abcdef"
+    media_ids = {}
+    original_contracts = {}
+    original_media = {}
+    store.remember_disc_matching_scope(fingerprint, tuple(range(1, 9)))
+    for title_index in range(1, 9):
+        media_id = f"legacy-title-{title_index:03d}"
+        media_ids[title_index] = media_id
+        source = tmp_path / f"legacy-title-{title_index:03d}.mkv"
+        source.write_bytes(f"preserved-{title_index}".encode())
+        original_media[title_index] = source.read_bytes()
+        contract = tmp_path / f"legacy-title-{title_index:03d}.json"
+        contract.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "mode": "verified-rip-contract",
+                "media_id": media_id,
+                "source_path": str(source),
+                "source_size_bytes": source.stat().st_size,
+                "warning_count": 0,
+                "disc_fingerprint": fingerprint,
+                "title_index": title_index,
+                "media_context": {
+                    "series_name": "The Office",
+                    "season": None,
+                    "content_hint": None,
+                    "episode_assignments": [],
+                },
+            }),
+            encoding="utf-8",
+        )
+        original_contracts[title_index] = contract
+        store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+        claimed = store.claim_next(
+            allowed_stages=("identify",), allowed_media_ids=(media_id,)
+        )
+        assert claimed is not None
+        store.require_review(media_id, "gemini_response_invalid")
+    return store, fingerprint, media_ids, original_contracts, original_media
+
+
+def test_legacy_disc_context_is_upgraded_without_changing_media(tmp_path):
+    (
+        store,
+        fingerprint,
+        media_ids,
+        original_contracts,
+        original_media,
+    ) = _seed_legacy_seasonless_disc(tmp_path)
+    contract_root = tmp_path / "recontextualized"
+    store.set_paused(True)
+
+    repaired = upgrade_legacy_disc_context(
+        store,
+        disc_fingerprint=fingerprint,
+        fresh_context=MediaContext(
+            disc_id="disc-01",
+            series_name="THE OFFICE SUPERFAN EPISODES",
+            season=8,
+            disc_number=2,
+            content_hint="tv",
+        ),
+        contract_root=contract_root,
+    )
+
+    assert [item.media_id for item in repaired] == [
+        media_ids[index] for index in range(1, 9)
+    ]
+    assert all(item.state == "queued" and item.stage == "identify" for item in repaired)
+    assert store.is_paused() is True
+    for title_index, original_contract in original_contracts.items():
+        payload = json.loads(
+            store.rip_artifact(media_ids[title_index]).contract_path.read_text(
+                encoding="utf-8"
+            )
+        )
+        assert payload["media_context"]["series_name"] == "The Office"
+        assert payload["media_context"]["season"] == 8
+        assert payload["media_context"]["disc_number"] == 2
+        assert payload["media_context"]["content_hint"] == "tv"
+        assert original_contract.is_file()
+        source = tmp_path / f"legacy-title-{title_index:03d}.mkv"
+        assert source.read_bytes() == original_media[title_index]
+        assert store.list_events(media_ids[title_index])[-1].event_type == (
+            "legacy_disc_media_context_repaired"
+        )
+
+
+def test_legacy_disc_context_upgrade_is_inert_while_queue_is_running(tmp_path):
+    store, fingerprint, media_ids, _contracts, _media = _seed_legacy_seasonless_disc(
+        tmp_path
+    )
+
+    repaired = upgrade_legacy_disc_context(
+        store,
+        disc_fingerprint=fingerprint,
+        fresh_context=MediaContext(
+            disc_id="disc-01",
+            series_name="The Office",
+            season=8,
+            disc_number=2,
+            content_hint="tv",
+        ),
+        contract_root=tmp_path / "recontextualized",
+    )
+
+    assert repaired == ()
+    payload = json.loads(
+        store.rip_artifact(media_ids[1]).contract_path.read_text(encoding="utf-8")
+    )
+    assert payload["media_context"]["season"] is None
+
+
 def _store(tmp_path):
     return PipelineQueueStore(tmp_path / "private-pipeline.sqlite3")
 
@@ -206,7 +456,7 @@ def test_dispatcher_claims_only_exact_authorized_media_ids(tmp_path):
     assert store.get("media-1").state == "queued"
 
 
-def test_atomic_claim_allows_only_one_downstream_worker(tmp_path):
+def test_atomic_claim_allows_only_one_worker_for_the_same_stage(tmp_path):
     store = _store(tmp_path)
     for index in range(3):
         media_id = f"media-{index}"
@@ -226,6 +476,47 @@ def test_atomic_claim_allows_only_one_downstream_worker(tmp_path):
 
     assert sum(item is not None for item in claims) == 1
     assert sum(item.state == "running" for item in store.list_items()) == 1
+
+
+def test_claim_allows_organization_to_overlap_unrelated_transcode(tmp_path):
+    store = _store(tmp_path)
+    for media_id in ("transcoding", "organizing"):
+        store.enqueue_verified_rip(media_id, _artifact(tmp_path, media_id, "rip"))
+
+    identifying = store.claim_next(
+        allowed_stages=("identify",), allowed_media_ids=("transcoding",)
+    )
+    store.complete_stage(
+        identifying.media_id,
+        "identify",
+        _artifact(tmp_path, identifying.media_id, "identify"),
+    )
+    identifying = store.claim_next(
+        allowed_stages=("identify",), allowed_media_ids=("organizing",)
+    )
+    store.complete_stage(
+        identifying.media_id,
+        "identify",
+        _artifact(tmp_path, identifying.media_id, "identify"),
+    )
+    transcoding_for_organize = store.claim_next(
+        allowed_stages=("transcode",), allowed_media_ids=("organizing",)
+    )
+    store.complete_stage(
+        transcoding_for_organize.media_id,
+        "transcode",
+        _artifact(tmp_path, transcoding_for_organize.media_id, "transcode"),
+    )
+
+    active_transcode = store.claim_next(
+        allowed_stages=("transcode",), allowed_media_ids=("transcoding",)
+    )
+    active_organize = store.claim_next(allowed_stages=("organize",))
+
+    assert active_transcode.media_id == "transcoding"
+    assert active_organize.media_id == "organizing"
+    assert store.claim_next(allowed_stages=("transcode",)) is None
+    assert store.claim_next(allowed_stages=("organize",)) is None
 
 
 def test_review_and_failure_isolate_items_and_retry_same_stage(tmp_path):
@@ -318,6 +609,56 @@ def test_restart_restores_interrupted_all_season_analysis_to_review(tmp_path):
     recovered = reopened.get("media-1")
     assert recovered.state == "review_required"
     assert recovered.review_code == "all_season_analysis_failed"
+
+
+def test_restart_marks_interrupted_gemini_analysis_as_not_running(tmp_path):
+    store = _store(tmp_path)
+    original = _artifact(tmp_path, "media-1", "rip")
+    store.enqueue_verified_rip("media-1", original)
+    store.claim_next()
+    store.require_review("media-1", "gemini_evidence_required")
+    store.choose_review_path("media-1", "gemini_analysis_running")
+    store.set_paused(True)
+
+    reopened = PipelineQueueStore(store.database_path)
+    assert reopened.reconcile_incomplete() == ("media-1",)
+    recovered = reopened.get("media-1")
+    assert recovered.state == "review_required"
+    assert recovered.review_code == "gemini_analysis_interrupted"
+    assert reopened.is_paused() is True
+    assert reopened.list_events("media-1")[-1].details == {
+        "review_code": "gemini_analysis_interrupted"
+    }
+
+
+def test_episode_match_review_can_enter_all_season_analysis(tmp_path):
+    store = _store(tmp_path)
+    original = _artifact(tmp_path, "media-1", "rip")
+    store.enqueue_verified_rip("media-1", original)
+    store.hold_for_review("media-1", "episode_match_review")
+
+    selected = store.choose_review_path("media-1", "all_season_analysis_running")
+
+    assert selected.state == "review_required"
+    assert selected.stage == "identify"
+    assert selected.review_code == "all_season_analysis_running"
+
+
+def test_incoherent_whole_disc_analysis_becomes_a_durable_review(tmp_path):
+    store = _store(tmp_path)
+    original = _artifact(tmp_path, "media-1", "rip")
+    store.enqueue_verified_rip("media-1", original)
+    store.claim_next()
+    store.require_review("media-1", "unmatched_disc_analysis_required")
+    store.choose_review_path("media-1", "all_season_analysis_running")
+
+    selected = store.choose_review_path(
+        "media-1", "whole_disc_coherence_review_required"
+    )
+
+    assert selected.state == "review_required"
+    assert selected.stage == "identify"
+    assert selected.review_code == "whole_disc_coherence_review_required"
 
 
 def test_changed_contract_and_path_leaking_events_are_refused(tmp_path):
@@ -649,6 +990,8 @@ def test_delete_discarded_item_media_after_preserving_it(tmp_path):
 
 def test_forget_disc_records_removes_only_metadata_and_preserves_media(tmp_path):
     store = _store(tmp_path)
+    store.remember_disc_matching_scope("0123456789abcdef", (1, 3))
+    store.remember_disc_recovery_scope("0123456789abcdef", (1, 2, 3))
     sources = {}
     for media_id, fingerprint in (
         ("forgotten-disc-item", "0123456789abcdef"),
@@ -675,6 +1018,8 @@ def test_forget_disc_records_removes_only_metadata_and_preserves_media(tmp_path)
     assert (record_count, history_count) == (1, 0)
     assert {item.media_id for item in store.list_items()} == {"other-disc-item"}
     assert all(source.is_file() for source in sources.values())
+    assert store.disc_matching_scope("0123456789abcdef") is None
+    assert store.disc_recovery_scope("0123456789abcdef") is None
 
 
 def test_review_held_verified_rip_source_is_eligible_for_exact_deletion(tmp_path):
@@ -947,7 +1292,11 @@ def test_episode_correction_preserves_encode_and_updates_history(tmp_path):
     )
 
 
-def test_manual_playback_review_teaches_disc_title_history(tmp_path):
+@pytest.mark.parametrize(
+    "review_code",
+    ["all_season_analysis_failed", "episode_match_review", "gemini_analysis_failed"],
+)
+def test_manual_playback_review_teaches_disc_title_history(tmp_path, review_code):
     store = _store(tmp_path)
     source = tmp_path / "staged-rip.mkv"
     source.write_bytes(b"verified-rip")
@@ -967,7 +1316,7 @@ def test_manual_playback_review_teaches_disc_title_history(tmp_path):
     contracts.mkdir()
     store.enqueue_verified_rip("media-1", build_artifact("rip", rip))
     store.claim_next()
-    store.require_review("media-1", "all_season_analysis_failed")
+    store.require_review("media-1", review_code)
 
     response = apply_manual_episode_identification(
         "media-1",
@@ -993,6 +1342,51 @@ def test_manual_playback_review_teaches_disc_title_history(tmp_path):
         ),
         "episode_id": "S03E02",
     }
+
+
+def test_legacy_episode_review_surfaces_best_audit_candidate(tmp_path):
+    contract = tmp_path / "rip.json"
+    contract.write_text(
+        json.dumps({"media_context": {"series_name": "The Office"}}),
+        encoding="utf-8",
+    )
+    dossier = IdentificationDossierStore(tmp_path / "evidence")
+    dossier.record_initial_match_trace(
+        "media-1",
+        {
+            "schema_version": 1,
+            "engine_decision": "review",
+            "engine_reason": "no_candidate_met_segment_threshold",
+            "segments": [
+                {
+                    "segment_index": 0,
+                    "status": "below_threshold",
+                    "candidate_evaluations": [
+                        {
+                            "rank": 1,
+                            "candidate_episode_id": "S06E12",
+                            "candidate_episode_title": "Scott's Tots",
+                            "score": 0.50348,
+                            "segment_threshold": 0.6,
+                            "qualified": False,
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    item = SimpleNamespace(
+        media_id="media-1",
+        review_code="episode_match_review",
+        artifact=SimpleNamespace(contract_path=contract),
+    )
+
+    attempts = _pipeline_identification_attempts(item, dossier)
+
+    assert attempts[0]["summary"]["candidate_series_name"] == "The Office"
+    assert attempts[0]["summary"]["candidate_episode_id"] == "S06E12"
+    assert attempts[0]["summary"]["candidate_episode_title"] == "Scott's Tots"
+    assert attempts[0]["summary"]["best_score"] == pytest.approx(0.50348)
 
 
 def test_reviewed_catalogue_candidate_remains_server_assisted_history(tmp_path):
@@ -1128,6 +1522,17 @@ def test_verified_rip_result_is_admitted_without_discovering_media(tmp_path):
         results=[result],
         output_root=output_root,
         contract_root=contract_root,
+        media_contexts={
+            job.job_id: MediaContext(
+                disc_id=job.job_id,
+                series_name="Test Show",
+                season=8,
+                disc_number=2,
+                volume_number=4,
+                content_hint="tv",
+                selected_title_indexes=(0,),
+            )
+        },
         media_id_overrides={job.job_id: "disc-title000-recovery-0123456789ab"},
     )
 
@@ -1136,9 +1541,84 @@ def test_verified_rip_result_is_admitted_without_discovering_media(tmp_path):
     assert queued[0].state == "queued"
     private_payload = json.loads(queued[0].artifact.contract_path.read_text())
     assert private_payload["source_path"] == str(source.resolve())
+    assert private_payload["media_context"]["season"] == 8
+    assert private_payload["media_context"]["disc_number"] == 2
+    assert private_payload["media_context"]["volume_number"] == 4
+    assert private_payload["media_context"]["selected_title_indexes"] == [0]
     assert str(source) not in json.dumps([
         event.details for event in store.list_events()
     ])
+
+
+def test_verified_non_episode_is_retained_without_downstream_queue(tmp_path):
+    store = _store(tmp_path)
+    output_root = tmp_path / "media-output"
+    contract_root = tmp_path / "private-contracts"
+    output_root.mkdir()
+    contract_root.mkdir()
+    basename = "Test-Disc--disc-01-0123456789abcdef-title-000.mkv"
+    job = RipJob(
+        job_id="disc-01-title-000",
+        drive_index=0,
+        title_index=0,
+        relative_output_dir="Test Show/Season 01/isolated/title-000",
+        output_basename=basename,
+        final_relative_dir="Test Show/Season 01",
+    )
+    source = resolve_final_output(output_root, job)
+    assert source is not None
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"verified-short-title")
+    result = RipResult(
+        job_id=job.job_id,
+        return_code=0,
+        output_count=1,
+        output_bytes=source.stat().st_size,
+        warning_count=0,
+        started_at="2026-01-01T00:00:00+00:00",
+        finished_at="2026-01-01T00:01:00+00:00",
+    )
+
+    handled = enqueue_verified_rip_results(
+        store,
+        jobs=(job,),
+        results=[result],
+        output_root=output_root,
+        contract_root=contract_root,
+        media_contexts={
+            "disc-01": MediaContext(
+                disc_id="disc-01",
+                series_name="Test Show",
+                season=1,
+                content_hint="tv",
+                downstream_skip_title_indexes=(0,),
+            )
+        },
+        expected_title_indexes_by_disc={"disc-01": (0, 1)},
+    )
+
+    assert source.is_file()
+    assert handled[0].state == "completed"
+    assert handled[0].stage == "identify"
+    assert store.claim_next() is None
+    assert store.title_dispositions("0123456789abcdef") == {
+        0: {"disposition": "skip", "reason": "automatic_non_episode"}
+    }
+    assert store.list_events(handled[0].media_id)[-1].event_type == (
+        "verified_rip_downstream_skipped"
+    )
+    private_payload = json.loads(
+        handled[0].artifact.contract_path.read_text(encoding="utf-8")
+    )
+    assert private_payload["disc_expected_title_indexes"] == [1]
+    assert store.expected_title_indexes_for_disc("0123456789abcdef") == (1,)
+    store.remember_disc_matching_scope("0123456789abcdef", (1, 3))
+    assert store.disc_matching_scope("0123456789abcdef") == (1, 3)
+    store.remember_disc_recovery_scope("0123456789abcdef", (1, 2, 3, 4))
+    assert store.disc_recovery_scope("0123456789abcdef") == (1, 2, 3, 4)
+    assert store.expected_title_indexes_for_disc("0123456789abcdef") == (1, 3)
+    assert store.restore_title_disposition("0123456789abcdef", 0) is True
+    assert store.expected_title_indexes_for_disc("0123456789abcdef") == (0, 1, 3)
 
 
 def test_verified_rip_retry_preserves_old_contract_and_uses_digest_name(tmp_path):
@@ -1226,6 +1706,26 @@ def test_sequence_diagnostic_accepts_real_ambiguous_planner_disposition(tmp_path
     assert event.details["disposition"] == "review-ambiguous"
 
 
+def test_sequence_diagnostic_accepts_reviewed_episode_range_scope(tmp_path):
+    store = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+    store.enqueue_verified_rip("media-1", _artifact(tmp_path, "media-1", "rip"))
+
+    store.record_sequence_diagnostic(
+        ("media-1",),
+        catalog_episode_count=5,
+        file_count=1,
+        best_score=0.51,
+        runner_up_score=0.50,
+        global_margin=0.01,
+        disposition="review-ambiguous",
+        candidate_scope="S07E20-E24",
+    )
+
+    event = store.list_events("media-1")[-1]
+    assert event.event_type == "sequence_match_scored"
+    assert event.details["candidate_scope"] == "S07E20-E24"
+
+
 def test_matching_performance_is_durable_and_path_free(tmp_path):
     database = tmp_path / "queue.sqlite3"
     store = PipelineQueueStore(database)
@@ -1253,6 +1753,28 @@ def test_matching_performance_is_durable_and_path_free(tmp_path):
     assert records[0]["failure_stage"] is None
     assert records[0]["provider_branches"] == []
     assert "path" not in records[0]
+
+
+def test_matching_performance_accepts_completed_single_title_residual(tmp_path):
+    store = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+
+    store.record_matching_performance(
+        disc_fingerprint="0123456789abcdef",
+        series_name="Example Series",
+        title_count=1,
+        anchor_count=1,
+        season_scope=(7,),
+        proposed_count=1,
+        applied_count=1,
+        unresolved_count=0,
+        anchor_elapsed_ms=10,
+        total_elapsed_ms=20,
+        provider_branches=("tv-local", "tv-gemini"),
+    )
+
+    record = store.matching_performance()[0]
+    assert record["title_count"] == 1
+    assert record["outcome"] == "completed"
 
 
 def test_matching_performance_migrates_existing_database_and_records_failure(

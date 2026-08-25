@@ -15,6 +15,17 @@ from mkv_episode_matcher.disc.drive_mapping import (
     discover_windows_optical_devices,
 )
 from mkv_episode_matcher.disc.drive_watcher import DriveWatcher
+from mkv_episode_matcher.disc.image_acquisition import execute_disc_image
+from mkv_episode_matcher.disc.image_acquisition_bindings import (
+    PrivateAcquisitionBindingStore,
+)
+from mkv_episode_matcher.disc.image_acquisition_store import ImageAcquisitionStore
+from mkv_episode_matcher.disc.makemkv_process_control import (
+    ExclusiveMakeMKVStartupControl,
+)
+from mkv_episode_matcher.disc.makemkv_process_control import (
+    get_makemkv_startup_control as get_process_makemkv_startup_control,
+)
 from mkv_episode_matcher.disc.orchestration_store import OrchestrationStore
 from mkv_episode_matcher.disc.preflight import resolve_makemkv_path, run_info_command
 from mkv_episode_matcher.disc.private_bindings import PrivateBindingStore
@@ -43,6 +54,8 @@ _handbrake_profile_store: HandBrakeProfileStore | None = None
 _drive_refresh_coordinator: DriveRefreshCoordinator | None = None
 _windows_volume_listener: WindowsVolumeEventListener | None = None
 _library_episode_repair_store: LibraryEpisodeRepairStore | None = None
+_image_acquisition_store: ImageAcquisitionStore | None = None
+_private_acquisition_binding_store: PrivateAcquisitionBindingStore | None = None
 
 
 def get_config_manager():
@@ -104,10 +117,46 @@ def get_private_binding_store() -> PrivateBindingStore:
     return _private_binding_store
 
 
+def get_image_acquisition_store() -> ImageAcquisitionStore:
+    global _image_acquisition_store
+    with _orchestration_lock:
+        if _image_acquisition_store is None:
+            config = get_config_manager().load()
+            path = config.cache_dir.parent / "orchestration" / "acquisitions.sqlite3"
+            _image_acquisition_store = ImageAcquisitionStore(path)
+    return _image_acquisition_store
+
+
+def get_private_acquisition_binding_store() -> PrivateAcquisitionBindingStore:
+    global _private_acquisition_binding_store
+    with _orchestration_lock:
+        if _private_acquisition_binding_store is None:
+            config = get_config_manager().load()
+            path = (
+                config.cache_dir.parent
+                / "orchestration"
+                / "private-acquisitions.sqlite3"
+            )
+            _private_acquisition_binding_store = PrivateAcquisitionBindingStore(path)
+    return _private_acquisition_binding_store
+
+
+def get_image_acquisition_executor():
+    """Return the physical boundary; API tests must override this dependency."""
+
+    return execute_disc_image
+
+
 def get_rip_execution_registry() -> RipExecutionRegistry:
     """Return process-local active-executor controls."""
 
     return _rip_execution_registry
+
+
+def get_makemkv_startup_control() -> ExclusiveMakeMKVStartupControl:
+    """Return the process-wide exclusive MakeMKV startup safety gate."""
+
+    return get_process_makemkv_startup_control()
 
 
 def get_rip_queue_runner():
@@ -220,33 +269,38 @@ def start_windows_drive_events() -> bool:
     def refresh() -> None:
         config = get_config_manager().load()
         watcher = get_drive_watcher()
-        if _rip_execution_registry.has_active_executor():
-            snapshot = watcher.refresh_native_media()
-        else:
+        with _rip_execution_registry.claim_all_drive_discovery():
             executable = resolve_makemkv_path(config.makemkv_path)
             snapshot = watcher.refresh(executable, timeout_seconds=120)
-        from mkv_episode_matcher.backend.automatic_rip import automatic_rip_coordinator
+        from mkv_episode_matcher.backend.automatic_rip import observe_automatic_drives
 
-        automatic_rip_coordinator.observe(
-            snapshot, enabled=config.automatic_processing_enabled
+        observe_automatic_drives(
+            snapshot,
+            enabled=config.automatic_processing_enabled,
+            processing_paused=get_pipeline_queue_store().is_paused(),
         )
 
     def periodic_refresh() -> None:
         config = get_config_manager().load()
         watcher = get_drive_watcher()
         snapshot = watcher.refresh_native_media()
-        from mkv_episode_matcher.backend.automatic_rip import automatic_rip_coordinator
+        from mkv_episode_matcher.backend.automatic_rip import observe_automatic_drives
 
-        automatic_rip_coordinator.observe(
-            snapshot, enabled=config.automatic_processing_enabled
+        observe_automatic_drives(
+            snapshot,
+            enabled=config.automatic_processing_enabled,
+            processing_paused=get_pipeline_queue_store().is_paused(),
         )
 
     coordinator = DriveRefreshCoordinator(
         refresh,
-        _rip_execution_registry.has_active_executor,
+        _rip_execution_registry.has_active_optical_work,
         invalidate_bindings=get_drive_watcher().invalidate_current_disc_bindings,
         periodic_refresh=periodic_refresh,
-        poll_seconds=15.0,
+        # Windows volume-label reads wake idle optical drives. Keep the native
+        # reconciliation callback for real media events received during active
+        # optical work, but do not poll every drive while the system is idle.
+        poll_seconds=None,
     )
     listener = WindowsVolumeEventListener(coordinator.notify_change)
     coordinator.start()
@@ -262,6 +316,43 @@ def start_windows_drive_events() -> bool:
     # defers it while an authorized rip executor is active.
     coordinator.notify_change()
     return True
+
+
+def request_windows_drive_refresh() -> bool:
+    """Queue one full discovery turn without fabricating a media-change event."""
+
+    if _drive_refresh_coordinator is None:
+        return False
+    _drive_refresh_coordinator.request_refresh()
+    return True
+
+
+def windows_drive_refresh_deferred() -> bool:
+    """Return whether full discovery is queued behind active optical work."""
+
+    return bool(
+        _drive_refresh_coordinator is not None
+        and _drive_refresh_coordinator.refresh_deferred()
+    )
+
+
+def windows_drive_automatic_discovery_status() -> dict[str, object]:
+    """Return path-free automatic-discovery circuit-breaker state."""
+
+    if _drive_refresh_coordinator is None:
+        return {
+            "paused": False,
+            "pause_reason": None,
+            "consecutive_timeout_count": 0,
+        }
+    return _drive_refresh_coordinator.automatic_discovery_status()
+
+
+def resume_windows_drive_automatic_discovery() -> None:
+    """Clear the automatic breaker before a confirmed synchronous refresh."""
+
+    if _drive_refresh_coordinator is not None:
+        _drive_refresh_coordinator.resume_automatic_discovery()
 
 
 def stop_windows_drive_events() -> None:

@@ -8,6 +8,7 @@ from mkv_episode_matcher.disc.title_selector import (
     normalize_title,
     parse_duration_seconds,
     select_pipeline_titles,
+    select_recovery_titles,
 )
 
 
@@ -182,6 +183,28 @@ def test_pipeline_selection_keeps_episodes_and_conservative_bonus_titles():
     assert [
         decision.title.index for decision in select_pipeline_titles(plan, "tv")
     ] == [0, 1, 2]
+
+
+def test_tv_recovery_keeps_substantial_review_titles_without_widening_matching():
+    inventory = _inventory([
+        _title(0, "0:02:00", size_bytes=120_000_000),
+        _title(1, "0:32:15", size_bytes=6_800_000_000),
+        _title(2, "0:45:25", size_bytes=8_170_000_000),
+        _title(3, "0:33:00", size_bytes=6_930_000_000),
+        _title(4, "0:33:21", size_bytes=6_780_000_000),
+        _title(5, "0:59:30", size_bytes=10_660_000_000),
+        _title(6, "0:00:10", size_bytes=1_000_000),
+    ])
+
+    plan = build_title_plan(inventory, report_id="substantial-review-recovery")
+
+    assert [
+        decision.title.index for decision in select_pipeline_titles(plan, "tv")
+    ] == [1, 3, 4]
+    assert [
+        decision.title.index for decision in select_recovery_titles(plan, "tv")
+    ] == [1, 2, 3, 4, 5]
+    assert {plan.decisions[index].classification for index in (2, 5)} == {"review"}
 
 
 def test_expected_episode_count_can_expand_an_ambiguous_cluster():

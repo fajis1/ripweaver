@@ -12,17 +12,42 @@ from uuid import uuid4
 from fastapi import HTTPException
 from loguru import logger
 
+from mkv_episode_matcher.core.subtitle_releases import (
+    infer_subtitle_release_profile,
+)
+from mkv_episode_matcher.core.tv_identification_policy import (
+    AUTOMATIC_TV_DISC_RETRY_CODES,
+)
 from mkv_episode_matcher.disc.content_policy import infer_release_name_from_disc_label
 from mkv_episode_matcher.disc.drive_watcher import DriveStatusSnapshot
 from mkv_episode_matcher.disc.ripper import RipError
 
 _downstream_lock = threading.Lock()
+_automatic_rip_startup_hold = threading.Event()
 _AUTOMATIC_UNMATCHED_CODES = frozenset({
+    "episode_match_review",
+    "gemini_descriptive_review_required",
     "missing_season_context",
     "unmatched_disc_analysis_required",
     "all_season_sequence_review_required",
     "independent_episode_evidence_required",
 })
+_AUTOMATIC_DISC_RETRY_CODES = AUTOMATIC_TV_DISC_RETRY_CODES
+
+
+def set_automatic_rip_startup_hold(enabled: bool) -> None:
+    """Hold automatic disc execution for one explicitly staged server lifetime."""
+
+    if enabled:
+        _automatic_rip_startup_hold.set()
+    else:
+        _automatic_rip_startup_hold.clear()
+
+
+def automatic_rip_startup_held() -> bool:
+    """Return whether this process must not launch unattended disc workers."""
+
+    return _automatic_rip_startup_hold.is_set()
 
 
 def _preview_fingerprints(preview: dict[str, object]) -> frozenset[str]:
@@ -141,6 +166,19 @@ def _automatic_job_can_advance(job, store) -> bool:
     return True
 
 
+def _automatic_failure_is_retryable(exc: Exception) -> bool:
+    """Return whether an unchanged loaded disc may be prepared again.
+
+    HTTP failures are decisions made after the request reached the guarded
+    preparation boundary.  Retrying the same disc without a media change just
+    repeats deterministic review, configuration, or durable-state conflicts.
+    Low-level operating-system failures may be transient, so the coordinator
+    retains its existing one-reconciliation retry behavior for those only.
+    """
+
+    return isinstance(exc, OSError) and not isinstance(exc, HTTPException)
+
+
 class AutomaticRipCoordinator:
     """Launch one worker per newly loaded drive and suppress refresh duplicates."""
 
@@ -158,7 +196,8 @@ class AutomaticRipCoordinator:
             )
             for drive in snapshot.drives
             if (
-                drive.has_disc
+                drive.available
+                and drive.has_disc
                 and drive.mapping_status == "trusted"
                 and drive.makemkv_confirmed
             )
@@ -212,6 +251,10 @@ class AutomaticRipCoordinator:
 def run_automatic_drive(drive_index: int) -> bool:
     """Prepare, authorize, queue, and execute one collision-free inserted disc."""
 
+    if automatic_rip_startup_held():
+        logger.info("Automatic rip remained held for exact-plan review")
+        return True
+
     from mkv_episode_matcher.backend.dependencies import (
         get_disc_inventory_runner,
         get_drive_watcher,
@@ -259,6 +302,12 @@ def run_automatic_drive(drive_index: int) -> bool:
             public_store,
         )
         job_id = job.job_id
+        if pipeline_store.is_paused():
+            logger.info(
+                "Automatic disc inventory restored saved status while processing "
+                "remained paused"
+            )
+            return True
         if not _automatic_job_can_advance(job, public_store):
             return True
         if job.state == "awaiting_review":
@@ -293,6 +342,7 @@ def run_automatic_drive(drive_index: int) -> bool:
             pipeline_store,
             get_pipeline_contract_root(),
             get_disc_inventory_runner(),
+            watcher,
         )
         if completed.get("state") == "completed":
             media_ids = tuple(
@@ -307,10 +357,17 @@ def run_automatic_drive(drive_index: int) -> bool:
             )
         return True
     except (HTTPException, RipError, OSError, ValueError) as exc:
+        retry = _automatic_failure_is_retryable(exc)
+        status_code = exc.status_code if isinstance(exc, HTTPException) else None
         logger.warning(
-            "Automatic rip stopped safely during {}: {}", stage, type(exc).__name__
+            "Automatic rip stopped safely during {}: failure_type={} "
+            "status_code={} retry_unchanged_disc={}",
+            stage,
+            type(exc).__name__,
+            status_code,
+            retry,
         )
-        return False
+        return not retry
 
 
 def _wait_for_stage_to_settle(
@@ -413,8 +470,6 @@ def _resolve_automatic_unmatched_disc(  # noqa: C901
 ) -> None:
     """Run the normal disc-sequence fallback for one automatic TV batch."""
 
-    import json
-
     from mkv_episode_matcher.backend.dependencies import get_engine
     from mkv_episode_matcher.backend.unmatched_disc_analysis import (
         GeminiAnalysisError,
@@ -427,26 +482,17 @@ def _resolve_automatic_unmatched_disc(  # noqa: C901
         for media_id in media_ids
         if store.get(media_id).stage == "identify"
         and store.get(media_id).state == "review_required"
-        and store.get(media_id).review_code in _AUTOMATIC_UNMATCHED_CODES
+        and store.get(media_id).review_code
+        in (_AUTOMATIC_UNMATCHED_CODES | _AUTOMATIC_DISC_RETRY_CODES)
     ]
     if not held:
         return
     try:
-        payload = json.loads(held[0].artifact.contract_path.read_text(encoding="utf-8"))
-        context = payload.get("media_context", {})
-        if context.get("content_hint") in {"movie", "extras", "mixed"}:
+        fingerprint, series_name, season = _automatic_disc_tv_context(held)
+        if fingerprint is None:
             # Movie and bonus-feature batches must never be passed to the TV
             # all-season sequence matcher merely because they have no season.
             return
-        fingerprint = payload.get("disc_fingerprint")
-        series_name = _automatic_series_name(
-            context.get("series_name"), held[0].media_id
-        )
-        season = context.get("season")
-        if not isinstance(fingerprint, str) or series_name is None:
-            raise PipelineQueueError("Automatic episode context is incomplete")
-        if not isinstance(season, int) or isinstance(season, bool):
-            season = None
         for item in held:
             store.choose_review_path(item.media_id, "all_season_analysis_running")
         execute_unmatched_disc_analysis(
@@ -508,20 +554,106 @@ def _resolve_automatic_unmatched_disc(  # noqa: C901
 automatic_rip_coordinator = AutomaticRipCoordinator(run_automatic_drive)
 
 
+def observe_automatic_drives(
+    snapshot: DriveStatusSnapshot,
+    *,
+    enabled: bool,
+    processing_paused: bool = False,
+) -> bool:
+    """Observe loaded media unless all unattended disc access is held.
+
+    A durable processing pause still permits the existing read-only inventory
+    worker to recognize an inserted disc and restore its saved dashboard
+    binding.  The worker checks the durable pause immediately after preparation
+    and cannot advance the job while that pause remains set.
+    """
+
+    if automatic_rip_startup_held():
+        return False
+    automatic_rip_coordinator.observe(snapshot, enabled=enabled)
+    return True
+
+
 def _automatic_series_name(series_name: object, media_id: str) -> str | None:
     """Recover a real series name without treating a disc ordinal as a season."""
 
     if isinstance(series_name, str):
         normalized = re.sub(r"[^a-z0-9]+", "", series_name.casefold())
         if normalized not in {"", "unmatched", "unknown", "unknownseries"}:
-            return series_name.strip()
+            return infer_subtitle_release_profile(
+                series_name.strip()
+            ).canonical_series_name
     disc_label = media_id.split("--disc-", 1)[0]
     inferred = infer_release_name_from_disc_label(disc_label)
     if inferred is None:
         return None
     normalized = re.sub(r"[^a-z0-9]+", "", inferred.casefold())
+    if normalized in {"", "unmatched", "unknown", "unknownseries"}:
+        return None
+    return infer_subtitle_release_profile(inferred).canonical_series_name
+
+
+def _automatic_item_context(item) -> tuple[str, dict]:
+    """Load one private contract while returning only its matching context."""
+
+    import json
+
+    from mkv_episode_matcher.pipeline_queue import PipelineQueueError
+
+    try:
+        payload = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PipelineQueueError("Automatic episode context is unavailable") from exc
+    fingerprint = payload.get("disc_fingerprint")
+    if not isinstance(fingerprint, str):
+        raise PipelineQueueError("Automatic episode context is incomplete")
+    context = payload.get("media_context")
+    return fingerprint, context if isinstance(context, dict) else {}
+
+
+def _automatic_disc_tv_context(held) -> tuple[str | None, str | None, int | None]:
+    """Reconcile exact-disc TV context across every held sibling contract.
+
+    Legacy recovery items can carry uneven metadata even though their exact
+    fingerprint proves they belong to one disc.  A season present on any
+    sibling therefore narrows the whole disc, while conflicting non-null
+    seasons or series names stop for review instead of launching an arbitrary
+    all-season search.
+    """
+
+    from mkv_episode_matcher.pipeline_queue import PipelineQueueError
+
+    fingerprints: set[str] = set()
+    seasons: set[int] = set()
+    series_by_key: dict[str, str] = {}
+    explicit_non_tv = False
+    for item in held:
+        fingerprint, context = _automatic_item_context(item)
+        fingerprints.add(fingerprint)
+        if context.get("content_hint") in {"movie", "extras", "mixed"}:
+            explicit_non_tv = True
+        season = context.get("season")
+        if (
+            isinstance(season, int)
+            and not isinstance(season, bool)
+            and 0 <= season <= 999
+        ):
+            seasons.add(season)
+        series_name = _automatic_series_name(context.get("series_name"), item.media_id)
+        if series_name is not None:
+            series_by_key.setdefault(
+                re.sub(r"[^a-z0-9]+", "", series_name.casefold()), series_name
+            )
+    if explicit_non_tv:
+        return None, None, None
+    if len(fingerprints) != 1:
+        raise PipelineQueueError("Automatic disc context is inconsistent")
+    if len(seasons) > 1:
+        raise PipelineQueueError("Automatic episode season context is inconsistent")
+    if len(series_by_key) != 1:
+        raise PipelineQueueError("Automatic episode series context is inconsistent")
     return (
-        inferred
-        if normalized not in {"", "unmatched", "unknown", "unknownseries"}
-        else None
+        next(iter(fingerprints)),
+        next(iter(series_by_key.values())),
+        next(iter(seasons)) if seasons else None,
     )

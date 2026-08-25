@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
+from threading import Lock
 
 from mkv_episode_matcher.disc.batch_ripper import (
     SingleOpenBatchPlan,
@@ -21,6 +22,7 @@ from mkv_episode_matcher.disc.ripper import (
 
 JobRunner = Callable[..., RipResult]
 BatchRunner = Callable[..., list[RipResult]]
+ResultSink = Callable[[RipResult], None]
 
 
 class ParallelRipError(RipError):
@@ -36,6 +38,8 @@ class ParallelRipError(RipError):
         super().__init__(message)
         self.completed_results = tuple(completed_results)
         self.drive_failures = dict(drive_failures)
+        self.pipeline_queued_count: int | None = None
+        self.pipeline_handoff_pending_job_ids: tuple[str, ...] = ()
 
 
 def _group_and_validate(
@@ -74,9 +78,22 @@ def _run_drive(
     timeout_seconds: int,
     cancel_file: Path | None,
     on_event: Callable[[str, str], None] | None,
+    on_result: ResultSink | None,
     job_runner: JobRunner,
     batch_runner: BatchRunner,
 ) -> list[RipResult]:
+    def publish(result: RipResult) -> None:
+        if on_result is None:
+            return
+        try:
+            on_result(result)
+        except Exception as exc:  # A consumer must never interrupt MakeMKV.
+            event_log.write(
+                "result_handoff_notification_failed",
+                job_id=result.job_id,
+                error_type=type(exc).__name__,
+            )
+
     if batch_plan is not None:
         event_log.write(
             "drive_strategy_selected",
@@ -85,7 +102,7 @@ def _run_drive(
             job_count=len(drive_jobs),
             minimum_length_seconds=batch_plan.minimum_length_seconds,
         )
-        return batch_runner(
+        results = batch_runner(
             executable,
             output_root,
             batch_plan,
@@ -94,6 +111,12 @@ def _run_drive(
             cancel_file=cancel_file,
             on_event=on_event,
         )
+        # A single-open batch is publishable only after the adapter verifies the
+        # complete isolated output set. At that point each MKV can enter the
+        # downstream queue independently.
+        for result in results:
+            publish(result)
+        return results
 
     event_log.write(
         "drive_strategy_selected",
@@ -103,17 +126,17 @@ def _run_drive(
     )
     results: list[RipResult] = []
     for job in drive_jobs:
-        results.append(
-            job_runner(
-                executable,
-                output_root,
-                job,
-                event_log,
-                timeout_seconds=timeout_seconds,
-                cancel_file=cancel_file,
-                on_event=on_event,
-            )
+        result = job_runner(
+            executable,
+            output_root,
+            job,
+            event_log,
+            timeout_seconds=timeout_seconds,
+            cancel_file=cancel_file,
+            on_event=on_event,
         )
+        results.append(result)
+        publish(result)
     return results
 
 
@@ -127,6 +150,7 @@ def run_auto_rip_queue(
     timeout_seconds: int = 7200,
     cancel_file: Path | None = None,
     on_event: Callable[[str, str], None] | None = None,
+    on_result: ResultSink | None = None,
     job_runner: JobRunner = run_rip_job,
     batch_runner: BatchRunner = run_single_open_batch,
 ) -> list[RipResult]:
@@ -154,6 +178,7 @@ def run_auto_rip_queue(
                         timeout_seconds=timeout_seconds,
                         cancel_file=cancel_file,
                         on_event=on_event,
+                        on_result=on_result,
                         job_runner=job_runner,
                         batch_runner=batch_runner,
                     )
@@ -180,6 +205,7 @@ def run_parallel_auto_rip_queue(
     cancel_file: Path | None = None,
     max_drives: int | None = None,
     on_event: Callable[[str, str], None] | None = None,
+    on_result: ResultSink | None = None,
     job_runner: JobRunner = run_rip_job,
     batch_runner: BatchRunner = run_single_open_batch,
 ) -> list[RipResult]:
@@ -202,6 +228,18 @@ def run_parallel_auto_rip_queue(
             single_open_drive_count=len(batch_plans),
         )
 
+        completed_lock = Lock()
+        completed_by_id: dict[str, RipResult] = {}
+
+        def record_result(result: RipResult) -> None:
+            # Capture partial success before notifying any downstream consumer.
+            # This preserves titles completed earlier on a drive if a later
+            # title on that same drive fails.
+            with completed_lock:
+                completed_by_id.setdefault(result.job_id, result)
+            if on_result is not None:
+                on_result(result)
+
         def run_drive(
             drive_index: int,
             drive_jobs: list[RipJob],
@@ -223,6 +261,7 @@ def run_parallel_auto_rip_queue(
                     timeout_seconds=timeout_seconds,
                     cancel_file=cancel_file,
                     on_event=on_event,
+                    on_result=record_result,
                     job_runner=job_runner,
                     batch_runner=batch_runner,
                 )
@@ -267,6 +306,15 @@ def run_parallel_auto_rip_queue(
                         error_type=type(exc).__name__,
                     )
 
+        by_id = {result.job_id: result for result in collected}
+        with completed_lock:
+            by_id.update(completed_by_id)
+        order = {job.job_id: index for index, job in enumerate(job_list)}
+        collected = sorted(
+            by_id.values(),
+            key=lambda result: order.get(result.job_id, len(order)),
+        )
+
         if first_error is not None:
             coordinator.write(
                 "parallel_auto_queue_completed_with_failures",
@@ -279,7 +327,6 @@ def run_parallel_auto_rip_queue(
                 drive_failures=drive_failures,
             ) from first_error
 
-        order = {job.job_id: index for index, job in enumerate(job_list)}
         collected.sort(key=lambda result: order[result.job_id])
         coordinator.write(
             "parallel_auto_queue_completed",

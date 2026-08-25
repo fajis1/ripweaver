@@ -118,6 +118,12 @@ def discover_tools():
                     program_files / "MakeMKV" / "makemkvcon64.exe",
                 ),
             ),
+            "disc_image_creator_path": _find_executable(
+                ("DiscImageCreator.exe", "DiscImageCreator")
+            )
+            or _find_portable_executable(
+                "DiscImageCreator.exe", _portable_download_roots()
+            ),
             "handbrake_path": _find_executable(
                 ("HandBrakeCLI.exe", "HandBrakeCLI"),
                 (program_files / "HandBrake" / "HandBrakeCLI.exe",),
@@ -204,6 +210,10 @@ def _validate_executable_paths(config) -> dict[str, str]:
 
     expected_names = {
         "makemkv_path": {"makemkvcon64.exe", "makemkvcon.exe", "makemkvcon"},
+        "disc_image_creator_path": {
+            "discimagecreator.exe",
+            "discimagecreator",
+        },
         "handbrake_path": {"handbrakecli.exe", "handbrakecli"},
         "ffmpeg_path": {"ffmpeg.exe", "ffmpeg"},
         "ffprobe_path": {"ffprobe.exe", "ffprobe"},

@@ -21,6 +21,7 @@ _INVALID_COMPONENT = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _WHITESPACE = re.compile(r"\s+")
 _VERSION_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{0,79}$")
 _RESOLUTION_VERSION_SUFFIX = re.compile(r"(?i) - (?P<label>\d{3,4}[pi])\.mkv$")
+_PLACEHOLDER_EPISODE_TITLES = frozenset({"untitled"})
 _WINDOWS_RESERVED = {
     "CON",
     "PRN",
@@ -76,10 +77,21 @@ def sanitize_media_component(value: str) -> str:
     return cleaned
 
 
+def normalize_episode_title(value: str | None) -> str | None:
+    """Return a usable episode title, omitting known metadata placeholders."""
+
+    if value is None or not value.strip():
+        return None
+    title = sanitize_media_component(value)
+    if title.casefold() in _PLACEHOLDER_EPISODE_TITLES:
+        return None
+    return title
+
+
 def build_episode_filename(
     series_name: str,
     episode_id: str,
-    episode_title: str,
+    episode_title: str | None,
     *,
     version_label: str | None = None,
     maximum_characters: int = 240,
@@ -87,7 +99,7 @@ def build_episode_filename(
     """Build a canonical collision-checkable Jellyfin/Plex MKV filename."""
 
     series = sanitize_media_component(series_name)
-    title = sanitize_media_component(episode_title)
+    title = normalize_episode_title(episode_title)
     if _EPISODE_ID.fullmatch(episode_id) is None:
         raise OrganizationPlanError("Episode assignment contains an invalid ID")
     suffix = ""
@@ -96,13 +108,39 @@ def build_episode_filename(
         if _VERSION_LABEL.fullmatch(label) is None:
             raise OrganizationPlanError("Jellyfin version label is invalid")
         suffix = f" - {label}"
-    fixed = f"{series} - {episode_id} - "
+    fixed = f"{series} - {episode_id}"
     extension = ".mkv"
-    available = maximum_characters - len(fixed) - len(suffix) - len(extension)
+    minimum = len(fixed) + len(suffix) + len(extension)
+    if minimum > maximum_characters:
+        raise OrganizationPlanError("Series name is too long for a safe filename")
+    if title is None:
+        return f"{fixed}{suffix}{extension}"
+    available = maximum_characters - minimum - len(" - ")
     if available < 1:
         raise OrganizationPlanError("Series name is too long for a safe filename")
     title = title[:available].rstrip(" .")
-    return f"{fixed}{title}{suffix}{extension}"
+    return f"{fixed} - {title}{suffix}{extension}"
+
+
+def omit_placeholder_episode_title(
+    relative_destination: PurePosixPath, episode_id: object
+) -> PurePosixPath:
+    """Remove an exact ``Untitled`` placeholder from an existing TV contract."""
+
+    if not isinstance(episode_id, str) or _EPISODE_ID.fullmatch(episode_id) is None:
+        return relative_destination
+    if relative_destination.suffix.casefold() != ".mkv":
+        return relative_destination
+    match = re.fullmatch(
+        rf"(?i)(?P<prefix>.+ - {re.escape(episode_id)}) - untitled"
+        rf"(?P<version> - \d{{3,4}}[pi])?",
+        relative_destination.stem,
+    )
+    if match is None:
+        return relative_destination
+    return relative_destination.with_name(
+        f"{match.group('prefix')}{match.group('version') or ''}.mkv"
+    )
 
 
 def jellyfin_resolution_label(height: int, field_order: str | None) -> str:

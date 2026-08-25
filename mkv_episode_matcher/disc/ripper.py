@@ -20,6 +20,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO
 
+from mkv_episode_matcher.disc.makemkv_process_control import (
+    audit_makemkv_process_exit,
+    start_makemkv_process,
+)
+
 
 class RipError(RuntimeError):
     """Raised when a rip cannot start or must stop safely."""
@@ -58,10 +63,10 @@ FATAL_PATTERNS = (
     "no titles saved",
     "evaluation period has expired",
     "application failed to initialize",
-    "scsi error",
 )
 WARNING_PATTERNS = (
     "warning",
+    "scsi error",
     "corrupt",
     "invalid at offset",
     "attempting to work around",
@@ -99,7 +104,7 @@ def validate_job(job: RipJob) -> None:
         if (
             output_name.name != job.output_basename
             or output_name.suffix.lower() != ".mkv"
-            or re.fullmatch(r"[A-Za-z0-9._ -]{1,180}", job.output_basename) is None
+            or re.fullmatch(r"[A-Za-z0-9._ ()',-]{1,240}", job.output_basename) is None
         ):
             raise RipError("Rip output filename is not a safe MKV basename")
 
@@ -136,18 +141,28 @@ def build_rip_command(
     executable: Path,
     job: RipJob,
     destination: Path,
+    *,
+    source_specifier: str | None = None,
 ) -> tuple[str, ...]:
     """Build the sole allowed MakeMKV mutation: one title to one new folder."""
 
     validate_job(job)
+    source = source_specifier or f"disc:{job.drive_index}"
+    if source_specifier is not None:
+        if not source.startswith(("iso:", "file:")):
+            raise RipError("Local rip source must be an ISO or file backup")
+        private_path = Path(source.split(":", 1)[1])
+        if not private_path.is_absolute():
+            raise RipError("Local rip source path must be absolute")
     return (
         str(executable),
         "-r",
+        "--noscan",
         "--messages=-stdout",
         "--progress=-same",
         "--minlength=0",
         "mkv",
-        f"disc:{job.drive_index}",
+        source,
         str(job.title_index),
         str(destination),
     )
@@ -309,7 +324,8 @@ def run_rip_job(  # noqa: C901 - guarded external-process state machine
     cancel_file: Path | None = None,
     cancel_event: threading.Event | None = None,
     on_event: Callable[[str, str], None] | None = None,
-    popen_factory: Callable[..., subprocess.Popen[str]] = subprocess.Popen,
+    popen_factory: Callable[..., subprocess.Popen[str]] = start_makemkv_process,
+    source_specifier: str | None = None,
 ) -> RipResult:
     """Run one title, stream structured logs, and preserve failures for review."""
 
@@ -327,7 +343,12 @@ def run_rip_job(  # noqa: C901 - guarded external-process state machine
         )
     destination.mkdir(parents=True)
 
-    command = build_rip_command(executable, job, destination)
+    command = build_rip_command(
+        executable,
+        job,
+        destination,
+        source_specifier=source_specifier,
+    )
     started = datetime.now(UTC)
     event_log.write(
         "job_started",
@@ -357,6 +378,7 @@ def run_rip_job(  # noqa: C901 - guarded external-process state machine
 
     if process.stdout is None:
         _stop_process(process)
+        audit_makemkv_process_exit(process)
         raise RipError("MakeMKV output stream was unavailable")
 
     output_queue: queue.Queue[str | None] = queue.Queue()
@@ -452,6 +474,7 @@ def run_rip_job(  # noqa: C901 - guarded external-process state machine
             _stop_process(process)
         reader.join(timeout=2)
         process.stdout.close()
+        audit_makemkv_process_exit(process)
 
     return_code = process.wait(timeout=10)
     event_log.write(

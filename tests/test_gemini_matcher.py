@@ -14,6 +14,7 @@ from mkv_episode_matcher.media.gemini_matcher import (
     GeminiDescriptiveRanker,
     GeminiEpisodeRanker,
     GeminiMatchError,
+    GeminiSubtitleComparisonEvidence,
     RequestsGeminiTransport,
     TransportResponse,
     UnmatchedFileEvidence,
@@ -67,6 +68,65 @@ def test_episode_request_accepts_six_bounded_excerpts_but_not_seven():
             ),
             catalog,
         )
+
+
+def test_episode_request_includes_bounded_paired_subtitle_evidence():
+    files = (UnmatchedFileEvidence("title-001", 1200, ("whisper dialogue",)),)
+    catalog = (EpisodeCatalogEntry("S04E11", 4, 11, "Survivor Man", "Trip", 1200),)
+    request = build_gemini_request(
+        "gemini-test",
+        files,
+        catalog,
+        subtitle_comparisons={
+            "title-001": (
+                GeminiSubtitleComparisonEvidence(
+                    "S04E11",
+                    "whisper dialogue",
+                    "regular subtitle dialogue",
+                    0.62,
+                ),
+            )
+        },
+    )
+
+    prompt = json.loads(request["input"])
+    comparison = prompt["files"][0]["subtitle_comparisons"][0]
+    assert comparison == {
+        "candidate_episode_id": "S04E11",
+        "whisper_excerpt": "whisper dialogue",
+        "subtitle_excerpt": "regular subtitle dialogue",
+        "local_score": 0.62,
+    }
+    assert "extended-cut dialogue" in prompt["task"]
+
+
+def test_confirmation_request_audits_complete_proposal_map():
+    files = (
+        UnmatchedFileEvidence("title-001", 1200, ("one",)),
+        UnmatchedFileEvidence("title-002", 1200, ("two",)),
+    )
+    catalog = (
+        EpisodeCatalogEntry("S04E11", 4, 11, "Eleven", "", 1200),
+        EpisodeCatalogEntry("S04E12", 4, 12, "Twelve", "", 1200),
+    )
+    request = build_gemini_request(
+        "gemini-test",
+        files,
+        catalog,
+        review_phase="confirmation",
+        proposed_assignments={"title-001": "S04E11", "title-002": None},
+    )
+
+    prompt = json.loads(request["input"])
+    assert prompt["review_phase"] == "confirmation"
+    assert prompt["proposed_assignments"] == {
+        "title-001": "S04E11",
+        "title-002": None,
+    }
+    assert (
+        "complete proposed one-to-one assignment map"
+        in prompt["confirmation_instruction"]
+    )
 
 
 def test_episode_request_includes_explicit_reviewer_scene_description():
@@ -620,6 +680,56 @@ def test_semantic_validation_retries_with_bounded_correction(theatre_bundle):
     )
 
 
+def test_provider_transaction_recorder_retains_raw_invalid_and_valid_responses(
+    theatre_bundle,
+):
+    files, catalog = theatre_bundle
+    invalid_raw = '{"output_text":"not valid structured JSON"}'
+    valid_matches = [
+        {
+            "file_id": item.file_id,
+            "episode_id": episode.episode_id,
+            "confidence": 0.9,
+            "evidence": ["Allowed evidence."],
+        }
+        for item, episode in zip(files, catalog, strict=True)
+    ]
+    valid_payload = _payload(valid_matches)
+    valid_raw = json.dumps(valid_payload, separators=(",", ":"))
+    transactions = []
+    ranker = GeminiEpisodeRanker(
+        model="gemini-test",
+        transport=FakeTransport(
+            TransportResponse(
+                200, {"output_text": "not valid structured JSON"}, invalid_raw
+            ),
+            TransportResponse(200, valid_payload, valid_raw),
+        ),
+        max_retries=1,
+    )
+
+    plan = ranker.rank_with_key(
+        files,
+        catalog,
+        api_key="fake-secret-key",
+        credential="gemini-primary",
+        transaction_recorder=transactions.append,
+    )
+
+    assert len(plan.matches) == 2
+    assert [event["outcome"] for event in transactions] == [
+        "response_invalid",
+        "accepted",
+    ]
+    assert [event["raw_response_text"] for event in transactions] == [
+        invalid_raw,
+        valid_raw,
+    ]
+    serialized = json.dumps(transactions)
+    assert "fake-secret-key" not in serialized
+    assert "evil goblin" not in serialized.lower()
+
+
 def test_rejected_key_raises_recoverable_credential_error(theatre_bundle):
     files, catalog = theatre_bundle
     ranker = GeminiEpisodeRanker(
@@ -824,3 +934,19 @@ def test_requests_transport_uses_header_not_url(mock_post):
 
     assert "fake-secret-key" not in mock_post.call_args.args[0]
     assert mock_post.call_args.kwargs["headers"]["x-goog-api-key"] == "fake-secret-key"
+
+
+@patch("mkv_episode_matcher.media.gemini_matcher.requests.post")
+def test_requests_transport_retains_non_json_provider_body_privately(mock_post):
+    response = Mock(status_code=502, text="upstream diagnostic body")
+    response.json.side_effect = ValueError("not json")
+    mock_post.return_value = response
+
+    result = RequestsGeminiTransport().send(
+        api_key="fake-secret-key",
+        body={"model": "test"},
+        timeout_seconds=10,
+    )
+
+    assert result.payload == {}
+    assert result.raw_text == "upstream diagnostic body"

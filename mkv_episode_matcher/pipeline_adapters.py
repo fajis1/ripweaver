@@ -10,9 +10,15 @@ from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
+from mkv_episode_matcher.backend.disc_match_corroboration import (
+    DiscMatchHistory,
+    corroborate_single_window_local_match,
+)
 from mkv_episode_matcher.core.tv_identification_policy import (
     AUTOMATIC_TV_ASSIGNMENT_SOURCES,
     AUTOMATIC_TV_IDENTIFICATION_POLICY_VERSION,
+    LOCAL_DIALOGUE_DISC_CORROBORATED_SOURCE,
+    LOCAL_DIALOGUE_TWO_WINDOW_SOURCE,
     identification_order_for_assignment,
 )
 from mkv_episode_matcher.disc.content_policy import identification_order
@@ -32,6 +38,8 @@ from mkv_episode_matcher.media.organizer import (
     inspect_episode_destination,
     inspect_episode_version_destination,
     jellyfin_resolution_label,
+    normalize_episode_title,
+    omit_placeholder_episode_title,
 )
 from mkv_episode_matcher.pipeline_queue import (
     PipelineArtifact,
@@ -205,6 +213,7 @@ class IdentifyStageAdapter:
         tv_library_root: Path | None = None,
         movie_library_root: Path | None = None,
         allow_version_coexistence: bool = False,
+        disc_match_history: DiscMatchHistory | None = None,
     ):
         self.engine = engine
         self.contract_root = contract_root.resolve()
@@ -215,6 +224,7 @@ class IdentifyStageAdapter:
             movie_library_root.resolve() if movie_library_root is not None else None
         )
         self.allow_version_coexistence = allow_version_coexistence
+        self.disc_match_history = disc_match_history
 
     def _identified_outcome(
         self, item: QueuedPipelineItem, payload: dict[str, Any]
@@ -303,7 +313,10 @@ class IdentifyStageAdapter:
             if not 0 <= season <= 99 or not 1 <= episode_number <= 999:
                 raise PipelineQueueError("Reviewed episode assignment is invalid")
             series_name = _safe_feature_component(context.get("series_name"))
-            title = _safe_feature_component(assignment.get("title"))
+            raw_title = assignment.get("title")
+            if raw_title is not None and not isinstance(raw_title, str):
+                raise PipelineQueueError("Reviewed episode assignment is invalid")
+            title = normalize_episode_title(raw_title)
             episode_id = f"S{season:02d}E{episode_number:02d}"
             filename = build_episode_filename(series_name, episode_id, title)
             relative = Path(series_name) / f"Season {season:02d}" / filename
@@ -461,14 +474,126 @@ class IdentifyStageAdapter:
             show_name_override=str(context["series_name"]),
             files_override=[source],
         )
+        initial_trace: dict[str, object] = {}
+        if len(matches) == 1:
+            candidate_trace = getattr(matches[0], "decision_trace", None)
+            if isinstance(candidate_trace, dict):
+                initial_trace = candidate_trace
+        if not initial_trace:
+            for failure in failures:
+                candidate_trace = getattr(failure, "decision_trace", None)
+                if isinstance(candidate_trace, dict) and candidate_trace:
+                    initial_trace = candidate_trace
+                    break
+        match = matches[0] if len(matches) == 1 and not failures else None
+        episode = match.episode_info if match is not None else None
+        episode_id = (
+            f"S{episode.season:02d}E{episode.episode:02d}"
+            if episode is not None
+            else None
+        )
+        corroboration: dict[str, object] | None = None
+        vote_count = initial_trace.get("selected_vote_count")
+        if (
+            match is not None
+            and episode_id is not None
+            and isinstance(vote_count, int)
+            and not isinstance(vote_count, bool)
+            and vote_count < 2
+        ):
+            if vote_count == 1 and self.disc_match_history is not None:
+                corroboration = corroborate_single_window_local_match(
+                    self.disc_match_history,
+                    payload,
+                    initial_trace,
+                    candidate_episode_id=episode_id,
+                )
+            if corroboration is None:
+                initial_trace = dict(initial_trace)
+                initial_trace.update({
+                    "engine_decision": "review",
+                    "engine_reason": "single_window_requires_disc_corroboration",
+                })
+        if initial_trace:
+            from mkv_episode_matcher.backend.identification_dossier import (
+                IdentificationDossierStore,
+            )
+
+            dossier = IdentificationDossierStore(
+                self.contract_root.parent / "identification-evidence"
+            )
+            dossier.record_initial_match_trace(
+                item.media_id,
+                initial_trace,
+                candidate_series_name=str(context["series_name"]),
+            )
+            if corroboration is not None:
+                dossier.record_attempt(
+                    (item.media_id,),
+                    branch="tv-disc-range",
+                    disposition="matched",
+                    summary=corroboration,
+                )
+        if (
+            match is not None
+            and isinstance(vote_count, int)
+            and not isinstance(vote_count, bool)
+            and vote_count < 2
+            and corroboration is None
+        ):
+            raise PipelineReviewRequiredError("independent_episode_evidence_required")
         if len(matches) != 1 or failures:
             if has_catalogue_help:
                 raise PipelineReviewRequiredError("catalogue_candidate_help_available")
             raise PipelineReviewRequiredError("episode_match_review")
-        match = matches[0]
-        episode = match.episode_info
-        episode_id = f"S{episode.season:02d}E{episode.episode:02d}"
-        title = episode.title or "Untitled"
+        assert match is not None and episode is not None and episode_id is not None
+        title = normalize_episode_title(episode.title)
+        subtitle_release_match = getattr(match, "subtitle_release_match", "unresolved")
+        subtitle_release_name = getattr(match, "subtitle_release_name", None)
+        if isinstance(subtitle_release_name, str):
+            subtitle_release_name = " ".join(subtitle_release_name.split())[:240]
+        else:
+            subtitle_release_name = None
+        selected_score = initial_trace.get("selected_score")
+        runner_up_episode = initial_trace.get("runner_up_episode_id")
+        runner_up_score = initial_trace.get("runner_up_score")
+        engine_threshold = initial_trace.get("engine_threshold")
+        summary_parts = [
+            f"Initial dialogue match: {episode_id}",
+            (
+                f"score {float(selected_score):.1%}"
+                if isinstance(selected_score, int | float)
+                and not isinstance(selected_score, bool)
+                else f"score {float(match.confidence):.1%}"
+            ),
+        ]
+        if isinstance(runner_up_episode, str) and isinstance(
+            runner_up_score, int | float
+        ):
+            summary_parts.append(
+                f"runner-up {runner_up_episode} {float(runner_up_score):.1%}"
+            )
+        if isinstance(engine_threshold, int | float) and not isinstance(
+            engine_threshold, bool
+        ):
+            summary_parts.append(f"required {float(engine_threshold):.1%}")
+        summary_parts.append(
+            f"subtitle edition {subtitle_release_match.replace('_', ' ')}"
+        )
+        if corroboration is not None:
+            summary_parts.append(
+                "disc context confirmed by "
+                f"{corroboration['anchor_count']} strong sibling matches"
+            )
+        assignment_evidence_source = (
+            LOCAL_DIALOGUE_DISC_CORROBORATED_SOURCE
+            if corroboration is not None
+            else LOCAL_DIALOGUE_TWO_WINDOW_SOURCE
+            if isinstance(vote_count, int)
+            and not isinstance(vote_count, bool)
+            and vote_count >= 2
+            else None
+        )
         filename = build_episode_filename(episode.series_name, episode_id, title)
         relative = Path(episode.series_name) / f"Season {episode.season:02d}" / filename
         return self._identified_outcome(
@@ -480,10 +605,48 @@ class IdentifyStageAdapter:
                 "source_path": str(source),
                 "source_size_bytes": source.stat().st_size,
                 "confidence": float(match.confidence),
+                "match_summary": " · ".join(summary_parts),
+                "identification_decision": {
+                    key: initial_trace.get(key)
+                    for key in (
+                        "policy",
+                        "engine_reason",
+                        "engine_threshold",
+                        "selected_episode_id",
+                        "selected_score",
+                        "selected_vote_count",
+                        "runner_up_episode_id",
+                        "runner_up_score",
+                        "runner_up_vote_count",
+                        "supplemental_attempted",
+                        "supplemental_segment_count",
+                        "supplemental_reason",
+                    )
+                }
+                | (
+                    {
+                        "disc_context_corroborated": True,
+                        "disc_corroboration_reason": corroboration["reason"],
+                        "disc_anchor_count": corroboration["anchor_count"],
+                        "disc_candidate_scope": corroboration["candidate_scope"],
+                    }
+                    if corroboration is not None
+                    else {}
+                ),
+                "subtitle_reference": {
+                    "release_match": subtitle_release_match,
+                    "release_name": subtitle_release_name,
+                },
                 "episode_id": episode_id,
                 "library_kind": "tv",
                 "library_relative": relative.as_posix(),
                 "identification_order": list(strategy_order),
+                "assignment_evidence_source": assignment_evidence_source,
+                "identification_policy_version": (
+                    AUTOMATIC_TV_IDENTIFICATION_POLICY_VERSION
+                    if assignment_evidence_source is not None
+                    else None
+                ),
                 "handbrake_profile_id": context.get("handbrake_profile_id"),
                 "existing_output_policy": context.get(
                     "existing_output_policy", "preserve"
@@ -638,6 +801,7 @@ class TranscodeStageAdapter:
             raise PipelineQueueError("Transcode destination contract is unsafe")
         if _placeholder_episode_contract(payload, relative):
             raise PipelineReviewRequiredError("placeholder_identification_required")
+        relative = omit_placeholder_episode_title(relative, payload.get("episode_id"))
         self._preflight_library_collision(payload, relative)
         if not self.output_root.is_dir() or not self.run_root.is_dir():
             raise PipelineQueueError("Transcode staging or run root is unavailable")
@@ -726,6 +890,7 @@ class OrganizeStageAdapter:
             raise PipelineQueueError("Library destination contract is unsafe")
         if _placeholder_episode_contract(payload, relative):
             raise PipelineReviewRequiredError("placeholder_identification_required")
+        relative = omit_placeholder_episode_title(relative, payload.get("episode_id"))
         if not self.library_root.is_dir():
             raise PipelineQueueError("Library root is unavailable")
         try:

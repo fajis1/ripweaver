@@ -1,4 +1,5 @@
 import abc
+import hashlib
 import json
 import os
 import re
@@ -22,9 +23,22 @@ from mkv_episode_matcher.core.credentials import (
     status_code_from_exception,
 )
 from mkv_episode_matcher.core.models import EpisodeInfo, SubtitleFile
+from mkv_episode_matcher.core.subtitle_releases import (
+    SubtitleReleaseProfile,
+    alternate_release_queries,
+    infer_subtitle_release_profile,
+    release_profile_query,
+    select_subtitle_release_options,
+    subtitle_candidate_release_name,
+    subtitle_release_family,
+)
 from mkv_episode_matcher.core.utils import safe_cache_component
 
-_CACHE_MANIFEST_SCHEMA = 1
+_CACHE_MANIFEST_SCHEMA = 2
+_CACHE_RELEASE_SUFFIX = re.compile(
+    r" - (exact|compatible|generic|unresolved)-[0-9a-f]{10}\.srt$",
+    re.IGNORECASE,
+)
 
 
 def _season_manifest_path(cache_dir: Path, season: int) -> Path:
@@ -36,6 +50,7 @@ def _complete_cached_season(
     season: int,
     cached_subtitles: list[SubtitleFile],
     tmdb_id: int | None,
+    release_profile_key: str | None = None,
 ) -> bool:
     path = _season_manifest_path(cache_dir, season)
     try:
@@ -47,6 +62,7 @@ def _complete_cached_season(
         payload.get("schema_version") != _CACHE_MANIFEST_SCHEMA
         or payload.get("season") != season
         or payload.get("tmdb_id") != tmdb_id
+        or payload.get("release_profile") != release_profile_key
         or payload.get("complete") is not True
         or not isinstance(expected, list)
         or any(not isinstance(value, int) or value <= 0 for value in expected)
@@ -67,6 +83,8 @@ def _write_season_manifest(
     tmdb_id: int | None,
     episode_numbers: set[int],
     complete: bool,
+    release_profile_key: str | None = None,
+    release_variant_counts: dict[str, int] | None = None,
 ) -> None:
     target = _season_manifest_path(cache_dir, season)
     temporary = cache_dir / f".{target.name}.{os.getpid()}.tmp"
@@ -76,8 +94,10 @@ def _write_season_manifest(
                 "schema_version": _CACHE_MANIFEST_SCHEMA,
                 "season": season,
                 "tmdb_id": tmdb_id,
+                "release_profile": release_profile_key,
                 "episode_numbers": sorted(episode_numbers),
                 "complete": complete,
+                "release_variant_counts": release_variant_counts or {},
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -86,6 +106,65 @@ def _write_season_manifest(
         encoding="utf-8",
     )
     os.replace(temporary, target)
+
+
+def _cached_release_match(filename: str) -> str:
+    match = _CACHE_RELEASE_SUFFIX.search(filename)
+    return match.group(1).casefold() if match else "unresolved"
+
+
+def _candidate_episode(candidate: object, season: int) -> int | None:
+    api_season = getattr(candidate, "season_number", None)
+    api_episode = getattr(candidate, "episode_number", None)
+    if isinstance(api_season, int) and isinstance(api_episode, int):
+        return api_episode if api_season == season and api_episode > 0 else None
+    info = parse_season_episode(subtitle_candidate_release_name(candidate))
+    if info is None or info.season != season:
+        return None
+    return info.episode
+
+
+def _rank_episode_release_options(
+    candidates: list[object],
+    season: int,
+    profile: SubtitleReleaseProfile,
+    *,
+    maximum_per_episode: int = 2,
+) -> tuple[tuple[int, object, str, str], ...]:
+    """Select a bounded number of provider releases for each episode."""
+
+    by_episode: dict[int, list[object]] = {}
+    for candidate in candidates:
+        episode = _candidate_episode(candidate, season)
+        if episode is not None:
+            by_episode.setdefault(episode, []).append(candidate)
+    selected = []
+    for episode in sorted(by_episode):
+        for option in select_subtitle_release_options(
+            by_episode[episode], profile, maximum=maximum_per_episode
+        ):
+            selected.append((
+                episode,
+                option.candidate,
+                option.release_name,
+                option.release_match,
+            ))
+    return tuple(selected)
+
+
+def _subtitle_cache_target(
+    cache_dir: Path,
+    show_name: str,
+    season: int,
+    episode: int,
+    release_name: str,
+    release_match: str,
+) -> Path:
+    digest = hashlib.sha256(release_name.encode("utf-8")).hexdigest()[:10]
+    cache_name = safe_cache_component(show_name)
+    return cache_dir / (
+        f"{cache_name} - S{season:02d}E{episode:02d} - {release_match}-{digest}.srt"
+    )
 
 
 def retry_with_backoff(
@@ -184,6 +263,7 @@ class LocalSubtitleProvider(SubtitleProvider):
         tmdb_id: int | None = None,
     ) -> list[SubtitleFile]:
         """Get all subtitle files for a specific show and season."""
+        release_profile = infer_subtitle_release_profile(show_name, video_files)
         show_dir = self.cache_dir / safe_cache_component(show_name)
         if not show_dir.exists():
             # logger.warning(f"No subtitle cache found at {show_dir}")
@@ -198,7 +278,20 @@ class LocalSubtitleProvider(SubtitleProvider):
             if info:
                 if info.season == season:
                     info.series_name = show_name
-                    subtitles.append(SubtitleFile(path=f, episode_info=info))
+                    release_match = _cached_release_match(f.name)
+                    subtitles.append(
+                        SubtitleFile(
+                            path=f,
+                            episode_info=info,
+                            release_name=(
+                                f"Cached {release_match} subtitle variant"
+                                if release_match != "unresolved"
+                                else None
+                            ),
+                            release_match=release_match,
+                            release_profile=release_profile.key,
+                        )
+                    )
 
         # Deduplicate by path
         seen = set()
@@ -346,27 +439,78 @@ class OpenSubtitlesProvider(SubtitleProvider):
             if hasattr(signal, "SIGALRM"):
                 signal.alarm(0)  # Cancel the alarm
 
-    def get_subtitles(  # noqa: C901 - provider metadata and retry guards
+    def get_subtitles(
         self,
         show_name: str,
         season: int,
         video_files: list[Path] = None,
         tmdb_id: int | None = None,
     ) -> list[SubtitleFile]:
-        """Get subtitles for a show/season by downloading them."""
+        """Get bounded, release-aware subtitle variants for a show/season."""
+
+        return self._get_subtitles(
+            show_name,
+            season,
+            video_files,
+            tmdb_id,
+            alternate_only=False,
+        )
+
+    def get_alternate_subtitles(
+        self,
+        show_name: str,
+        season: int,
+        video_files: list[Path] = None,
+        tmdb_id: int | None = None,
+    ) -> list[SubtitleFile]:
+        """Fetch only untested release variants after an evidence failure."""
+
+        return self._get_subtitles(
+            show_name,
+            season,
+            video_files,
+            tmdb_id,
+            alternate_only=True,
+        )
+
+    def _get_subtitles(  # noqa: C901 - provider metadata and retry guards
+        self,
+        show_name: str,
+        season: int,
+        video_files: list[Path] | None,
+        tmdb_id: int | None,
+        *,
+        alternate_only: bool,
+    ) -> list[SubtitleFile]:
+        release_profile = infer_subtitle_release_profile(show_name, video_files)
         cache_dir = self.config.cache_dir / "data" / safe_cache_component(show_name)
         cached_subtitles = LocalSubtitleProvider(self.config.cache_dir).get_subtitles(
             show_name, season, video_files, tmdb_id
         )
-        if _complete_cached_season(cache_dir, season, cached_subtitles, tmdb_id):
+        if not alternate_only and _complete_cached_season(
+            cache_dir,
+            season,
+            cached_subtitles,
+            tmdb_id,
+            release_profile.key,
+        ):
             logger.info(
-                "Using complete cached subtitle season for {} S{:02d} ({} episodes)",
+                "Using complete cached subtitle season for {} S{:02d} "
+                "({} variants; release_profile={})",
                 show_name,
                 season,
                 len(cached_subtitles),
+                release_profile.key or "unresolved",
             )
             return cached_subtitles
         if not self.client:
+            if alternate_only:
+                logger.info(
+                    "Alternate subtitle release lookup is unavailable for {} S{:02d}",
+                    show_name,
+                    season,
+                )
+                return []
             if cached_subtitles:
                 logger.info(
                     "Using {} cached subtitle references for {} S{:02d}",
@@ -383,7 +527,7 @@ class OpenSubtitlesProvider(SubtitleProvider):
 
         # Check for manual TMDB ID first and get correct show name
         search_show_name = show_name
-        if tmdb_id:
+        if tmdb_id and not alternate_only:
             logger.info(
                 f"Using manual TMDB ID: {tmdb_id} for {show_name} S{season:02d}"
             )
@@ -403,127 +547,180 @@ class OpenSubtitlesProvider(SubtitleProvider):
             except Exception as e:
                 logger.error(f"Error looking up TMDB ID {tmdb_id}: {type(e).__name__}")
 
-        logger.info(f"Searching OpenSubtitles for {search_show_name} S{season:02d}")
-
-        # Prepare cache directory
+        logger.info(
+            "Searching OpenSubtitles for {} S{:02d} with release profile {} ({})",
+            search_show_name,
+            season,
+            release_profile.key or "unresolved",
+            "alternate-release failover" if alternate_only else "initial pass",
+        )
         cache_dir.mkdir(parents=True, exist_ok=True)
-
-        downloaded_subtitles = list(cached_subtitles)
-        available_episodes: set[int] = set()
+        downloaded_subtitles = [] if alternate_only else list(cached_subtitles)
 
         try:
-            # Search by TMDB ID if available, otherwise fall back to query search
-            if tmdb_id:
-                logger.debug(
-                    f"Searching OpenSubtitles by parent_tmdb_id={tmdb_id}, season={season}"
+            search_specs: list[dict[str, object]] = []
+            if alternate_only:
+                search_specs.extend(
+                    {
+                        "query": query,
+                        "season_number": season,
+                        "type": "episode",
+                    }
+                    for query in alternate_release_queries(release_profile, season)
                 )
-                response = self._search_with_retry(
-                    query=None,
-                    parent_tmdb_id=tmdb_id,
-                    season_number=season,
-                    type="episode",
-                )
+            elif release_profile.understood:
+                # The edition-bearing query is intentionally first.  A TMDb
+                # series ID normally describes the broadcast series and can
+                # otherwise hide Superfan/extended releases.
+                search_specs.append({
+                    "query": f"{show_name} S{season:02d}",
+                    "season_number": season,
+                    "type": "episode",
+                })
+                if tmdb_id:
+                    search_specs.append({
+                        "query": None,
+                        "parent_tmdb_id": tmdb_id,
+                        "season_number": season,
+                        "type": "episode",
+                    })
+                elif (
+                    release_profile.canonical_series_name.casefold()
+                    != show_name.casefold()
+                ):
+                    search_specs.append({
+                        "query": release_profile_query(release_profile, season),
+                        "season_number": season,
+                        "type": "episode",
+                    })
+            elif tmdb_id:
+                search_specs.append({
+                    "query": None,
+                    "parent_tmdb_id": tmdb_id,
+                    "season_number": season,
+                    "type": "episode",
+                })
             else:
-                # Fallback to query-based search
-                query = f"{search_show_name} S{season:02d}"
-                logger.debug(f"Searching OpenSubtitles by query: {query}")
-                response = self._search_with_retry(query=query, type="episode")
+                search_specs.append({
+                    "query": f"{search_show_name} S{season:02d}",
+                    "season_number": season,
+                    "type": "episode",
+                })
 
-            if not response.data:
-                search_desc = (
-                    f"TMDB ID {tmdb_id} S{season:02d}"
-                    if tmdb_id
-                    else f"query '{search_show_name} S{season:02d}'"
+            provider_candidates: list[object] = []
+            seen_provider_options: set[tuple[int | None, str]] = set()
+            for search_index, spec in enumerate(search_specs, start=1):
+                response = self._search_with_retry(**spec)
+                response_data = getattr(response, "data", None)
+                if not isinstance(response_data, list | tuple):
+                    continue
+                logger.info(
+                    "OpenSubtitles release search {}/{} returned {} options",
+                    search_index,
+                    len(search_specs),
+                    len(response_data),
                 )
-                logger.warning(f"No subtitles found for {search_desc}")
-                _write_season_manifest(
-                    cache_dir,
-                    season=season,
-                    tmdb_id=tmdb_id,
-                    episode_numbers=set(),
-                    complete=False,
-                )
+                for candidate in response_data:
+                    signature = (
+                        _candidate_episode(candidate, season),
+                        re.sub(
+                            r"[^a-z0-9]+",
+                            "",
+                            subtitle_candidate_release_name(candidate).casefold(),
+                        ),
+                    )
+                    if signature in seen_provider_options:
+                        continue
+                    seen_provider_options.add(signature)
+                    provider_candidates.append(candidate)
+
+            if not provider_candidates:
+                logger.warning("No subtitle release options were returned")
+                if not alternate_only:
+                    _write_season_manifest(
+                        cache_dir,
+                        season=season,
+                        tmdb_id=tmdb_id,
+                        episode_numbers=set(),
+                        complete=False,
+                        release_profile_key=release_profile.key,
+                    )
                 return downloaded_subtitles
 
-            logger.info(f"Found {len(response.data)} potential subtitles")
-
-            # Limit downloads to a reasonable number or try to match specifically?
-            # For now, let's download unique episodes for this season.
-
-            seen_episodes = {
-                item.episode_info.episode
-                for item in cached_subtitles
-                if item.episode_info is not None
+            selected_options = _rank_episode_release_options(
+                provider_candidates,
+                season,
+                release_profile,
+                maximum_per_episode=8 if alternate_only else 2,
+            )
+            if alternate_only:
+                untested_options = []
+                selected_families: dict[int, set[str]] = {}
+                for option in selected_options:
+                    ep_num, _subtitle, release_name, release_match = option
+                    target_path = _subtitle_cache_target(
+                        cache_dir,
+                        show_name,
+                        season,
+                        ep_num,
+                        release_name,
+                        release_match,
+                    )
+                    if target_path.is_file():
+                        continue
+                    family = subtitle_release_family(release_name)
+                    episode_families = selected_families.setdefault(ep_num, set())
+                    if family in episode_families or len(episode_families) >= 6:
+                        continue
+                    episode_families.add(family)
+                    untested_options.append(option)
+                selected_options = tuple(untested_options)
+            available_episodes = {
+                episode
+                for candidate in provider_candidates
+                if (episode := _candidate_episode(candidate, season)) is not None
             }
-            logger.debug(f"Starting subtitle download loop for season {season}")
-
-            subtitles_checked = 0
-            subtitles_skipped_season = 0
-            subtitles_skipped_parse = 0
-
-            for subtitle in response.data:
-                subtitles_checked += 1
-
-                # Use API provided metadata first
-                api_season = getattr(subtitle, "season_number", None)
-                api_episode = getattr(subtitle, "episode_number", None)
-
-                # Get filename from files list or top level
-                sub_filename = subtitle.file_name
-                if not sub_filename and subtitle.files:
-                    # files is a list of dicts based on debug output
-                    if isinstance(subtitle.files[0], dict):
-                        sub_filename = subtitle.files[0].get("file_name", "")
-                    else:
-                        # Fallback if it somehow changes to object
-                        sub_filename = getattr(subtitle.files[0], "file_name", "")
-
-                logger.debug(
-                    f"Subtitle {subtitles_checked}: api_season={api_season}, api_episode={api_episode}, filename={sub_filename}"
+            expected_targets: set[Path] = set()
+            for ep_num, subtitle, release_name, release_match in selected_options:
+                target_path = _subtitle_cache_target(
+                    cache_dir,
+                    show_name,
+                    season,
+                    ep_num,
+                    release_name,
+                    release_match,
                 )
-
-                # Check match
-                if api_season and api_episode:
-                    if api_season != season:
-                        logger.debug(
-                            f"  Skipping: API season {api_season} != requested season {season}"
+                expected_targets.add(target_path)
+                if target_path.is_file():
+                    if not any(
+                        item.path == target_path for item in downloaded_subtitles
+                    ):
+                        downloaded_subtitles.append(
+                            SubtitleFile(
+                                path=target_path,
+                                language="en",
+                                episode_info=EpisodeInfo(
+                                    series_name=show_name,
+                                    season=season,
+                                    episode=ep_num,
+                                ),
+                                release_name=release_name,
+                                release_match=release_match,
+                                release_profile=release_profile.key,
+                            )
                         )
-                        subtitles_skipped_season += 1
-                        continue
-                    ep_num = api_episode
-                    logger.debug(
-                        f"  Using API metadata: S{api_season:02d}E{ep_num:02d}"
-                    )
-                else:
-                    # Fallback to parsing filename
-                    info = parse_season_episode(sub_filename or "")
-                    if not info or info.season != season:
-                        logger.debug(
-                            f"  Skipping: Failed to parse or season mismatch in filename: {sub_filename}"
-                        )
-                        subtitles_skipped_parse += 1
-                        continue
-                    ep_num = info.episode
-                    logger.debug(
-                        f"  Parsed from filename: S{info.season:02d}E{ep_num:02d}"
-                    )
-
-                available_episodes.add(ep_num)
-                if ep_num in seen_episodes:
                     continue
-
-                # Download with retry
                 try:
-                    logger.info(f"Downloading subtitle for S{season:02d}E{ep_num:02d}")
-                    srt_file = self._download_with_retry(subtitle)
-
-                    # Move to cache
-                    cache_name = safe_cache_component(show_name)
-                    target_name = f"{cache_name} - S{season:02d}E{ep_num:02d}.srt"
-                    target_path = cache_dir / target_name
-
-                    shutil.move(srt_file, target_path)
-
+                    logger.info(
+                        "Downloading subtitle for S{:02d}E{:02d} (release_match={})",
+                        season,
+                        ep_num,
+                        release_match,
+                    )
+                    srt_file = Path(self._download_with_retry(subtitle))
+                    if not srt_file.is_file() or srt_file.stat().st_size <= 0:
+                        raise OSError("Downloaded subtitle is unavailable")
+                    shutil.move(str(srt_file), str(target_path))
                     downloaded_subtitles.append(
                         SubtitleFile(
                             path=target_path,
@@ -531,26 +728,48 @@ class OpenSubtitlesProvider(SubtitleProvider):
                             episode_info=EpisodeInfo(
                                 series_name=show_name, season=season, episode=ep_num
                             ),
+                            release_name=release_name,
+                            release_match=release_match,
+                            release_profile=release_profile.key,
                         )
                     )
-                    seen_episodes.add(ep_num)
-
                 except Exception as e:
-                    logger.error(f"Failed to download/save subtitle: {e}")
+                    logger.error(
+                        "Failed to download/save one subtitle variant: {}",
+                        type(e).__name__,
+                    )
 
-            logger.debug(
-                f"Subtitle download loop complete: checked={subtitles_checked}, "
-                f"skipped_season={subtitles_skipped_season}, skipped_parse={subtitles_skipped_parse}, "
-                f"downloaded={len(downloaded_subtitles)}"
+            release_variant_counts: dict[str, int] = {}
+            for item in downloaded_subtitles:
+                release_variant_counts[item.release_match] = (
+                    release_variant_counts.get(item.release_match, 0) + 1
+                )
+            logger.info(
+                "{} subtitle selection retained {} variants across {} episodes: {}",
+                "Alternate-release" if alternate_only else "Release-aware",
+                len(downloaded_subtitles),
+                len({
+                    item.episode_info.episode
+                    for item in downloaded_subtitles
+                    if item.episode_info is not None
+                }),
+                ", ".join(
+                    f"{key}={release_variant_counts[key]}"
+                    for key in sorted(release_variant_counts)
+                ),
             )
-            _write_season_manifest(
-                cache_dir,
-                season=season,
-                tmdb_id=tmdb_id,
-                episode_numbers=available_episodes,
-                complete=bool(available_episodes)
-                and available_episodes <= seen_episodes,
-            )
+            if not alternate_only:
+                _write_season_manifest(
+                    cache_dir,
+                    season=season,
+                    tmdb_id=tmdb_id,
+                    episode_numbers=available_episodes,
+                    complete=bool(available_episodes)
+                    and bool(expected_targets)
+                    and all(path.is_file() for path in expected_targets),
+                    release_profile_key=release_profile.key,
+                    release_variant_counts=release_variant_counts,
+                )
             return downloaded_subtitles
 
         except ApiCredentialError as error:
@@ -561,7 +780,13 @@ class OpenSubtitlesProvider(SubtitleProvider):
                 self.client = None
                 self._authenticate()
                 if self.client:
-                    return self.get_subtitles(show_name, season, video_files, tmdb_id)
+                    return self._get_subtitles(
+                        show_name,
+                        season,
+                        video_files,
+                        tmdb_id,
+                        alternate_only=alternate_only,
+                    )
             logger.error(str(error))
             return downloaded_subtitles
         except Exception as e:
@@ -663,4 +888,32 @@ class CompositeSubtitleProvider(SubtitleProvider):
                     )
                     break
 
+        return results
+
+    def get_alternate_subtitles(
+        self,
+        show_name: str,
+        season: int,
+        video_files: list[Path] = None,
+        tmdb_id: int | None = None,
+    ) -> list[SubtitleFile]:
+        """Collect bounded untested releases from capable providers only."""
+
+        results: list[SubtitleFile] = []
+        seen: set[tuple[str, int | None, int | None]] = set()
+        for provider in self.providers:
+            getter = getattr(provider, "get_alternate_subtitles", None)
+            if not callable(getter):
+                continue
+            for subtitle in getter(show_name, season, video_files, tmdb_id):
+                episode = subtitle.episode_info
+                signature = (
+                    str(subtitle.path),
+                    episode.season if episode is not None else None,
+                    episode.episode if episode is not None else None,
+                )
+                if signature in seen:
+                    continue
+                seen.add(signature)
+                results.append(subtitle)
         return results

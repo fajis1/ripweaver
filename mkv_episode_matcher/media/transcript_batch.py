@@ -319,7 +319,7 @@ def _attempt_stream(
 
 def _collection_windows(
     item: TranscriptBatchItem,
-    sampling_mode: Literal["standard", "expanded", "intro"],
+    sampling_mode: Literal["standard", "expanded", "expanded-offset", "intro"],
     *,
     intro_start_seconds: float,
 ) -> tuple[SampleWindow, ...]:
@@ -341,6 +341,28 @@ def _collection_windows(
                 3,
             )
             for position in range(1, 7)
+        }
+        return tuple(
+            SampleWindow(start_seconds=start, duration_seconds=sample_duration)
+            for start in sorted(starts)
+        )
+    if sampling_mode == "expanded-offset":
+        duration = item.media.duration_seconds
+        sample_duration = min(30, max(5, round(duration)))
+        latest_start = max(0.0, duration - sample_duration)
+        # Deliberately fall between the first expanded pass's sixth-points.
+        # This gives an extended cut six genuinely different chances to land
+        # on dialogue retained by the regular-edition subtitle.
+        positions = (1, 3, 5, 9, 11, 13)
+        starts = {
+            round(
+                min(
+                    latest_start,
+                    max(0.0, duration * position / 14 - sample_duration / 2),
+                ),
+                3,
+            )
+            for position in positions
         }
         return tuple(
             SampleWindow(start_seconds=start, duration_seconds=sample_duration)
@@ -409,7 +431,9 @@ def collect_transcript_batch(
     model_name: str,
     minimum_words: int = 8,
     maximum_streams: int = 3,
-    sampling_mode: Literal["standard", "expanded", "intro"] = "standard",
+    sampling_mode: Literal[
+        "standard", "expanded", "expanded-offset", "intro"
+    ] = "standard",
     intro_start_seconds: float = 60.0,
     preferred_stream_index: int | None = None,
     temporary_directory: Callable[..., tempfile.TemporaryDirectory] = (

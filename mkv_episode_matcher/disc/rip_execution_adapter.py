@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from queue import Queue
+from threading import Lock, Thread
 
 from mkv_episode_matcher.disc.rip_dispatcher import (
     BoundRipDispatch,
@@ -37,6 +39,88 @@ class RipExecutionOptions:
     run_directory: Path
     timeout_seconds: int = 7200
     max_drives: int | None = None
+    physical_disc_execution_enabled: bool = True
+
+
+class _PipelineHandoff:
+    """Keep queue admission work entirely off MakeMKV drive threads."""
+
+    def __init__(
+        self,
+        bound: BoundRipDispatch,
+        expected_ids: set[str],
+        sink: CompletionSink | None,
+    ):
+        self.bound = bound
+        self.expected_ids = expected_ids
+        self.sink = sink
+        self.queue: Queue[RipResult | object] | None = Queue() if sink else None
+        self.stop = object()
+        self.lock = Lock()
+        self.offered: dict[str, RipResult] = {}
+        self.completed: set[str] = set()
+        self.failures: dict[str, str] = {}
+        self.thread = (
+            Thread(target=self._run, name="rip-pipeline-handoff", daemon=True)
+            if sink
+            else None
+        )
+        if self.thread is not None:
+            self.thread.start()
+
+    def _run(self) -> None:
+        assert self.queue is not None and self.sink is not None
+        while True:
+            item = self.queue.get()
+            try:
+                if item is self.stop:
+                    return
+                assert isinstance(item, RipResult)
+                try:
+                    self.sink(self.bound, [item])
+                except Exception as exc:
+                    # Queue admission is recoverable and must never turn a
+                    # verified MakeMKV result into a rip failure.
+                    with self.lock:
+                        self.failures[item.job_id] = type(exc).__name__
+                else:
+                    with self.lock:
+                        self.completed.add(item.job_id)
+                        self.failures.pop(item.job_id, None)
+            finally:
+                self.queue.task_done()
+
+    def offer(self, result: RipResult) -> None:
+        if self.queue is None or result.job_id not in self.expected_ids:
+            return
+        with self.lock:
+            if result.job_id in self.offered:
+                return
+            self.offered[result.job_id] = result
+        # This is intentionally the only work done on a MakeMKV drive thread.
+        self.queue.put(result)
+
+    def finish(self, results: list[RipResult]) -> tuple[int | None, tuple[str, ...]]:
+        if self.queue is None or self.thread is None:
+            return None, ()
+        for result in results:
+            self.offer(result)
+        self.queue.join()
+        # Retry one transient failure after all first-pass handoffs complete.
+        with self.lock:
+            retry_results = [
+                self.offered[job_id]
+                for job_id in self.failures
+                if job_id in self.offered
+            ]
+        for result in retry_results:
+            self.queue.put(result)
+        self.queue.join()
+        self.queue.put(self.stop)
+        self.queue.join()
+        self.thread.join()
+        with self.lock:
+            return len(self.completed), tuple(sorted(self.failures))
 
 
 class ProductionRipExecutor:
@@ -56,6 +140,8 @@ class ProductionRipExecutor:
         self.progress_sink = progress_sink
 
     def _validate(self, bound: BoundRipDispatch) -> tuple[Path, Path]:
+        if not self.options.physical_disc_execution_enabled:
+            raise RipError("Physical disc execution is disabled for this executor")
         executable = self.options.makemkv_executable.resolve()
         run_directory = self.options.run_directory.resolve()
         output_root = bound.output_root.resolve()
@@ -77,6 +163,8 @@ class ProductionRipExecutor:
     def __call__(self, bound: BoundRipDispatch) -> DispatchOutcome:
         executable, run_directory = self._validate(bound)
         expected_ids = {job.job_id for job in bound.manifest.jobs}
+        handoff = _PipelineHandoff(bound, expected_ids, self.completion_sink)
+
         try:
             results = self.queue_runner(
                 executable,
@@ -88,6 +176,7 @@ class ProductionRipExecutor:
                 cancel_file=run_directory / "STOP",
                 max_drives=self.options.max_drives,
                 on_event=self.progress_sink,
+                on_result=handoff.offer,
             )
         except ParallelRipError as exc:
             completed_results = list(exc.completed_results)
@@ -96,15 +185,24 @@ class ProductionRipExecutor:
                 len(completed_ids) != len(set(completed_ids))
                 or not set(completed_ids) <= expected_ids
             ):
+                handoff.finish([])
                 raise RipError(
                     "Rip orchestrator returned an unexpected partial result set"
                 ) from exc
-            if self.completion_sink is not None and completed_results:
-                self.completion_sink(bound, completed_results)
+            queued_count, pending_ids = handoff.finish(completed_results)
+            exc.pipeline_queued_count = queued_count
+            exc.pipeline_handoff_pending_job_ids = pending_ids
+            raise
+        except Exception:
+            handoff.finish([])
             raise
         result_ids = [result.job_id for result in results]
         if len(result_ids) != len(expected_ids) or set(result_ids) != expected_ids:
+            handoff.finish([])
             raise RipError("Rip orchestrator returned an unexpected result set")
-        if self.completion_sink is not None:
-            self.completion_sink(bound, results)
-        return DispatchOutcome(completed_count=len(results))
+        queued_count, pending_ids = handoff.finish(results)
+        return DispatchOutcome(
+            completed_count=len(results),
+            pipeline_queued_count=queued_count,
+            pipeline_handoff_pending_job_ids=pending_ids,
+        )

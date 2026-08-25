@@ -12,6 +12,7 @@ from mkv_episode_matcher.disc.ripper import (
     RipError,
     RipJob,
     build_rip_command,
+    classify_output,
     progress_fraction,
     resolve_final_output,
     resolve_job_output,
@@ -100,6 +101,7 @@ def test_build_rip_command_allows_one_title_only(tmp_path):
     assert command == (
         str(executable),
         "-r",
+        "--noscan",
         "--messages=-stdout",
         "--progress=-same",
         "--minlength=0",
@@ -242,6 +244,61 @@ def test_success_streams_sanitized_log_and_verifies_output(tmp_path):
     assert str(destination) not in serialized
     assert any(record["event"] == "job_completed" for record in records)
     assert ("progress", "disc-01-title-003: 100%") in events
+
+
+def test_scsi_read_message_allows_makemkv_retry_and_success(tmp_path):
+    executable, output_root, log_path = _paths(tmp_path)
+    job = _job()
+    destination = resolve_job_output(output_root, job)
+    scsi_message = (
+        "MSG:2003,0,3,\"Error 'Scsi error - MEDIUM ERROR:"
+        "L-EC UNCORRECTABLE ERROR' occurred while reading 'source'\"\n"
+    )
+
+    def fake_popen(_command, **_kwargs):
+        (destination / "recovered.mkv").write_bytes(b"x" * 2_000_000)
+        return FakeProcess(scsi_message + "PRGV:65536,65536,65536\n")
+
+    assert classify_output(scsi_message) == "warning"
+    with JsonlRipLog(log_path) as event_log:
+        result = run_rip_job(
+            executable,
+            output_root,
+            job,
+            event_log,
+            popen_factory=fake_popen,
+        )
+
+    records = [
+        json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert result.return_code == 0
+    assert result.warning_count == 1
+    assert not any(record["event"] == "job_fatal_output" for record in records)
+    assert any(
+        record["event"] == "makemkv_output" and record["level"] == "warning"
+        for record in records
+    )
+
+
+def test_scsi_read_message_still_honors_makemkv_nonzero_exit(tmp_path):
+    executable, output_root, log_path = _paths(tmp_path)
+    process = FakeProcess(
+        'MSG:2003,0,3,"Scsi error - MEDIUM ERROR"\n',
+        return_code=1,
+    )
+
+    with JsonlRipLog(log_path) as event_log:
+        with pytest.raises(RipError, match="exited with code 1"):
+            run_rip_job(
+                executable,
+                output_root,
+                _job(),
+                event_log,
+                popen_factory=lambda *_args, **_kwargs: process,
+            )
+
+    assert process.terminated is False
 
 
 def test_success_finalizes_directly_in_flat_season_folder(tmp_path):

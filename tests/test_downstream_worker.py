@@ -1,7 +1,10 @@
 import json
 from types import SimpleNamespace
 
-from mkv_episode_matcher.backend.downstream_worker import DownstreamWorker
+from mkv_episode_matcher.backend.downstream_worker import (
+    DownstreamWorker,
+    _contract_disc_title_identity,
+)
 
 
 def test_worker_quarantines_legacy_sequence_only_downstream_assignments(
@@ -87,6 +90,32 @@ def test_worker_quarantines_legacy_sequence_only_downstream_assignments(
     assert held == [(sequence_organize, "legacy_sequence_assignment_review_required")]
 
 
+def test_recovered_downstream_item_reads_lineage_from_saved_rip_artifact(tmp_path):
+    fingerprint = "0123456789abcdef"
+    current = tmp_path / "identified.json"
+    current.write_text(
+        json.dumps({"mode": "identified-episode-contract"}), encoding="utf-8"
+    )
+    rip = tmp_path / "recovered.verified-rip.json"
+    rip.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "disc_fingerprint": fingerprint,
+            "title_index": 7,
+        }),
+        encoding="utf-8",
+    )
+    item = SimpleNamespace(
+        media_id="Disc_Name_t06-recovery-deadbeef",
+        artifact=SimpleNamespace(contract_path=current),
+    )
+    store = SimpleNamespace(
+        rip_artifact=lambda _media_id: SimpleNamespace(contract_path=rip)
+    )
+
+    assert _contract_disc_title_identity(item, store) == (fingerprint, 7)
+
+
 def test_automatic_analysis_rechecks_complete_disc_when_one_old_item_failed(
     tmp_path, monkeypatch
 ):
@@ -138,6 +167,247 @@ def test_automatic_analysis_rechecks_complete_disc_when_one_old_item_failed(
     assert worker._apply_automatic_disc_analysis() is True
     assert worker._apply_automatic_disc_analysis() is False
     assert captured == [("media-0", "media-1")]
+
+
+def test_automatic_analysis_retries_failed_only_disc_once_per_restart(
+    tmp_path, monkeypatch
+):
+    fingerprint = "0123456789abcdef"
+    items = []
+    for title_index, review_code in (
+        (3, "all_season_analysis_failed"),
+        (4, "gemini_analysis_failed"),
+        (5, "gemini_provider_failed"),
+    ):
+        contract = tmp_path / f"failed-{title_index}.json"
+        contract.write_text(
+            json.dumps({
+                "disc_fingerprint": fingerprint,
+                "title_index": title_index,
+                "disc_expected_title_indexes": [3, 4, 5],
+                "media_context": {"series_name": "The Office", "season": 7},
+            }),
+            encoding="utf-8",
+        )
+        items.append(
+            SimpleNamespace(
+                media_id=f"show--disc-01-{fingerprint}-title-{title_index:03d}",
+                stage="identify",
+                state="review_required",
+                review_code=review_code,
+                artifact=SimpleNamespace(contract_path=contract),
+            )
+        )
+    store = SimpleNamespace(
+        list_items=lambda: items,
+        silent_video_review_flags=lambda: {},
+        disc_matching_scope=lambda _fingerprint: (3, 4, 5),
+    )
+    worker = DownstreamWorker(
+        SimpleNamespace(store=store), allowed_stages=("identify",)
+    )
+    captured = []
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(automatic_processing_enabled=True)
+        ),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root",
+        lambda: tmp_path,
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.automatic_rip._resolve_automatic_unmatched_disc",
+        lambda media_ids, *_args: captured.append(media_ids),
+    )
+
+    assert worker._apply_automatic_disc_analysis() is True
+    assert worker._apply_automatic_disc_analysis() is False
+    assert captured == [tuple(item.media_id for item in items)]
+
+
+def test_automatic_analysis_runs_for_one_remaining_unresolved_title(
+    tmp_path, monkeypatch
+):
+    fingerprint = "0123456789abcdef"
+    contract = tmp_path / "singleton.json"
+    contract.write_text(
+        json.dumps({
+            "disc_fingerprint": fingerprint,
+            "disc_expected_title_indexes": [1, 2, 3],
+            "media_context": {"series_name": "The Office", "season": 6},
+        }),
+        encoding="utf-8",
+    )
+    completed = [
+        SimpleNamespace(
+            media_id=f"show--disc-01-{fingerprint}-title-{index:03d}",
+            stage="organize",
+            state="completed",
+            review_code=None,
+            artifact=SimpleNamespace(contract_path=contract),
+        )
+        for index in (1, 2)
+    ]
+    unresolved = SimpleNamespace(
+        media_id=f"show--disc-01-{fingerprint}-title-003",
+        stage="identify",
+        state="review_required",
+        review_code="episode_match_review",
+        artifact=SimpleNamespace(contract_path=contract),
+    )
+    items = completed + [unresolved]
+    store = SimpleNamespace(
+        list_items=lambda: items,
+        silent_video_review_flags=lambda: {},
+    )
+    worker = DownstreamWorker(
+        SimpleNamespace(store=store), allowed_stages=("identify",)
+    )
+    captured = []
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(automatic_processing_enabled=True)
+        ),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root",
+        lambda: tmp_path,
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.automatic_rip._resolve_automatic_unmatched_disc",
+        lambda media_ids, *_args: captured.append(media_ids),
+    )
+
+    assert worker._apply_automatic_disc_analysis() is True
+    assert worker._apply_automatic_disc_analysis() is False
+    assert captured == [(unresolved.media_id,)]
+
+
+def test_descriptive_review_retries_after_another_same_disc_title_resolves(
+    tmp_path, monkeypatch
+):
+    fingerprint = "0123456789abcdef"
+    contract = tmp_path / "descriptive.json"
+    contract.write_text(
+        json.dumps({
+            "disc_fingerprint": fingerprint,
+            "disc_expected_title_indexes": [1, 2, 3],
+            "media_context": {"series_name": "The Office", "season": 7},
+        }),
+        encoding="utf-8",
+    )
+    resolved = [
+        SimpleNamespace(
+            media_id=f"show--disc-01-{fingerprint}-title-001",
+            stage="organize",
+            state="completed",
+            review_code=None,
+            artifact=SimpleNamespace(contract_path=contract),
+        )
+    ]
+    unresolved = SimpleNamespace(
+        media_id=f"show--disc-01-{fingerprint}-title-003",
+        stage="identify",
+        state="review_required",
+        review_code="gemini_descriptive_review_required",
+        artifact=SimpleNamespace(contract_path=contract),
+    )
+    sibling = SimpleNamespace(
+        media_id=f"show--disc-01-{fingerprint}-title-002",
+        stage="identify",
+        state="review_required",
+        review_code="episode_match_review",
+        artifact=SimpleNamespace(contract_path=contract),
+    )
+    items = resolved + [sibling, unresolved]
+    store = SimpleNamespace(
+        list_items=lambda: items,
+        silent_video_review_flags=lambda: {},
+    )
+    worker = DownstreamWorker(
+        SimpleNamespace(store=store), allowed_stages=("identify",)
+    )
+    captured = []
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(automatic_processing_enabled=True)
+        ),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root",
+        lambda: tmp_path,
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.automatic_rip._resolve_automatic_unmatched_disc",
+        lambda media_ids, *_args: captured.append(media_ids),
+    )
+
+    assert worker._apply_automatic_disc_analysis() is True
+    assert worker._apply_automatic_disc_analysis() is False
+
+    sibling.stage = "transcode"
+    sibling.state = "queued"
+    sibling.review_code = None
+
+    assert worker._apply_automatic_disc_analysis() is True
+    assert worker._apply_automatic_disc_analysis() is False
+    assert captured == [
+        (sibling.media_id, unresolved.media_id),
+        (unresolved.media_id,),
+    ]
+
+
+def test_independent_evidence_hold_still_runs_local_disc_fallback_without_gemini(
+    tmp_path, monkeypatch
+):
+    fingerprint = "0123456789abcdef"
+    contract = tmp_path / "independent.json"
+    contract.write_text(
+        json.dumps({
+            "disc_fingerprint": fingerprint,
+            "media_context": {"series_name": "Example Show", "season": 1},
+        }),
+        encoding="utf-8",
+    )
+    item = SimpleNamespace(
+        media_id=f"show--disc-01-{fingerprint}-title-001",
+        stage="identify",
+        state="review_required",
+        review_code="independent_episode_evidence_required",
+        artifact=SimpleNamespace(contract_path=contract),
+    )
+    store = SimpleNamespace(
+        list_items=lambda: [item],
+        silent_video_review_flags=lambda: {},
+    )
+    worker = DownstreamWorker(
+        SimpleNamespace(store=store), allowed_stages=("identify",)
+    )
+    captured = []
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                automatic_processing_enabled=True,
+                automatic_gemini_ambiguity_fallback=False,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root",
+        lambda: tmp_path,
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.automatic_rip._resolve_automatic_unmatched_disc",
+        lambda media_ids, *_args: captured.append(media_ids),
+    )
+
+    assert worker._apply_automatic_disc_analysis() is True
+    assert captured == [(item.media_id,)]
 
 
 def test_automatic_analysis_waits_for_every_disc_title_to_settle(tmp_path, monkeypatch):
@@ -194,7 +464,7 @@ def test_automatic_analysis_waits_for_every_disc_title_to_settle(tmp_path, monke
     assert captured == [("media-0", "media-1", "media-2")]
 
 
-def test_automatic_analysis_waits_for_expected_titles_not_yet_admitted(
+def test_automatic_analysis_uses_prepared_relevant_matching_scope(
     tmp_path, monkeypatch
 ):
     fingerprint = "0123456789abcdef"
@@ -241,17 +511,139 @@ def test_automatic_analysis_waits_for_expected_titles_not_yet_admitted(
     )
 
     assert worker._apply_automatic_disc_analysis() is False
-    items.append(
-        SimpleNamespace(
-            media_id=f"show--disc-01-{fingerprint}-title-008",
-            stage="identify",
-            state="review_required",
-            review_code="unmatched_disc_analysis_required",
-            artifact=items[0].artifact,
-        )
-    )
+    store.disc_matching_scope = lambda _fingerprint: (1, 7)
     assert worker._apply_automatic_disc_analysis() is True
-    assert captured == [(items[0].media_id, items[1].media_id, items[2].media_id)]
+    assert captured == [(items[0].media_id, items[1].media_id)]
+
+
+def test_automatic_analysis_uses_contract_identity_for_recovered_media_ids(
+    tmp_path, monkeypatch
+):
+    fingerprint = "0123456789abcdef"
+    items = []
+    for title_index in (1, 2):
+        contract = tmp_path / f"recovered-{title_index}.json"
+        contract.write_text(
+            json.dumps({
+                "mode": "verified-rip-contract",
+                "disc_fingerprint": fingerprint,
+                "title_index": title_index,
+                "disc_expected_title_indexes": [1, 2],
+                "media_context": {"series_name": "The Office", "season": None},
+            }),
+            encoding="utf-8",
+        )
+        items.append(
+            SimpleNamespace(
+                media_id=f"Disc_Name_t{title_index:02d}-recovery-deadbeef{title_index}",
+                stage="identify",
+                state="review_required",
+                review_code="unmatched_disc_analysis_required",
+                artifact=SimpleNamespace(contract_path=contract),
+                created_at=f"2026-08-24T00:00:0{title_index}Z",
+                updated_at=f"2026-08-24T00:00:0{title_index}Z",
+            )
+        )
+    store = SimpleNamespace(
+        list_items=lambda: items,
+        silent_video_review_flags=lambda: {},
+        disc_matching_scope=lambda _fingerprint: (1, 2),
+    )
+    worker = DownstreamWorker(
+        SimpleNamespace(store=store), allowed_stages=("identify",)
+    )
+    captured = []
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(automatic_processing_enabled=True)
+        ),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root",
+        lambda: tmp_path,
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.automatic_rip._resolve_automatic_unmatched_disc",
+        lambda media_ids, *_args: captured.append(media_ids),
+    )
+
+    assert worker._apply_automatic_disc_analysis() is True
+    assert captured == [(items[0].media_id, items[1].media_id)]
+
+
+def test_automatic_analysis_coordinates_newest_episode_review_lineages(
+    tmp_path, monkeypatch
+):
+    fingerprint = "0123456789abcdef"
+    expected_indexes = [2, 4, 5]
+
+    def queue_item(title_index, *, suffix="", state="review_required", updated_at):
+        media_id = f"show--disc-01-{fingerprint}-title-{title_index:03d}{suffix}"
+        contract = tmp_path / f"{title_index}{suffix or '-original'}.json"
+        contract.write_text(
+            json.dumps({
+                "disc_fingerprint": fingerprint,
+                "disc_expected_title_indexes": expected_indexes,
+                "title_index": title_index,
+            }),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(
+            media_id=media_id,
+            stage="identify",
+            state=state,
+            review_code=(
+                "episode_match_review" if state == "review_required" else None
+            ),
+            artifact=SimpleNamespace(contract_path=contract),
+            created_at=updated_at,
+            updated_at=updated_at,
+        )
+
+    original_2 = queue_item(2, updated_at="2026-08-16T10:00:00Z")
+    recovery_2 = queue_item(
+        2,
+        suffix="-recovery-newer",
+        updated_at="2026-08-16T10:05:00Z",
+    )
+    original_4 = queue_item(4, updated_at="2026-08-16T10:00:00Z")
+    recovery_4 = queue_item(
+        4,
+        suffix="-recovery-newer",
+        state="queued",
+        updated_at="2026-08-16T10:05:00Z",
+    )
+    current_5 = queue_item(5, updated_at="2026-08-16T10:05:00Z")
+    items = [original_2, recovery_2, original_4, recovery_4, current_5]
+    store = SimpleNamespace(
+        list_items=lambda: items,
+        silent_video_review_flags=lambda: {},
+    )
+    worker = DownstreamWorker(
+        SimpleNamespace(store=store), allowed_stages=("identify",)
+    )
+    captured = []
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(automatic_processing_enabled=True)
+        ),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root",
+        lambda: tmp_path,
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.automatic_rip._resolve_automatic_unmatched_disc",
+        lambda media_ids, *_args: captured.append(media_ids),
+    )
+
+    assert worker._apply_automatic_disc_analysis() is False
+    recovery_4.state = "review_required"
+    recovery_4.review_code = "episode_match_review"
+    assert worker._apply_automatic_disc_analysis() is True
+    assert captured == [(recovery_2.media_id, recovery_4.media_id, current_5.media_id)]
 
 
 def test_post_item_automation_checks_disc_before_queue_becomes_idle(monkeypatch):

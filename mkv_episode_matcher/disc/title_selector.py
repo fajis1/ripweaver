@@ -375,6 +375,38 @@ def select_pipeline_titles(
     )
 
 
+def select_recovery_titles(
+    plan: DiscTitlePlan,
+    content_hint: str | None = None,
+) -> tuple[TitleDecision, ...]:
+    """Select titles whose acquisition must be verified before recovery completes.
+
+    TV episode matching remains limited to the dominant episode cluster.  A
+    substantial title outside that cluster is still real, unresolved content,
+    though: recovery must preserve or rerip it and route it to review instead
+    of silently treating it like a menu or navigation clip.
+    """
+
+    selected_indexes = {
+        decision.title.index for decision in select_pipeline_titles(plan, content_hint)
+    }
+    if content_hint == "tv":
+        selected_indexes.update(
+            decision.title.index
+            for decision in plan.decisions
+            if decision.classification == "review"
+            and decision.title.duration_seconds is not None
+            and decision.title.duration_seconds >= MIN_EPISODE_SECONDS
+            and decision.title.size_bytes is not None
+            and decision.title.size_bytes > 0
+        )
+    return tuple(
+        decision
+        for decision in plan.decisions
+        if decision.title.index in selected_indexes
+    )
+
+
 def select_rippable_titles(plan: DiscTitlePlan) -> tuple[TitleDecision, ...]:
     """Return every nonempty MakeMKV title that is not trivial navigation.
 

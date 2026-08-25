@@ -19,6 +19,10 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from mkv_episode_matcher.disc.makemkv_process_control import (
+    audit_makemkv_process_exit,
+    start_makemkv_process,
+)
 from mkv_episode_matcher.disc.ripper import (
     JsonlRipLog,
     RipError,
@@ -111,7 +115,11 @@ def _report_closed_batch_outputs(
             continue
         current = workspace / plan.batch_output_names[index]
         following = workspace / plan.batch_output_names[index + 1]
-        if not current.is_file() or current.stat().st_size <= 0 or not following.is_file():
+        if (
+            not current.is_file()
+            or current.stat().st_size <= 0
+            or not following.is_file()
+        ):
             break
         reported_job_ids.add(job.job_id)
         on_event("output-closed", f"{job.job_id}: completed")
@@ -208,6 +216,7 @@ def build_single_open_batch_command(
     return (
         str(executable),
         "-r",
+        "--noscan",
         "--messages=-stdout",
         "--progress=-same",
         f"--minlength={plan.minimum_length_seconds}",
@@ -259,11 +268,19 @@ def verify_single_open_batch_outputs(
     for job, output_name in zip(plan.jobs, plan.batch_output_names, strict=True):
         output = by_name[output_name.casefold()]
         output_bytes = output.stat().st_size
-        if output_bytes < 1_000_000:
+        # Exactly 0 bytes means MakeMKV produced nothing for this title (a
+        # menu or navigation track with no usable content).  Treat it as a
+        # graceful skip rather than a failure.  Any file between 1 and
+        # 999 999 bytes was partially written and is unexpectedly small.
+        if 0 < output_bytes < 1_000_000:
             raise RipError(
                 "A batch MKV is unexpectedly small; all files were preserved"
             )
-        if job.estimated_bytes and output_bytes < job.estimated_bytes * 0.5:
+        if (
+            output_bytes > 0
+            and job.estimated_bytes
+            and output_bytes < job.estimated_bytes * 0.5
+        ):
             raise RipError(
                 "A batch MKV is less than half its planned size; all files were "
                 "preserved"
@@ -281,7 +298,7 @@ def run_single_open_batch(  # noqa: C901
     timeout_seconds: int = 7200,
     cancel_file: Path | None = None,
     on_event: Callable[[str, str], None] | None = None,
-    popen_factory: Callable[..., subprocess.Popen[str]] = subprocess.Popen,
+    popen_factory: Callable[..., subprocess.Popen[str]] = start_makemkv_process,
 ) -> list[RipResult]:
     """Run one exact ``all`` operation and distribute only verified outputs."""
 
@@ -317,6 +334,7 @@ def run_single_open_batch(  # noqa: C901
         raise RipError(f"MakeMKV could not be started: {type(exc).__name__}") from exc
     if process.stdout is None:
         _stop_process(process)
+        audit_makemkv_process_exit(process)
         raise RipError("MakeMKV output stream was unavailable")
 
     output_queue: queue.Queue[str | None] = queue.Queue()
@@ -333,18 +351,14 @@ def run_single_open_batch(  # noqa: C901
     last_progress = -1
     last_overall_progress = -1
     reported_job_ids: set[str] = set()
-    estimated_total_bytes = sum(
-        int(job.estimated_bytes or 0) for job in plan.jobs
-    )
+    estimated_total_bytes = sum(int(job.estimated_bytes or 0) for job in plan.jobs)
     throughput_sample = (time.monotonic(), 0)
     try:
         while not stream_finished or process.poll() is None:
             throughput_sample = sample_output_throughput(
                 workspace, throughput_sample, "batch", on_event
             )
-            _report_closed_batch_outputs(
-                workspace, plan, reported_job_ids, on_event
-            )
+            _report_closed_batch_outputs(workspace, plan, reported_job_ids, on_event)
             if estimated_total_bytes > 0:
                 overall_percent = min(
                     99,
@@ -352,9 +366,7 @@ def run_single_open_batch(  # noqa: C901
                 )
                 if overall_percent > last_overall_progress:
                     last_overall_progress = overall_percent
-                    event_log.write(
-                        "batch_overall_progress", percent=overall_percent
-                    )
+                    event_log.write("batch_overall_progress", percent=overall_percent)
                     if on_event is not None:
                         on_event("progress", f"overall: {overall_percent}%")
             if cancel_file is not None and cancel_file.exists():
@@ -408,6 +420,7 @@ def run_single_open_batch(  # noqa: C901
             _stop_process(process)
         reader.join(timeout=2)
         process.stdout.close()
+        audit_makemkv_process_exit(process)
 
     return_code = process.wait(timeout=10)
     event_log.write(
@@ -427,6 +440,24 @@ def run_single_open_batch(  # noqa: C901
     for job, destination, (source, output_bytes) in zip(
         plan.jobs, destinations, verified, strict=True
     ):
+        finished = datetime.now(UTC)
+        if output_bytes == 0:
+            # MakeMKV produced nothing for this title (menu or navigation
+            # track).  Record it as a graceful skip with no output file.
+            result = RipResult(
+                job_id=job.job_id,
+                return_code=return_code,
+                output_count=0,
+                output_bytes=0,
+                warning_count=warnings,
+                started_at=started.isoformat(),
+                finished_at=finished.isoformat(),
+            )
+            event_log.write("job_completed", **asdict(result))
+            if on_event is not None:
+                on_event("completed", f"{job.job_id}: skipped (no content)")
+            results.append(result)
+            continue
         final_output = resolve_final_output(output_root, job)
         target = (
             final_output
@@ -452,7 +483,6 @@ def run_single_open_batch(  # noqa: C901
                 job_id=job.job_id,
                 output_basename=job.output_basename,
             )
-        finished = datetime.now(UTC)
         result = RipResult(
             job_id=job.job_id,
             return_code=return_code,

@@ -1,11 +1,17 @@
 import asyncio
+import csv
+import io
 import json
 from datetime import UTC, datetime
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI, HTTPException
 
 from mkv_episode_matcher.backend.dependencies import (
+    get_disc_inventory_runner,
+    get_drive_watcher,
     get_orchestration_store,
     get_pipeline_contract_root,
     get_pipeline_queue_store,
@@ -14,14 +20,85 @@ from mkv_episode_matcher.backend.dependencies import (
 )
 from mkv_episode_matcher.backend.routers import rip
 from mkv_episode_matcher.backend.routers.rip import router
+from mkv_episode_matcher.core.models import Config
+from mkv_episode_matcher.disc.drive_watcher import (
+    DriveStatusSnapshot,
+    PublicDriveStatus,
+)
 from mkv_episode_matcher.disc.orchestration_store import OrchestrationStore
+from mkv_episode_matcher.disc.preflight import CommandResult
 from mkv_episode_matcher.disc.private_bindings import PrivateBindingStore
 from mkv_episode_matcher.disc.rip_manifest import MediaContext
 from mkv_episode_matcher.disc.rip_orchestrator import ParallelRipError
 from mkv_episode_matcher.disc.rip_preview import build_rip_preview
 from mkv_episode_matcher.disc.ripper import RipResult, resolve_final_output
-from mkv_episode_matcher.pipeline_queue import PipelineQueueStore
+from mkv_episode_matcher.pipeline_queue import PipelineQueueStore, build_artifact
 from tests.test_rip_manifest import _inventory, _make_batch_names, _write_report
+
+
+def _inventory_result_from_report(
+    report: Path,
+    source: str,
+    *,
+    changed: bool = False,
+    include_drive_row: bool = True,
+) -> CommandResult:
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    drive = payload["drive"]
+    rows: list[str] = []
+
+    def add_row(values: list[object]) -> None:
+        buffer = io.StringIO()
+        csv.writer(buffer, lineterminator="").writerow(values)
+        rows.append(buffer.getvalue())
+
+    if include_drive_row:
+        add_row([
+            f"DRV:{drive['index']}",
+            2,
+            999,
+            1,
+            "private hardware",
+            drive["disc_name"],
+            "D:",
+        ])
+    for title_position, title in enumerate(payload["titles"]):
+        title_index = title["index"]
+        for code, value in title["attributes"].items():
+            if changed and title_position == 0 and code == "9":
+                value = "0:22:01"
+            add_row([f"TINFO:{title_index}", code, 0, value])
+        for stream_id, stream in title.get("streams", {}).items():
+            for code, value in stream.get("attributes", {}).items():
+                add_row([f"SINFO:{title_index}", stream_id, code, 0, value])
+    return CommandResult(
+        command=("makemkvcon64.exe", "info", source),
+        return_code=0,
+        stdout="\n".join(rows) + "\n",
+        stderr="",
+        started_at="2026-08-19T00:00:00+00:00",
+        finished_at="2026-08-19T00:00:01+00:00",
+    )
+
+
+def _override_execution_inventory(
+    app: FastAPI,
+    report: Path,
+    calls: list[str],
+    *,
+    changed: bool = False,
+    include_drive_row: bool = True,
+) -> None:
+    def inventory_runner(_executable, source, **_kwargs):
+        calls.append(source)
+        return _inventory_result_from_report(
+            report,
+            source,
+            changed=changed,
+            include_drive_row=include_drive_row,
+        )
+
+    app.dependency_overrides[get_disc_inventory_runner] = lambda: inventory_runner
 
 
 def test_repeated_read_failure_skip_endpoint_updates_future_plans_only(tmp_path):
@@ -186,7 +263,13 @@ def _post(app, path, payload, *, idempotency_key):
     return status, response_body, json.loads(response_body)
 
 
-def test_api_job_composes_through_private_dispatch_with_fake_queue(tmp_path):
+def test_api_job_composes_through_private_dispatch_with_fake_queue(
+    tmp_path, monkeypatch
+):
+    config = Config(cache_dir=tmp_path / "cache", automatic_eject_after_rip=False)
+    monkeypatch.setattr(
+        rip, "get_config_manager", lambda: SimpleNamespace(load=lambda: config)
+    )
     report = _write_report(
         tmp_path,
         "saved-report.json",
@@ -197,6 +280,7 @@ def test_api_job_composes_through_private_dispatch_with_fake_queue(tmp_path):
     public = OrchestrationStore(tmp_path / "public.sqlite3")
     private = PrivateBindingStore(tmp_path / "private.sqlite3")
     pipeline = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+    monkeypatch.setattr(rip, "get_pipeline_queue_store", lambda: pipeline)
 
     app = FastAPI()
     app.include_router(router)
@@ -206,6 +290,24 @@ def test_api_job_composes_through_private_dispatch_with_fake_queue(tmp_path):
     app.dependency_overrides[get_pipeline_contract_root] = lambda: (
         tmp_path / "pipeline-contracts"
     )
+    app.dependency_overrides[get_drive_watcher] = lambda: SimpleNamespace(
+        snapshot=lambda: DriveStatusSnapshot(
+            drives=(
+                PublicDriveStatus(
+                    drive_index=4,
+                    available=True,
+                    has_disc=True,
+                    display_name="Synthetic optical drive",
+                    disc_label="Synthetic Disc",
+                ),
+            ),
+            refreshed_at="2026-08-20T00:00:00+00:00",
+            status="ready",
+        ),
+        device_name=lambda drive_index: "D:" if drive_index == 4 else None,
+    )
+    inventory_calls: list[str] = []
+    _override_execution_inventory(app, report, inventory_calls)
     request = {
         "report_paths": [str(report)],
         "media_contexts": {
@@ -247,11 +349,22 @@ def test_api_job_composes_through_private_dispatch_with_fake_queue(tmp_path):
     assert queued["state"] == "queued"
     assert queued["executor_attached"] is False
 
+    # Simulate an older retained attempt with the same normal media ID. The new
+    # verified MKV must receive a recovery lineage instead of blocking MakeMKV
+    # completion or overwriting the earlier queue record.
+    first_media_id = Path(created["preview"]["jobs"][0]["final_destination"]).stem
+    older_contract = tmp_path / "older-rip-contract.json"
+    older_contract.write_text('{"mode":"synthetic-old-rip"}\n', encoding="utf-8")
+    pipeline.enqueue_verified_rip(
+        first_media_id,
+        build_artifact("rip", older_contract),
+    )
+
     executable = tmp_path / "makemkvcon64.exe"
     executable.write_bytes(b"synthetic executable placeholder")
     calls = []
 
-    def fake_queue(_executable, root, jobs, _run_directory, **_kwargs):
+    def fake_queue(_executable, root, jobs, _run_directory, **kwargs):
         calls.append(tuple(jobs))
         now = datetime.now(UTC).isoformat()
         for job in jobs:
@@ -259,7 +372,7 @@ def test_api_job_composes_through_private_dispatch_with_fake_queue(tmp_path):
             assert destination is not None
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(b"x")
-        return [
+        results = [
             RipResult(
                 job_id=job.job_id,
                 return_code=0,
@@ -271,6 +384,9 @@ def test_api_job_composes_through_private_dispatch_with_fake_queue(tmp_path):
             )
             for job in jobs
         ]
+        for result in results:
+            kwargs["on_result"](result)
+        return results
 
     app.dependency_overrides[get_rip_queue_runner] = lambda: fake_queue
     refused_status, refused_body, _ = _post(
@@ -303,6 +419,42 @@ def test_api_job_composes_through_private_dispatch_with_fake_queue(tmp_path):
     )
     assert mismatch_status == 409
     assert calls == []
+    assert inventory_calls == []
+
+    _override_execution_inventory(
+        app,
+        report,
+        inventory_calls,
+        changed=True,
+    )
+    fresh_mismatch_status, _, fresh_mismatch = _post(
+        app,
+        f"/rip/jobs/{created['job_id']}/execute",
+        {
+            "expected_plan_sha256": created["plan_sha256"],
+            "authorized_job_count": len(created["preview"]["jobs"]),
+            "makemkv_executable": str(executable),
+            "run_directory": str(tmp_path / "fresh-mismatch-fake-run"),
+            "timeout_seconds": 600,
+            "max_drives": 1,
+            "confirm_execute": True,
+        },
+        idempotency_key="dispatch-fresh-mismatch-0001",
+    )
+    assert fresh_mismatch_status == 409
+    assert "no longer match" in fresh_mismatch["detail"]
+    assert calls == []
+    assert public.get_job(created["job_id"]).state == "queued"
+
+    # Targeted --noscan inventory may contain valid title rows while omitting
+    # the global DRV row. Execution must use the same trusted-slot rebinding as
+    # drive preparation before it validates the immutable inventory signature.
+    _override_execution_inventory(
+        app,
+        report,
+        inventory_calls,
+        include_drive_row=False,
+    )
 
     execute_status, execute_body, completed = _post(
         app,
@@ -321,20 +473,34 @@ def test_api_job_composes_through_private_dispatch_with_fake_queue(tmp_path):
 
     assert execute_status == 200
     assert completed["state"] == "completed"
+    assert completed["pipeline_handoff_status"] == "complete"
+    assert completed["pipeline_queued_title_count"] == 2
+    assert completed["pipeline_handoff_pending_title_count"] == 0
     assert str(output_root).encode() not in execute_body
     assert str(executable).encode() not in execute_body
     assert len(calls) == 1
+    assert inventory_calls == ["disc:4", "disc:4"]
     assert len(calls[0]) == len(created["preview"]["jobs"])
     assert not (tmp_path / "unused-fake-run").exists()
-    assert len(pipeline.list_items()) == len(created["preview"]["jobs"])
+    assert len(pipeline.list_items()) == len(created["preview"]["jobs"]) + 1
     assert {item.stage for item in pipeline.list_items()} == {"identify"}
-    assert {
-        rip._pipeline_item_response(item)["title_index"]
-        for item in pipeline.list_items()
-    } == {0, 1}
+    new_items = [
+        item for item in pipeline.list_items() if item.media_id != first_media_id
+    ]
+    assert any("-recovery-" in item.media_id for item in new_items)
+    assert {rip._pipeline_item_response(item)["title_index"] for item in new_items} == {
+        0,
+        1,
+    }
 
 
-def test_failed_disc_queues_verified_titles_and_retry_runs_only_unfinished(tmp_path):
+def test_failed_disc_queues_verified_titles_and_retry_runs_only_unfinished(
+    tmp_path, monkeypatch
+):
+    config = Config(cache_dir=tmp_path / "cache", automatic_eject_after_rip=False)
+    monkeypatch.setattr(
+        rip, "get_config_manager", lambda: SimpleNamespace(load=lambda: config)
+    )
     report = _write_report(
         tmp_path,
         "saved-report.json",
@@ -354,6 +520,8 @@ def test_failed_disc_queues_verified_titles_and_retry_runs_only_unfinished(tmp_p
     app.dependency_overrides[get_pipeline_contract_root] = lambda: (
         tmp_path / "pipeline-contracts"
     )
+    inventory_calls: list[str] = []
+    _override_execution_inventory(app, report, inventory_calls)
     created_status, _, created = _post(
         app,
         "/rip/jobs",
@@ -492,6 +660,7 @@ def test_failed_disc_queues_verified_titles_and_retry_runs_only_unfinished(tmp_p
     assert completed_status == 200
     assert completed["state"] == "completed"
     assert len(calls) == 2
+    assert inventory_calls == ["disc:4", "disc:4"]
     assert len(calls[0]) == 2
     assert len(calls[1]) == 1
     assert calls[1][0].job_id != calls[0][0].job_id

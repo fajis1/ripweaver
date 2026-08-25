@@ -13,7 +13,9 @@ from mkv_episode_matcher.core.models import EpisodeInfo, SubtitleFile
 from mkv_episode_matcher.disc.orchestration_store import OrchestrationStore
 from mkv_episode_matcher.media.episode_catalog import EpisodeCatalogEntry
 from mkv_episode_matcher.media.gemini_matcher import (
+    GeminiMatchResult,
     GeminiResponseError,
+    GeminiReviewPlan,
     UnmatchedFileEvidence,
 )
 from mkv_episode_matcher.media.gemini_series_resolver import GeminiSeriesResolution
@@ -95,6 +97,228 @@ def test_residual_subtitle_pass_selects_strong_remaining_episode():
     assert details["title-004"]["reason"] == ("accepted_after_disc_residual_reduction")
 
 
+def test_gemini_disc_batch_sends_five_unresolved_titles_in_one_call():
+    files = tuple(
+        UnmatchedFileEvidence(f"title-{index}", 1200, (f"dialogue {index}",))
+        for index in range(5)
+    )
+    catalog = tuple(
+        EpisodeCatalogEntry(
+            f"S04E{index + 1:02d}", 4, index + 1, f"Episode {index + 1}", "", 1200
+        )
+        for index in range(5)
+    )
+
+    class Dossier:
+        @staticmethod
+        def safe_attempts(_file_id):
+            return ()
+
+    class Ranker:
+        model = "gemini-test"
+
+        def __init__(self):
+            self.calls = []
+
+        def rank_with_configured_keys(self, supplied_files, supplied_catalog, **kwargs):
+            self.calls.append((supplied_files, supplied_catalog, kwargs))
+            return SimpleNamespace(
+                matches=tuple(
+                    SimpleNamespace(
+                        file_id=item.file_id,
+                        episode_id=entry.episode_id,
+                        confidence=0.9,
+                    )
+                    for item, entry in zip(
+                        supplied_files, supplied_catalog, strict=True
+                    )
+                )
+            )
+
+    ranker = Ranker()
+    matches = analysis._rank_gemini_chunks(
+        ranker,
+        files,
+        catalog,
+        Dossier(),
+        frozenset(),
+    )
+
+    assert set(matches) == {item.file_id for item in files}
+    assert len(ranker.calls) == 1
+    assert len(ranker.calls[0][0]) == 5
+
+
+def test_gemini_disc_batch_reuses_private_exact_request_cache(tmp_path):
+    files = (UnmatchedFileEvidence("title-1", 1200, ("dialogue",)),)
+    catalog = (EpisodeCatalogEntry("S04E11", 4, 11, "Eleven", "", 1200),)
+    dossier = IdentificationDossierStore(tmp_path / "private")
+
+    class Ranker:
+        model = "gemini-test"
+
+        def __init__(self):
+            self.calls = 0
+
+        def rank_with_configured_keys(
+            self,
+            supplied_files,
+            _catalog,
+            *,
+            prior_attempts,
+            existing_episode_ids,
+            review_phase,
+            proposed_assignments=None,
+            subtitle_comparisons=None,
+        ):
+            self.calls += 1
+            return GeminiReviewPlan(
+                "gemini-unmatched-review-plan",
+                self.model,
+                (
+                    GeminiMatchResult(
+                        supplied_files[0].file_id,
+                        "S04E11",
+                        0.9,
+                        ("paired scenes",),
+                    ),
+                ),
+            )
+
+    ranker = Ranker()
+    first = analysis._rank_gemini_chunks(ranker, files, catalog, dossier, frozenset())
+    second = analysis._rank_gemini_chunks(ranker, files, catalog, dossier, frozenset())
+
+    assert first == second
+    assert ranker.calls == 1
+
+
+def test_gemini_provider_recorder_is_not_part_of_request_digest(tmp_path):
+    files = (UnmatchedFileEvidence("title-1", 1200, ("dialogue",)),)
+    catalog = (EpisodeCatalogEntry("S07E20", 7, 20, "Twenty", "", 1200),)
+    dossier = IdentificationDossierStore(tmp_path / "private")
+
+    class Ranker:
+        model = "gemini-test"
+
+        def __init__(self):
+            self.recorder = None
+
+        def rank_with_configured_keys(
+            self,
+            supplied_files,
+            _catalog,
+            *,
+            prior_attempts,
+            existing_episode_ids,
+            review_phase,
+            transaction_recorder,
+        ):
+            self.recorder = transaction_recorder
+            return GeminiReviewPlan(
+                "gemini-unmatched-review-plan",
+                self.model,
+                (
+                    GeminiMatchResult(
+                        supplied_files[0].file_id,
+                        "S07E20",
+                        0.9,
+                        ("paired scenes",),
+                    ),
+                ),
+            )
+
+    ranker = Ranker()
+    matches = analysis._rank_gemini_chunks(
+        ranker,
+        files,
+        catalog,
+        dossier,
+        frozenset(),
+        analysis_run_id="0123456789abcdef0123456789abcdef",
+    )
+
+    assert matches["title-1"].episode_id == "S07E20"
+    assert callable(ranker.recorder)
+
+
+def test_matching_telemetry_omits_non_provider_audit_branches():
+    dossier = SimpleNamespace(
+        safe_attempts=lambda _media_id: (
+            {"branch": "tv-local"},
+            {"branch": "tv-disc-range"},
+            {"branch": "visual-ocr"},
+            {"branch": "tv-opensubtitles"},
+        )
+    )
+
+    assert analysis._matching_provider_branches(dossier, ("title-1",)) == (
+        "tv-local",
+        "tv-opensubtitles",
+    )
+
+
+def test_gemini_uses_six_diverse_excerpts_and_paired_subtitle_passages():
+    excerpts = tuple(
+        f"speaker{index} topic{index} location{index} action{index}"
+        for index in range(12)
+    )
+    files = (UnmatchedFileEvidence("title-1", 1200, excerpts),)
+    reference = SimpleNamespace(
+        episode_info=SimpleNamespace(season=4, episode=11),
+        content=" ".join(
+            f"speaker{index} topic{index} location{index} action{index} continues"
+            for index in range(12)
+        ),
+        path=None,
+    )
+    evaluations = {
+        "title-1": [
+            {
+                "phase": "offset-six-window-retry",
+                "rank": 1,
+                "candidate_episode_id": "S04E11",
+            }
+        ]
+    }
+
+    class ASR:
+        @staticmethod
+        def calculate_match_score(query, candidate):
+            return 0.9 if query in candidate else 0.1
+
+    comparisons = analysis._gemini_subtitle_comparisons(
+        files, (reference,), evaluations, ASR()
+    )
+    selected = analysis._select_gemini_file_evidence(files, comparisons)
+
+    assert len(comparisons["title-1"]) == 2
+    assert all(pair.candidate_episode_id == "S04E11" for pair in comparisons["title-1"])
+    assert len(selected[0].transcript_excerpts) == 6
+
+
+def test_gemini_subtitle_comparisons_follow_final_unassigned_catalog():
+    comparisons = {
+        "title-1": (
+            analysis.GeminiSubtitleComparisonEvidence(
+                "S07E21", "assigned dialogue", "assigned reference", 0.9
+            ),
+            analysis.GeminiSubtitleComparisonEvidence(
+                "S07E22", "remaining dialogue", "remaining reference", 0.8
+            ),
+        )
+    }
+    remaining_catalog = (EpisodeCatalogEntry("S07E22", 7, 22, "Episode 22", "", 1200),)
+
+    filtered = analysis._filter_gemini_subtitle_comparisons(
+        comparisons, remaining_catalog
+    )
+
+    assert tuple(pair.candidate_episode_id for pair in filtered["title-1"]) == (
+        "S07E22",
+    )
+
+
 def test_residual_subtitle_pass_preserves_close_or_weak_choices_for_review():
     episode_12 = EpisodeCatalogEntry("S02E12", 2, 12, "The Injury", "", 1200)
     episode_15 = EpisodeCatalogEntry("S02E15", 2, 15, "Boys and Girls", "", 1200)
@@ -134,6 +358,146 @@ def test_disc_episode_range_fence_uses_anchors_without_title_order():
     assert fence.permits(catalog[3]) is False
     assert fence.permits(catalog[13]) is False
     assert analysis._build_disc_episode_range_fence(anchors[:1], catalog, 7) is None
+
+
+def test_disc_number_prioritizes_expected_title_count_window_without_exclusion():
+    catalog = tuple(
+        EpisodeCatalogEntry(
+            f"S05E{episode:02d}", 5, episode, f"Episode {episode}", "", 1200
+        )
+        for episode in range(1, 25)
+    )
+
+    disc_two = analysis._prioritize_catalog_for_disc_number(catalog, 2, 6)
+    disc_four = analysis._prioritize_catalog_for_disc_number(catalog, 4, 6)
+
+    assert {entry.episode_id for entry in disc_two} == {
+        entry.episode_id for entry in catalog
+    }
+    assert tuple(entry.episode for entry in disc_two[:6]) == tuple(range(7, 13))
+    assert tuple(entry.episode for entry in disc_four[:6]) == tuple(range(19, 25))
+    assert disc_two.index(catalog[0]) > disc_two.index(catalog[6])
+
+
+def test_saved_superfan_context_is_retained_only_for_subtitle_lookup():
+    selected = [
+        (
+            SimpleNamespace(media_id="title-1"),
+            {"media_context": {"series_name": "The Office Superfan Episodes"}},
+        )
+    ]
+
+    lookup_name, release_profile = analysis._subtitle_lookup_series_name(
+        "The Office", selected
+    )
+
+    assert lookup_name == "The Office Superfan Episodes"
+    assert release_profile == "superfan"
+
+
+def test_reviewed_release_context_survives_canonical_series_resolution():
+    selected = [
+        (
+            SimpleNamespace(media_id="title-1"),
+            {"media_context": {"series_name": "The Office"}},
+        )
+    ]
+
+    lookup_name, release_profile = analysis._subtitle_lookup_series_name(
+        "The Office",
+        selected,
+        reviewed_series_name="The Office Superfan Episodes",
+    )
+
+    assert lookup_name == "The Office Superfan Episodes"
+    assert release_profile == "superfan"
+
+
+@pytest.mark.parametrize(
+    ("reviewed_name", "expected_name", "expected_profile"),
+    (
+        ("Example Extended", "Example Extended", "extended"),
+        ("Example Unrated", "Example Unrated", "unrated"),
+        ("Example Supercut", "Example Supercut", "supercut"),
+        ("Example Director's Cut", "Example Director's Cut", "directors_cut"),
+    ),
+)
+def test_reviewed_altered_release_profiles_are_retained_for_subtitle_lookup(
+    reviewed_name: str,
+    expected_name: str,
+    expected_profile: str,
+):
+    lookup_name, release_profile = analysis._subtitle_lookup_series_name(
+        "Example",
+        [],
+        reviewed_series_name=reviewed_name,
+    )
+
+    assert lookup_name == expected_name
+    assert release_profile == expected_profile
+
+
+def test_release_lookup_does_not_duplicate_existing_edition_suffix():
+    lookup_name, release_profile = analysis._subtitle_lookup_series_name(
+        "The Office Superfan Episodes",
+        [],
+    )
+
+    assert lookup_name == "The Office Superfan Episodes"
+    assert release_profile == "superfan"
+
+
+def test_reviewed_episode_range_only_narrows_candidate_catalog():
+    catalog = tuple(
+        EpisodeCatalogEntry(
+            f"S07E{episode:02d}", 7, episode, f"Episode {episode}", "", 1200
+        )
+        for episode in range(18, 27)
+    ) + (EpisodeCatalogEntry("S08E20", 8, 20, "Other season", "", 1200),)
+
+    scoped = analysis._reviewed_episode_catalog(catalog, 7, (20, 24))
+
+    assert tuple(entry.episode_id for entry in scoped) == (
+        "S07E20",
+        "S07E21",
+        "S07E22",
+        "S07E23",
+        "S07E24",
+    )
+    with pytest.raises(analysis.PipelineQueueError, match="requires a season"):
+        analysis._reviewed_episode_catalog(catalog, None, (20, 24))
+
+
+def test_gemini_disc_coherence_rejects_split_s4_d3_assignments():
+    entries = tuple(
+        EpisodeCatalogEntry(
+            f"S04E{episode:02d}", 4, episode, f"Episode {episode}", "", 1200
+        )
+        for episode in (12, 11, 1, 2, 3, 4)
+    )
+
+    assert not analysis._gemini_disc_assignments_coherent(
+        entries, disc_title_count=6, required_season=4
+    )
+    assert analysis._gemini_disc_assignments_coherent(
+        tuple(entries[:2]), disc_title_count=6, required_season=4
+    )
+
+
+def test_gemini_disc_coherence_is_required_without_saved_season_context():
+    scattered = tuple(
+        EpisodeCatalogEntry(
+            f"S08E{episode:02d}", 8, episode, f"Episode {episode}", "", 1200
+        )
+        for episode in (4, 7, 8, 12, 14, 16, 17, 19)
+    )
+
+    assert not analysis._gemini_disc_assignments_coherent(
+        scattered, disc_title_count=8, required_season=None
+    )
+    assert analysis._gemini_disc_assignments_coherent(
+        scattered[:3], disc_title_count=8, required_season=None
+    )
 
 
 def test_disc_range_restart_anchors_require_independent_provenance(tmp_path):
@@ -407,6 +771,9 @@ def test_disc_route_scopes_content_fallback_for_scene_guided_review(
         rip_router.UnmatchedDiscAnalysisRequest(
             disc_fingerprint=fingerprint,
             series_name="The Office",
+            season=7,
+            episode_start=20,
+            episode_end=24,
             confirm_media_read=True,
             confirm_provider_lookup=True,
             confirm_external_fallback=True,
@@ -423,13 +790,129 @@ def test_disc_route_scopes_content_fallback_for_scene_guided_review(
     assert result["started"] is True
     assert result["series_name"] == "The Office"
     assert captured["series_name"] == "The Office"
+    assert captured["episode_range"] == (20, 24)
     assert captured["allow_content_fallback"] is expected_content_fallback
     assert captured["reviewer_scene_descriptions"] == (
         {media_id: "Michael burns his foot on a countertop grill."}
         if scene_guided
         else {}
     )
+    assert result["reviewed_episode_range"] == [20, 24]
     assert result["reviewer_scene_description_count"] == int(scene_guided)
+
+
+def test_disc_route_does_not_select_stale_review_lineage(tmp_path):
+    fingerprint = "0123456789abcdef"
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+
+    for position, media_id in enumerate(("older-title", "newer-title")):
+        source = tmp_path / f"source-{position}.mkv"
+        source.write_bytes(b"synthetic")
+        contract = contracts / f"rip-{position}.json"
+        contract.write_text(
+            json.dumps({
+                "mode": "verified-rip-contract",
+                "media_id": media_id,
+                "source_path": str(source),
+                "source_size_bytes": source.stat().st_size,
+                "disc_fingerprint": fingerprint,
+                "title_index": 4,
+                "media_context": {"series_name": "Example", "season": 7},
+            }),
+            encoding="utf-8",
+        )
+        store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+        if position == 0:
+            store.claim_next()
+            store.require_review(media_id, "all_season_sequence_review_required")
+
+    with pytest.raises(rip_router.HTTPException) as exc_info:
+        rip_router.analyze_unmatched_disc(
+            rip_router.UnmatchedDiscAnalysisRequest(
+                disc_fingerprint=fingerprint,
+                series_name="Example",
+                season=7,
+                episode_start=20,
+                episode_end=20,
+                confirm_media_read=True,
+                confirm_provider_lookup=True,
+            ),
+            store,
+            contracts,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "No unmatched disc titles are ready"
+
+
+def test_analyzer_does_not_select_stale_review_lineage(tmp_path):
+    fingerprint = "0123456789abcdef"
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+
+    for position, media_id in enumerate(("older-title", "newer-title")):
+        source = tmp_path / f"source-{position}.mkv"
+        source.write_bytes(b"synthetic")
+        contract = contracts / f"rip-{position}.json"
+        contract.write_text(
+            json.dumps({
+                "mode": "verified-rip-contract",
+                "media_id": media_id,
+                "source_path": str(source),
+                "source_size_bytes": source.stat().st_size,
+                "disc_fingerprint": fingerprint,
+                "title_index": 4,
+                "media_context": {"series_name": "Example", "season": 7},
+            }),
+            encoding="utf-8",
+        )
+        store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+        if position == 0:
+            store.claim_next()
+            store.require_review(media_id, "all_season_sequence_review_required")
+
+    assert analysis._selected_analysis_items(store, fingerprint) == []
+
+    store.claim_next()
+    store.require_review("newer-title", "all_season_sequence_review_required")
+    selected = analysis._selected_analysis_items(store, fingerprint)
+    assert [item.media_id for item, _payload in selected] == ["newer-title"]
+
+
+def test_disc_release_profile_uses_latest_sibling_context(tmp_path):
+    fingerprint = "0123456789abcdef"
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+
+    for title_index, series_name in ((3, "The Office"), (5, "The Office Superfan")):
+        media_id = f"title-{title_index}"
+        source = tmp_path / f"source-{title_index}.mkv"
+        source.write_bytes(b"synthetic")
+        contract = contracts / f"rip-{title_index}.json"
+        contract.write_text(
+            json.dumps({
+                "mode": "verified-rip-contract",
+                "media_id": media_id,
+                "source_path": str(source),
+                "source_size_bytes": source.stat().st_size,
+                "disc_fingerprint": fingerprint,
+                "title_index": title_index,
+                "media_context": {"series_name": series_name, "season": 7},
+            }),
+            encoding="utf-8",
+        )
+        store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+
+    lookup_name, profile = analysis._subtitle_lookup_series_name(
+        "The Office", analysis._latest_disc_title_items(store, fingerprint)
+    )
+
+    assert lookup_name == "The Office Superfan Episodes"
+    assert profile == "superfan"
 
 
 def test_last_held_title_can_use_prior_disc_assignments(tmp_path, monkeypatch):
@@ -1152,6 +1635,267 @@ def test_opensubtitles_matches_independently_and_only_falls_forward(tmp_path):
     }
 
 
+def test_opensubtitles_tries_untested_release_after_normal_references_fail(tmp_path):
+    catalog = (
+        EpisodeCatalogEntry("S07E20", 7, 20, "First", "", 1200),
+        EpisodeCatalogEntry("S07E21", 7, 21, "Second", "", 1200),
+    )
+    files = (
+        UnmatchedFileEvidence(
+            "extended-title",
+            1200,
+            ("alternate cut dialogue", "alternate cut dialogue"),
+        ),
+    )
+    calls = []
+
+    class Provider:
+        def get_subtitles(self, _series, season, _files, _tmdb_id):
+            calls.append(("initial", season))
+            return [
+                SubtitleFile(
+                    path=tmp_path / "regular-20.srt",
+                    content="unrelated regular dialogue",
+                    episode_info=EpisodeInfo(
+                        series_name="Example", season=season, episode=20
+                    ),
+                    release_match="generic",
+                ),
+                SubtitleFile(
+                    path=tmp_path / "regular-21.srt",
+                    content="different regular dialogue",
+                    episode_info=EpisodeInfo(
+                        series_name="Example", season=season, episode=21
+                    ),
+                    release_match="generic",
+                ),
+            ]
+
+        def get_alternate_subtitles(self, _series, season, _files, _tmdb_id):
+            calls.append(("alternate", season))
+            return [
+                SubtitleFile(
+                    path=tmp_path / "supercut-20.srt",
+                    content="alternate cut dialogue",
+                    episode_info=EpisodeInfo(
+                        series_name="Example", season=season, episode=20
+                    ),
+                    release_match="compatible",
+                )
+            ]
+
+    class ASR:
+        @staticmethod
+        def calculate_match_score(transcript, reference):
+            return 0.95 if transcript in reference else 0.1
+
+    details = {}
+    evaluations = {}
+    matched, _diagnostics = analysis.match_opensubtitles_seasons(
+        files,
+        catalog,
+        "Example",
+        123,
+        (7,),
+        ASR(),
+        min_confidence=0.7,
+        provider=Provider(),
+        diagnostic_details=details,
+        candidate_evaluations=evaluations,
+    )
+
+    assert calls == [("initial", 7), ("alternate", 7)]
+    assert matched["extended-title"].episode_id == "S07E20"
+    assert details["extended-title"]["subtitle_reference_pass"] == (
+        "alternate-release-failover"
+    )
+    assert any(
+        record["phase"] == "alternate-release-failover"
+        and record["disposition"] == "selected"
+        for record in evaluations["extended-title"]
+    )
+
+
+def test_known_altered_season_tries_release_ladder_before_generic(tmp_path):
+    catalog = (
+        EpisodeCatalogEntry("S07E20", 7, 20, "First", "", 1200),
+        EpisodeCatalogEntry("S07E21", 7, 21, "Second", "", 1200),
+    )
+    files = (
+        UnmatchedFileEvidence(
+            "superfan-title",
+            1800,
+            ("distinct superfan dialogue", "distinct superfan dialogue"),
+        ),
+    )
+    provider_calls = []
+    scored_references = []
+
+    class Provider:
+        def get_subtitles(self, _series, season, _files, _tmdb_id):
+            provider_calls.append(("initial", season))
+            return [
+                SubtitleFile(
+                    path=tmp_path / "generic-20.srt",
+                    content="distinct superfan dialogue generic would match",
+                    episode_info=EpisodeInfo(
+                        series_name="Example", season=season, episode=20
+                    ),
+                    release_match="generic",
+                    release_profile="superfan",
+                ),
+                SubtitleFile(
+                    path=tmp_path / "compatible-21.srt",
+                    content="unrelated compatible dialogue",
+                    episode_info=EpisodeInfo(
+                        series_name="Example", season=season, episode=21
+                    ),
+                    release_match="compatible",
+                    release_profile="superfan",
+                ),
+            ]
+
+        def get_alternate_subtitles(self, _series, season, _files, _tmdb_id):
+            provider_calls.append(("alternate", season))
+            return [
+                SubtitleFile(
+                    path=tmp_path / "extended-20.srt",
+                    content="distinct superfan dialogue alternate cut",
+                    episode_info=EpisodeInfo(
+                        series_name="Example", season=season, episode=20
+                    ),
+                    release_match="compatible",
+                    release_profile="superfan",
+                )
+            ]
+
+    class ASR:
+        @staticmethod
+        def calculate_match_score(transcript, reference):
+            scored_references.append(reference)
+            return 0.95 if transcript in reference else 0.1
+
+    details = {}
+    matched, _diagnostics = analysis.match_opensubtitles_seasons(
+        files,
+        catalog,
+        "Example Superfan Episodes",
+        123,
+        (7,),
+        ASR(),
+        min_confidence=0.7,
+        provider=Provider(),
+        diagnostic_details=details,
+    )
+
+    assert provider_calls == [("initial", 7), ("alternate", 7)]
+    assert matched["superfan-title"].episode_id == "S07E20"
+    assert details["superfan-title"]["subtitle_reference_pass"] == (
+        "alternate-release-failover"
+    )
+    assert any("alternate cut" in reference for reference in scored_references)
+    assert not any(
+        "generic would match" in reference for reference in scored_references
+    )
+
+
+def test_opensubtitles_does_not_fail_over_before_normal_neighbor_season_succeeds(
+    tmp_path,
+):
+    catalog = tuple(
+        EpisodeCatalogEntry(f"S0{season}E01", season, 1, "", "", 1200)
+        for season in (1, 2)
+    )
+    files = (UnmatchedFileEvidence("title", 1200, ("season two", "season two")),)
+    alternate_calls = []
+
+    class Provider:
+        def get_subtitles(self, _series, season, _files, _tmdb_id):
+            return [
+                SubtitleFile(
+                    path=tmp_path / f"season-{season}.srt",
+                    content="season two" if season == 2 else "season one",
+                    episode_info=EpisodeInfo(
+                        series_name="Example", season=season, episode=1
+                    ),
+                )
+            ]
+
+        def get_alternate_subtitles(self, _series, season, _files, _tmdb_id):
+            alternate_calls.append(season)
+            return []
+
+    class ASR:
+        @staticmethod
+        def calculate_match_score(transcript, reference):
+            return 0.95 if transcript in reference else 0.1
+
+    matched, _diagnostics = analysis.match_opensubtitles_seasons(
+        files,
+        catalog,
+        "Example",
+        123,
+        (1, 2),
+        ASR(),
+        min_confidence=0.7,
+        provider=Provider(),
+    )
+
+    assert matched["title"].episode_id == "S02E01"
+    assert alternate_calls == []
+
+
+def test_alternate_release_failover_does_not_lower_two_window_requirement(tmp_path):
+    catalog = (EpisodeCatalogEntry("S01E01", 1, 1, "First", "", 1200),)
+    files = (UnmatchedFileEvidence("title", 1200, ("matching dialogue",)),)
+
+    class Provider:
+        def get_subtitles(self, _series, season, _files, _tmdb_id):
+            return [
+                SubtitleFile(
+                    path=tmp_path / "regular.srt",
+                    content="different dialogue",
+                    episode_info=EpisodeInfo(
+                        series_name="Example", season=season, episode=1
+                    ),
+                )
+            ]
+
+        def get_alternate_subtitles(self, _series, season, _files, _tmdb_id):
+            return [
+                SubtitleFile(
+                    path=tmp_path / "alternate.srt",
+                    content="matching dialogue",
+                    episode_info=EpisodeInfo(
+                        series_name="Example", season=season, episode=1
+                    ),
+                    release_match="compatible",
+                )
+            ]
+
+    class ASR:
+        @staticmethod
+        def calculate_match_score(transcript, reference):
+            return 0.95 if transcript in reference else 0.1
+
+    details = {}
+    matched, _diagnostics = analysis.match_opensubtitles_seasons(
+        files,
+        catalog,
+        "Example",
+        123,
+        (1,),
+        ASR(),
+        min_confidence=0.7,
+        provider=Provider(),
+        diagnostic_details=details,
+    )
+
+    assert matched == {}
+    assert details["title"]["reason"] == "insufficient_qualifying_windows"
+    assert details["title"]["subtitle_reference_pass"] == ("alternate-release-failover")
+
+
 def test_opensubtitles_records_exact_review_reason():
     best = EpisodeCatalogEntry("S01E01", 1, 1, "First", "", 1200)
     runner_up = EpisodeCatalogEntry("S01E02", 1, 2, "Second", "", 1200)
@@ -1256,6 +2000,52 @@ def test_single_exceptionally_high_subtitle_window_cannot_name_episode():
     assert accepted == {}
 
 
+def test_known_altered_cut_runtime_is_scored_before_play_all_review(tmp_path):
+    catalog = (EpisodeCatalogEntry("S07E20", 7, 20, "First", "", 1200),)
+    files = (
+        UnmatchedFileEvidence(
+            "long-superfan-title",
+            4000,
+            ("two strong anchors", "two strong anchors"),
+        ),
+    )
+
+    class Provider:
+        @staticmethod
+        def get_subtitles(_series, season, _files, _tmdb_id):
+            return [
+                SubtitleFile(
+                    path=tmp_path / "superfan-20.srt",
+                    content="two strong anchors",
+                    episode_info=EpisodeInfo(
+                        series_name="Example", season=season, episode=20
+                    ),
+                    release_match="compatible",
+                    release_profile="superfan",
+                )
+            ]
+
+    class ASR:
+        @staticmethod
+        def calculate_match_score(transcript, reference):
+            return 0.95 if transcript in reference else 0.1
+
+    assert not analysis._episode_runtime_consistent(4000, catalog[0])
+    assert analysis._episode_runtime_consistent(4000, catalog[0], altered_cut=True)
+    matched, _diagnostics = analysis.match_opensubtitles_seasons(
+        files,
+        catalog,
+        "Example Superfan Episodes",
+        123,
+        (7,),
+        ASR(),
+        min_confidence=0.7,
+        provider=Provider(),
+    )
+
+    assert matched["long-superfan-title"].episode_id == "S07E20"
+
+
 def test_regular_subtitles_match_extended_cut_after_large_timeline_insertions(
     monkeypatch,
 ):
@@ -1290,6 +2080,38 @@ def test_regular_subtitles_match_extended_cut_after_large_timeline_insertions(
 
     assert window_scores == pytest.approx((0.96, 0.96, 0.1))
     assert average == pytest.approx((0.96 + 0.96 + 0.1) / 3)
+
+
+def test_timestamped_evidence_finds_consistent_clock_offset_and_drift(monkeypatch):
+    monkeypatch.setattr(analysis, "_subtitle_reference_windows", lambda *_args: ())
+    content = """1
+00:07:00,000 --> 00:07:20,000
+first rare anchor dialogue
+
+2
+00:22:00,000 --> 00:22:20,000
+second rare anchor dialogue
+
+3
+00:24:59,000 --> 00:25:00,000
+closing words
+"""
+
+    class ASR:
+        @staticmethod
+        def calculate_match_score(transcript, reference):
+            return 0.96 if transcript in reference else 0.1
+
+    average, window_scores = analysis._score_subtitle(
+        ASR(),
+        ("first rare anchor dialogue", "second rare anchor dialogue"),
+        content,
+        3000,
+        sample_start_seconds=(600.0, 2400.0),
+    )
+
+    assert window_scores == pytest.approx((0.96, 0.96))
+    assert average == pytest.approx(0.96)
 
 
 def test_extended_anchor_global_search_is_bounded_and_keeps_rare_dialogue():
@@ -1422,6 +2244,31 @@ def test_opensubtitles_bootstraps_season_without_existing_matches(tmp_path):
     assert scope == (2, 3)
 
 
+def test_subtitle_analysis_yields_without_a_total_time_deadline():
+    yielded = []
+
+    def yield_control(seconds):
+        yielded.append(seconds)
+
+    progress = analysis._SubtitleAnalysisProgress(
+        yield_control=yield_control,
+        yield_every=1,
+    )
+
+    average, scores = analysis._score_subtitle(
+        SimpleNamespace(calculate_match_score=lambda *_args: 0.5),
+        ("synthetic dialogue evidence",),
+        "synthetic reference dialogue evidence",
+        1200,
+        analysis_progress=progress,
+    )
+
+    assert average == pytest.approx(0.5)
+    assert scores == pytest.approx((0.5,))
+    assert len(yielded) > 2
+    assert set(yielded) == {analysis._SUBTITLE_YIELD_SECONDS}
+
+
 def test_local_sequence_keeps_full_aired_order_when_library_has_gaps(
     tmp_path, monkeypatch
 ):
@@ -1444,7 +2291,10 @@ def test_local_sequence_keeps_full_aired_order_when_library_has_gaps(
                 "source_size_bytes": source.stat().st_size,
                 "disc_fingerprint": fingerprint,
                 "title_index": title_index,
-                "media_context": {"series_name": "Unmatched", "season": None},
+                "media_context": {
+                    "series_name": "Example Series Superfan Episodes",
+                    "season": None,
+                },
             }),
             encoding="utf-8",
         )
@@ -1488,6 +2338,7 @@ def test_local_sequence_keeps_full_aired_order_when_library_has_gaps(
         ),
     )
     seen_catalogs = []
+    seen_subtitle_series = []
 
     def fake_plan(_evidence, candidate_catalog, _groups):
         seen_catalogs.append(candidate_catalog)
@@ -1513,6 +2364,7 @@ def test_local_sequence_keeps_full_aired_order_when_library_has_gaps(
     def fake_subtitle_matches(
         _files, candidate_catalog, *_args, diagnostic_details=None, **_kwargs
     ):
+        seen_subtitle_series.append(_args[0])
         matches = {
             media_ids[0]: candidate_catalog[2],
             media_ids[1]: candidate_catalog[3],
@@ -1550,12 +2402,13 @@ def test_local_sequence_keeps_full_aired_order_when_library_has_gaps(
 
     assert applied == tuple(media_ids)
     assert seen_catalogs == [catalog]
+    assert seen_subtitle_series == ["Example Series Superfan Episodes"]
     diagnostic = next(
         event
         for event in store.list_events()
         if event.event_type == "sequence_match_scored"
     )
-    assert diagnostic.details["candidate_scope"] == "all"
+    assert diagnostic.details["candidate_scope"] == "S01"
     assert diagnostic.details["catalog_episode_count"] == 4
     payload = json.loads(store.get(media_ids[0]).artifact.contract_path.read_text())
     assert [
@@ -1580,8 +2433,10 @@ def test_anchor_titles_bounds_and_spreads_initial_season_evidence():
     "mode",
     [
         "local",
+        "local-incoherent",
         "local-runtime-mismatch",
         "gemini",
+        "gemini-incoherent",
         "partial-gemini",
         "subtitle-partial-gemini",
         "subtitle-partial-gemini-failed",
@@ -1592,7 +2447,11 @@ def test_anchor_titles_bounds_and_spreads_initial_season_evidence():
 def test_all_season_analysis_uses_independent_evidence_not_sequence(  # noqa: C901
     tmp_path, monkeypatch, mode
 ):
-    use_gemini = mode not in {"local", "local-runtime-mismatch"}
+    use_gemini = mode not in {
+        "local",
+        "local-incoherent",
+        "local-runtime-mismatch",
+    }
     contracts = tmp_path / "contracts"
     contracts.mkdir()
     store = PipelineQueueStore(tmp_path / "queue.sqlite3")
@@ -1620,9 +2479,12 @@ def test_all_season_analysis_uses_independent_evidence_not_sequence(  # noqa: C9
         store.claim_next()
         store.require_review(media_id, "unmatched_disc_analysis_required")
 
+    catalog_episodes = (
+        (1, 12) if mode in {"gemini-incoherent", "local-incoherent"} else (1, 2)
+    )
     catalog = tuple(
-        EpisodeCatalogEntry(f"S0{index + 1}E01", index + 1, 1, title, "overview", 1200)
-        for index, title in enumerate(("First", "Second"))
+        EpisodeCatalogEntry(f"S01E{episode:02d}", 1, episode, title, "overview", 1200)
+        for episode, title in zip(catalog_episodes, ("First", "Second"), strict=True)
     )
     monkeypatch.setattr(
         analysis,
@@ -1717,7 +2579,7 @@ def test_all_season_analysis_uses_independent_evidence_not_sequence(  # noqa: C9
             }
 
         monkeypatch.setattr(analysis, "match_opensubtitles_seasons", match_one_subtitle)
-    elif mode in {"local", "local-runtime-mismatch"}:
+    elif mode in {"local", "local-incoherent", "local-runtime-mismatch"}:
 
         def match_local(files, *_args, diagnostic_details=None, **_kwargs):
             assert _kwargs["min_confidence"] == 0.7
@@ -1800,7 +2662,7 @@ def test_all_season_analysis_uses_independent_evidence_not_sequence(  # noqa: C9
     for media_id in media_ids:
         store.choose_review_path(media_id, "all_season_analysis_running")
 
-    applied = analysis.execute_unmatched_disc_analysis(
+    execute = lambda: analysis.execute_unmatched_disc_analysis(  # noqa: E731
         store,
         fingerprint,
         "Example Series",
@@ -1817,6 +2679,22 @@ def test_all_season_analysis_uses_independent_evidence_not_sequence(  # noqa: C9
         allow_gemini=use_gemini,
         allow_content_fallback=False,
     )
+    if mode in {"gemini-incoherent", "local-incoherent"}:
+        with pytest.raises(analysis.DiscCoherenceError) as exc_info:
+            execute()
+        assert exc_info.value.review_code == "whole_disc_coherence_review_required"
+        assert all(item.state == "review_required" for item in store.list_items())
+        assert any(
+            details.get("summary", {}).get("reason")
+            == (
+                "gemini_disc_assignments_incoherent"
+                if mode == "gemini-incoherent"
+                else "whole_disc_assignments_incoherent"
+            )
+            for _media_ids, details in dossier.attempts
+        )
+        return
+    applied = execute()
 
     expected_applied = (
         tuple(media_ids[:1])

@@ -6,6 +6,7 @@ interface PipelineEvent {
 }
 
 const reasonText: Record<string, string> = {
+  gemini_analysis_interrupted: 'RipWeaver restarted or stopped after marking Gemini analysis as active. No provider task is currently running; the saved item can be retried.',
   gemini_analysis_failed: 'This older run recorded only a general pipeline failure. The exact reason was not retained.',
   gemini_audio_evidence_insufficient: 'Local transcription did not produce enough usable dialogue to make a safe Gemini request.',
   gemini_catalog_unavailable: 'The reviewed bonus-feature catalogue was missing or no longer matched this disc.',
@@ -17,6 +18,7 @@ const reasonText: Record<string, string> = {
   gemini_request_rejected: 'Gemini rejected the request with a non-credential 4xx response. Check model availability and request compatibility.',
   gemini_network_failed: 'RipWeaver could not reach Gemini after bounded retries. Check DNS, firewall, proxy, and internet connectivity.',
   gemini_response_invalid: 'Gemini responded, but its structured result did not satisfy the required episode-matching schema.',
+  whole_disc_coherence_review_required: 'RipWeaver withheld the proposed episode set because it crossed seasons, repeated an episode, or spanned more episodes than this disc can plausibly contain.',
   special_feature_evidence_required: 'More local evidence is required before a bonus-feature name can be assigned.',
 };
 
@@ -26,14 +28,31 @@ const LogsView = () => {
   const [filter, setFilter] = useState('');
 
   useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    const schedule = () => {
+      if (!cancelled && document.visibilityState !== 'hidden') timer = window.setTimeout(refresh, 12_000);
+    };
     const refresh = async () => {
+      if (cancelled || document.visibilityState === 'hidden') return;
       try {
         const response = await fetch('/rip/pipeline/events'); const payload = await response.json();
         if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : 'Logs could not be loaded.');
-        setEvents(payload.events || []); setError('');
-      } catch (requestError) { setError(requestError instanceof Error ? requestError.message : 'Logs could not be loaded.'); }
+        if (!cancelled) { setEvents(payload.events || []); setError(''); }
+      } catch (requestError) { if (!cancelled) setError(requestError instanceof Error ? requestError.message : 'Logs could not be loaded.'); }
+      finally { schedule(); }
     };
-    void refresh(); const timer = window.setInterval(refresh, 3000); return () => window.clearInterval(timer);
+    const handleVisibility = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      if (document.visibilityState === 'visible') void refresh();
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    void refresh();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
   }, []);
 
   const visible = useMemo(() => {

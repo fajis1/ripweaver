@@ -234,6 +234,46 @@ def test_running_job_records_path_free_progress_and_updates_timestamp(tmp_path):
     assert store.get_job(job.job_id).updated_at >= job.updated_at
 
 
+def test_pipeline_handoff_status_is_visible_without_changing_rip_state(tmp_path):
+    preview, _report, _root = _preview(tmp_path)
+    store = OrchestrationStore(tmp_path / "jobs.sqlite3")
+    job = store.create_job(preview, idempotency_key="create-handoff-status-0001")
+    store.authorize(
+        job.job_id,
+        expected_plan_sha256=job.plan_sha256,
+        idempotency_key="authorize-handoff-status-0001",
+    )
+    store.queue(job.job_id, idempotency_key="queue-handoff-status-0001")
+    store.claim_for_dispatch(job.job_id, idempotency_key="claim-handoff-status-0001")
+    first, second, _third = preview.jobs
+
+    store.record_pipeline_handoff(job.job_id, first.job_id, queued=True)
+    store.record_pipeline_handoff(
+        job.job_id,
+        second.job_id,
+        queued=False,
+        error_type="PipelineQueueError",
+    )
+    running = _job_response(store.get_job(job.job_id), store)
+
+    assert store.get_job(job.job_id).state == "running"
+    assert running["pipeline_handoff_status"] == "attention_required"
+    assert running["pipeline_queued_title_count"] == 1
+    assert running["pipeline_handoff_pending_title_count"] == 1
+
+    store.complete(
+        job.job_id,
+        idempotency_key="complete-handoff-status-0001",
+        completed_count=3,
+        pipeline_queued_count=2,
+        pipeline_handoff_pending_job_ids=(second.job_id,),
+    )
+    completed = _job_response(store.get_job(job.job_id), store)
+    assert completed["pipeline_handoff_status"] == "attention_required"
+    assert completed["pipeline_queued_title_count"] == 2
+    assert completed["pipeline_handoff_pending_title_count"] == 1
+
+
 def test_job_response_reports_size_weighted_whole_disc_progress(tmp_path):
     preview, _report, _root = _preview(tmp_path)
     store = OrchestrationStore(tmp_path / "jobs.sqlite3")
