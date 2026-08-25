@@ -2,7 +2,7 @@ import asyncio
 import csv
 import io
 import json
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,6 +20,7 @@ from mkv_episode_matcher.backend.dependencies import (
 )
 from mkv_episode_matcher.backend.routers import rip
 from mkv_episode_matcher.backend.routers.rip import router
+from mkv_episode_matcher.core.datetime_compat import UTC
 from mkv_episode_matcher.core.models import Config
 from mkv_episode_matcher.disc.drive_watcher import (
     DriveStatusSnapshot,

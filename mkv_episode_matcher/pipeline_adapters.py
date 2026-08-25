@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
-from datetime import UTC, datetime
+from datetime import datetime
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
@@ -14,6 +14,7 @@ from mkv_episode_matcher.backend.disc_match_corroboration import (
     DiscMatchHistory,
     corroborate_single_window_local_match,
 )
+from mkv_episode_matcher.core.datetime_compat import UTC
 from mkv_episode_matcher.core.tv_identification_policy import (
     AUTOMATIC_TV_ASSIGNMENT_SOURCES,
     AUTOMATIC_TV_IDENTIFICATION_POLICY_VERSION,

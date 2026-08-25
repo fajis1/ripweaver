@@ -7,10 +7,11 @@ import re
 import shutil
 import subprocess
 from dataclasses import asdict, dataclass, replace
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from mkv_episode_matcher.core.datetime_compat import UTC
 from mkv_episode_matcher.core.environment import load_environment_settings
 
 
@@ -352,14 +353,19 @@ def _validate_audio_profile(profile: HandBrakeProfile) -> None:
     if profile.audio_preference not in _AUDIO_PREFERENCES:
         raise HandBrakeError("Unsupported source audio preference")
     supported_layouts = {"default", "stereo", "2.1", "5.1", "7.1", "highest"}
-    if profile.audio_primary_layout and profile.audio_primary_layout not in supported_layouts:
+    if (
+        profile.audio_primary_layout
+        and profile.audio_primary_layout not in supported_layouts
+    ):
         raise HandBrakeError("Unsupported primary audio layout")
     if profile.audio_secondary_layout and profile.audio_secondary_layout not in (
         supported_layouts | {"none"}
     ):
         raise HandBrakeError("Unsupported secondary audio layout")
     configured_layouts = _configured_audio_layouts(profile)
-    if not configured_layouts or len(set(configured_layouts)) != len(configured_layouts):
+    if not configured_layouts or len(set(configured_layouts)) != len(
+        configured_layouts
+    ):
         raise HandBrakeError("Audio output layouts must be present and distinct")
     if profile.additional_audio not in {"selected_only", "all"}:
         raise HandBrakeError("Unsupported additional audio policy")
@@ -1083,8 +1089,7 @@ def execute_handbrake_job(
             preferred_relative = (
                 0
                 if source_audio_preference == "default"
-                else select_audio_track(source_audio_preference, matching_channels)
-                - 1
+                else select_audio_track(source_audio_preference, matching_channels) - 1
             )
             effective_job = replace(
                 effective_job,

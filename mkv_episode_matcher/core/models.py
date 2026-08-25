@@ -1,8 +1,10 @@
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+from mkv_episode_matcher.core.datetime_compat import UTC
 
 
 class EpisodeInfo(BaseModel):
@@ -51,9 +53,9 @@ class MatchResult(BaseModel):
     model_name: str
     original_file: Path | None = None  # Store original filename for display
     subtitle_release_name: str | None = None
-    subtitle_release_match: Literal[
-        "exact", "compatible", "generic", "unresolved"
-    ] = "unresolved"
+    subtitle_release_match: Literal["exact", "compatible", "generic", "unresolved"] = (
+        "unresolved"
+    )
     decision_trace: dict[str, object] = Field(default_factory=dict)
 
 
@@ -75,9 +77,9 @@ class MatchCandidate(BaseModel):
     confidence: float
     reference_file: Path
     subtitle_release_name: str | None = None
-    subtitle_release_match: Literal[
-        "exact", "compatible", "generic", "unresolved"
-    ] = "unresolved"
+    subtitle_release_match: Literal["exact", "compatible", "generic", "unresolved"] = (
+        "unresolved"
+    )
 
 
 class Config(BaseModel):

@@ -12,10 +12,11 @@ import json
 import re
 import subprocess
 from dataclasses import asdict, dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from mkv_episode_matcher.core.datetime_compat import UTC
 from mkv_episode_matcher.core.environment import load_environment_settings
 from mkv_episode_matcher.disc.makemkv_process_control import run_makemkv_command
 
@@ -297,8 +298,7 @@ def targeted_inventory_drive(
         (
             drive
             for drive in drives
-            if drive.device_name.strip().casefold().rstrip("\\/")
-            == normalized_device
+            if drive.device_name.strip().casefold().rstrip("\\/") == normalized_device
         ),
         None,
     )

@@ -6,9 +6,10 @@ import hashlib
 import hmac
 import json
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 
+from mkv_episode_matcher.core.datetime_compat import UTC
 from mkv_episode_matcher.disc.special_feature_binder import (
     BoundSpecialFeatureManifest,
     SpecialFeatureBindError,
@@ -132,9 +133,7 @@ def build_special_feature_resume_manifest(
             )
         original_dir = PurePosixPath(job.relative_output_dir)
         resume_dir = str(
-            original_dir.parent
-            / f"resume-{resume_token}"
-            / original_dir.name
+            original_dir.parent / f"resume-{resume_token}" / original_dir.name
         )
         jobs.append(
             replace(

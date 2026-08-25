@@ -260,7 +260,7 @@ def test_collision_playback_opens_only_the_explicitly_selected_file(
         rip, "get_config_manager", lambda: SimpleNamespace(load=lambda: config)
     )
     opened = []
-    monkeypatch.setattr(rip.os, "startfile", opened.append)
+    monkeypatch.setattr(rip, "_start_default_player", opened.append)
 
     for target in ("new-encode", "existing-jellyfin"):
         response = rip.play_pipeline_library_collision_file(

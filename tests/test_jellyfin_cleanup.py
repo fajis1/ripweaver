@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from mkv_episode_matcher.backend.jellyfin_cleanup import (
@@ -9,11 +9,14 @@ from mkv_episode_matcher.backend.jellyfin_cleanup import (
     filter_plan,
     plan_cleanup,
 )
+from mkv_episode_matcher.core.datetime_compat import UTC
 
 
 def test_disk_label_uses_series_context_from_tv_staging_path():
     key, label = _disk_metadata(
-        Path("TV Shows/Faerie Tale Theatre/Unmatched/disc-03-a9efabef47cf0247-title-000.mkv")
+        Path(
+            "TV Shows/Faerie Tale Theatre/Unmatched/disc-03-a9efabef47cf0247-title-000.mkv"
+        )
     )
 
     assert key == "disc-03-a9efabef47cf0247"
@@ -57,21 +60,21 @@ def test_rip_requires_verified_transcode_contract_and_age_filter(tmp_path):
     source = rip / "TV Shows" / "Show" / "title-000.mkv"
     source.parent.mkdir(parents=True)
     source.write_bytes(b"rip")
-    encoded_file = encoded / "encoded-staging" / "Show" / "Season 01" / "Show - S01E01.mkv"
+    encoded_file = (
+        encoded / "encoded-staging" / "Show" / "Season 01" / "Show - S01E01.mkv"
+    )
     encoded_file.parent.mkdir(parents=True)
     encoded_file.write_bytes(b"encoded")
     library_file = library / "Show" / "Season 01" / encoded_file.name
     library_file.parent.mkdir(parents=True)
     library_file.write_bytes(b"library")
     (contracts / "item.transcode.json").write_text(
-        json.dumps(
-            {
-                "mode": "verified-transcode-contract",
-                "original_source_path": str(source),
-                "encoded_path": str(encoded_file),
-                "library_relative": "Show/Season 01/Show - S01E01.mkv",
-            }
-        ),
+        json.dumps({
+            "mode": "verified-transcode-contract",
+            "original_source_path": str(source),
+            "encoded_path": str(encoded_file),
+            "library_relative": "Show/Season 01/Show - S01E01.mkv",
+        }),
         encoding="utf-8",
     )
     old = datetime.now(UTC) - timedelta(days=8)

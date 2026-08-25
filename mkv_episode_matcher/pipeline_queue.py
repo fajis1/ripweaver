@@ -9,10 +9,11 @@ import sqlite3
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
-from pathlib import Path
+from datetime import datetime
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from uuid import uuid4
 
+from mkv_episode_matcher.core.datetime_compat import UTC
 from mkv_episode_matcher.disc.rip_manifest import MediaContext
 from mkv_episode_matcher.disc.ripper import (
     RipJob,
@@ -2489,9 +2490,12 @@ class PipelineQueueStore:
             or not relative
         ):
             raise PipelineQueueError("Corrected episode identity is invalid")
-        relative_path = Path(relative.replace("/", "\\"))
+        relative_path = PurePosixPath(relative.replace("\\", "/"))
+        windows_path = PureWindowsPath(relative)
         if (
             relative_path.is_absolute()
+            or bool(windows_path.drive)
+            or bool(windows_path.root)
             or ".." in relative_path.parts
             or len(relative_path.parts) < 3
             or relative_path.suffix.casefold() != ".mkv"

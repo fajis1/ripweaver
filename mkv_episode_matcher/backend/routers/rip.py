@@ -11,7 +11,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import asdict, replace
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal
 from uuid import uuid4
@@ -69,6 +69,7 @@ from mkv_episode_matcher.backend.unmatched_disc_analysis import (
 )
 from mkv_episode_matcher.core.config_manager import get_config_manager
 from mkv_episode_matcher.core.credentials import store_credential
+from mkv_episode_matcher.core.datetime_compat import UTC
 from mkv_episode_matcher.core.environment import load_environment_settings
 from mkv_episode_matcher.core.tv_identification_policy import (
     AUTOMATIC_TV_IDENTIFICATION_POLICY_VERSION,
@@ -5481,6 +5482,14 @@ def _retained_source_is_active(**kwargs) -> bool:
     return _retained_source_status(**kwargs) == "active"
 
 
+def _start_default_player(source: Path) -> None:
+    """Open one reviewed path through the supported local desktop boundary."""
+
+    if os.name != "nt":
+        raise PipelineQueueError("Default-player review is available only on Windows")
+    os.startfile(source)  # type: ignore[attr-defined]  # noqa: S606
+
+
 @router.post("/pipeline/items/{media_id}/play-review")
 def play_pipeline_item_for_review(
     media_id: str,
@@ -5493,11 +5502,7 @@ def play_pipeline_item_for_review(
         raise HTTPException(status_code=400, detail="Playback confirmation is required")
     try:
         source, _size = _review_media_path(store, media_id)
-        if os.name != "nt":
-            raise PipelineQueueError(
-                "Default-player review is available only on Windows"
-            )
-        os.startfile(source)  # type: ignore[attr-defined]  # noqa: S606
+        _start_default_player(source)
     except (PipelineQueueError, OSError) as exc:
         raise HTTPException(
             status_code=409, detail="Review playback could not start"
@@ -7212,11 +7217,7 @@ def play_pipeline_library_collision_file(
             store, media_id, request.expected_artifact_sha256
         )
         source = encoded if request.target == "new-encode" else existing
-        if os.name != "nt":
-            raise PipelineQueueError(
-                "Default-player review is available only on Windows"
-            )
-        os.startfile(source)  # type: ignore[attr-defined]  # noqa: S606
+        _start_default_player(source)
     except (
         OSError,
         ValueError,

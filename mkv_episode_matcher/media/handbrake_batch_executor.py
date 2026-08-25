@@ -9,10 +9,11 @@ import threading
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, fields, replace
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from mkv_episode_matcher.core.datetime_compat import UTC
 from mkv_episode_matcher.media.handbrake import (
     HandBrakeError,
     HandBrakeJob,

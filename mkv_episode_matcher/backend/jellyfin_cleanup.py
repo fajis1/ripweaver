@@ -6,9 +6,11 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal
+
+from mkv_episode_matcher.core.datetime_compat import UTC
 
 
 class CleanupError(RuntimeError):
@@ -39,7 +41,9 @@ class CleanupPlan:
         return sum(item.size_bytes for item in self.candidates)
 
 
-def filter_plan(plan: CleanupPlan, candidates: tuple[CleanupCandidate, ...]) -> CleanupPlan:
+def filter_plan(
+    plan: CleanupPlan, candidates: tuple[CleanupCandidate, ...]
+) -> CleanupPlan:
     """Return a digest-consistent plan after cross-library de-duplication."""
 
     records = [
@@ -154,7 +158,10 @@ def _encoded_candidates(root: Path, library_root: Path) -> list[dict]:
             library_relative = _safe_library_relative(
                 Path(*relative.parts[1:]).as_posix()
             )
-            if library_relative is None or not (library_root / Path(library_relative)).is_file():
+            if (
+                library_relative is None
+                or not (library_root / Path(library_relative)).is_file()
+            ):
                 continue
         except (OSError, ValueError):
             continue
@@ -182,15 +189,15 @@ def _all_staging_candidates(
         relative_parts = {part.casefold() for part in path.relative_to(root).parts}
         if any(
             part.startswith(".pytest-")
-            or part in {".pytest_cache", ".mkv-staging-canary", "encoded-staging-samples"}
+            or part
+            in {".pytest_cache", ".mkv-staging-canary", "encoded-staging-samples"}
             for part in relative_parts
         ):
             continue
         try:
             resolved = path.resolve()
             if any(
-                resolved == excluded
-                or resolved.is_relative_to(excluded)
+                resolved == excluded or resolved.is_relative_to(excluded)
                 for excluded in excluded_roots
             ):
                 continue
@@ -307,23 +314,24 @@ def plan_cleanup(  # noqa: C901
         for protected in protected_roots:
             if not protected.is_dir():
                 continue
-            for verified in _encoded_candidates(encoded_root, protected) + _contract_candidates(
-                rip_root, contract_root.resolve(), protected
-            ):
-                verified_by_key[(verified["category"], verified["relative_path"])] = verified[
-                    "library_relative"
-                ]
+            for verified in _encoded_candidates(
+                encoded_root, protected
+            ) + _contract_candidates(rip_root, contract_root.resolve(), protected):
+                verified_by_key[(verified["category"], verified["relative_path"])] = (
+                    verified["library_relative"]
+                )
         for record in records:
-            library_relative = verified_by_key.get(
-                (record["category"], record["relative_path"])
-            )
+            library_relative = verified_by_key.get((
+                record["category"],
+                record["relative_path"],
+            ))
             if library_relative:
                 record["backed_up"] = True
                 record["library_relative"] = library_relative
     else:
-        records = _encoded_candidates(encoded_root, library_root) + _contract_candidates(
-            rip_root, contract_root.resolve(), library_root
-        )
+        records = _encoded_candidates(
+            encoded_root, library_root
+        ) + _contract_candidates(rip_root, contract_root.resolve(), library_root)
     records.sort(key=lambda item: (item["category"], item["relative_path"].casefold()))
     if cutoff_value is not None:
         cutoff_time = datetime.fromisoformat(cutoff_value)

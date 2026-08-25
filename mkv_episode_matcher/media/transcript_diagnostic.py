@@ -8,9 +8,10 @@ import tempfile
 import wave
 from array import array
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 
+from mkv_episode_matcher.core.datetime_compat import UTC
 from mkv_episode_matcher.core.providers.asr import ASRProvider
 from mkv_episode_matcher.core.utils import clean_text, extract_audio_chunk
 

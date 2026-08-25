@@ -10,9 +10,10 @@ import math
 import re
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 
+from mkv_episode_matcher.core.datetime_compat import UTC
 from mkv_episode_matcher.media.subtitle_ocr import parse_srt_text
 
 

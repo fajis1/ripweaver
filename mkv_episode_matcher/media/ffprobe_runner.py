@@ -7,10 +7,11 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from mkv_episode_matcher.core.datetime_compat import UTC
 from mkv_episode_matcher.core.environment import load_environment_settings
 from mkv_episode_matcher.media.probe import (
     ProbeDataError,

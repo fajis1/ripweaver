@@ -2,10 +2,10 @@
 
 > [!CAUTION]
 > **FRONTEND CODE LOSS ALERT (2026-08-23)**
-> Approximately 1,200 lines of uncommitted frontend changes (implementing the "Existing rip recovery" UI) in `mkv_episode_matcher/frontend/src/components/RipPipelineView.tsx` were accidentally wiped out via a `git checkout` command. 
-> 
+> Approximately 1,200 lines of uncommitted frontend changes (implementing the "Existing rip recovery" UI) in `mkv_episode_matcher/frontend/src/components/RipPipelineView.tsx` were accidentally wiped out via a `git checkout` command.
+>
 > **Any agent attempting to work on the UI or RipPipelineView.tsx MUST first read `FRONTEND_RECOVERY_GUIDE.md`** at the root of the project to understand the state of the code, where the surviving logic is located (in the compiled Vite output), and where the exact recovered source lines are stored. Do not attempt to rebuild the file blindly without reading the guide.
-> 
+>
 > *Note: A full snapshot of all uncommitted files as of 2026-08-23 has been safely saved to the local branch `emergency-backup-20260823`. If you accidentally destroy the working tree, you can recover from that branch.*
 
 

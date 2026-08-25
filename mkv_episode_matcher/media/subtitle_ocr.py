@@ -11,8 +11,10 @@ import os
 import re
 import subprocess
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
+
+from mkv_episode_matcher.core.datetime_compat import UTC
 
 
 class SubtitleOcrError(RuntimeError):
@@ -76,8 +78,7 @@ def _shingles(text: str, size: int) -> set[tuple[str, ...]]:
     if len(tokens) < size:
         return set()
     return {
-        tuple(tokens[index : index + size])
-        for index in range(len(tokens) - size + 1)
+        tuple(tokens[index : index + size]) for index in range(len(tokens) - size + 1)
     }
 
 

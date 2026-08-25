@@ -23,6 +23,7 @@ logger.add(sys.stderr, level="INFO")
 from rich.table import Table
 
 from mkv_episode_matcher.core.config_manager import get_config_manager
+from mkv_episode_matcher.core.datetime_compat import UTC
 from mkv_episode_matcher.core.engine import MatchEngineV2
 from mkv_episode_matcher.core.models import Config
 
@@ -484,10 +485,10 @@ def config(
 
     try:
         from mkv_episode_matcher.core.model_registry import (
-            list_recommended_models,
+            DEFAULT_MODEL,
             get_leaderboard_url,
             get_model_info,
-            DEFAULT_MODEL,
+            list_recommended_models,
         )
 
         current_model = config.asr_model_name
@@ -585,10 +586,10 @@ def info():
     # Model registry info
     try:
         from mkv_episode_matcher.core.model_registry import (
-            list_recommended_models,
             get_leaderboard_url,
-            is_model_downloaded,
             get_model_info,
+            is_model_downloaded,
+            list_recommended_models,
         )
 
         console.print("\n[bold]Recommended ASR Models:[/bold]")
@@ -669,7 +670,7 @@ def preflight(  # noqa: C901
 ):
     """Inventory loaded optical discs without ripping or changing media files."""
 
-    from datetime import UTC, datetime
+    from datetime import datetime
 
     from mkv_episode_matcher.disc.preflight import (
         PreflightError,
@@ -697,9 +698,7 @@ def preflight(  # noqa: C901
         if drive:
             requested = tuple(dict.fromkeys(drive))
             if any(index < 0 or index > 99 for index in requested):
-                raise PreflightError(
-                    "MakeMKV drive indexes must be between 0 and 99"
-                )
+                raise PreflightError("MakeMKV drive indexes must be between 0 and 99")
             loaded = []
             for drive_index in requested:
                 console.print(
@@ -1427,7 +1426,7 @@ def diagnose_transcript_command(
 ):
     """Show a short Whisper excerpt and save dialogue-free diagnostic metrics."""
 
-    from datetime import UTC, datetime
+    from datetime import datetime
 
     from mkv_episode_matcher.core.providers.asr import get_asr_provider
     from mkv_episode_matcher.media.transcript_diagnostic import (
@@ -2555,7 +2554,7 @@ def execute_rip(
 ):
     """Execute an approved title manifest with explicit safe concurrency."""
 
-    from datetime import UTC, datetime
+    from datetime import datetime
 
     from mkv_episode_matcher.disc.preflight import PreflightError, resolve_makemkv_path
     from mkv_episode_matcher.disc.rip_manifest import (

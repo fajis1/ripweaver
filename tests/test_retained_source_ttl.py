@@ -1,6 +1,7 @@
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from mkv_episode_matcher.backend.routers.rip import _retained_source_status
+from mkv_episode_matcher.core.datetime_compat import UTC
 from mkv_episode_matcher.core.models import Config
 
 
