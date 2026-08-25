@@ -1485,6 +1485,89 @@ def test_opensubtitles_tries_untested_release_after_normal_references_fail(tmp_p
     )
 
 
+def test_known_altered_season_tries_release_ladder_before_generic(tmp_path):
+    catalog = (
+        EpisodeCatalogEntry("S07E20", 7, 20, "First", "", 1200),
+        EpisodeCatalogEntry("S07E21", 7, 21, "Second", "", 1200),
+    )
+    files = (
+        UnmatchedFileEvidence(
+            "superfan-title",
+            1800,
+            ("distinct superfan dialogue", "distinct superfan dialogue"),
+        ),
+    )
+    provider_calls = []
+    scored_references = []
+
+    class Provider:
+        def get_subtitles(self, _series, season, _files, _tmdb_id):
+            provider_calls.append(("initial", season))
+            return [
+                SubtitleFile(
+                    path=tmp_path / "generic-20.srt",
+                    content="distinct superfan dialogue generic would match",
+                    episode_info=EpisodeInfo(
+                        series_name="Example", season=season, episode=20
+                    ),
+                    release_match="generic",
+                    release_profile="superfan",
+                ),
+                SubtitleFile(
+                    path=tmp_path / "compatible-21.srt",
+                    content="unrelated compatible dialogue",
+                    episode_info=EpisodeInfo(
+                        series_name="Example", season=season, episode=21
+                    ),
+                    release_match="compatible",
+                    release_profile="superfan",
+                ),
+            ]
+
+        def get_alternate_subtitles(self, _series, season, _files, _tmdb_id):
+            provider_calls.append(("alternate", season))
+            return [
+                SubtitleFile(
+                    path=tmp_path / "extended-20.srt",
+                    content="distinct superfan dialogue alternate cut",
+                    episode_info=EpisodeInfo(
+                        series_name="Example", season=season, episode=20
+                    ),
+                    release_match="compatible",
+                    release_profile="superfan",
+                )
+            ]
+
+    class ASR:
+        @staticmethod
+        def calculate_match_score(transcript, reference):
+            scored_references.append(reference)
+            return 0.95 if transcript in reference else 0.1
+
+    details = {}
+    matched, _diagnostics = analysis.match_opensubtitles_seasons(
+        files,
+        catalog,
+        "Example Superfan Episodes",
+        123,
+        (7,),
+        ASR(),
+        min_confidence=0.7,
+        provider=Provider(),
+        diagnostic_details=details,
+    )
+
+    assert provider_calls == [("initial", 7), ("alternate", 7)]
+    assert matched["superfan-title"].episode_id == "S07E20"
+    assert details["superfan-title"]["subtitle_reference_pass"] == (
+        "alternate-release-failover"
+    )
+    assert any("alternate cut" in reference for reference in scored_references)
+    assert not any(
+        "generic would match" in reference for reference in scored_references
+    )
+
+
 def test_opensubtitles_does_not_fail_over_before_normal_neighbor_season_succeeds(
     tmp_path,
 ):
@@ -1686,6 +1769,52 @@ def test_single_exceptionally_high_subtitle_window_cannot_name_episode():
     assert accepted == {}
 
 
+def test_known_altered_cut_runtime_is_scored_before_play_all_review(tmp_path):
+    catalog = (EpisodeCatalogEntry("S07E20", 7, 20, "First", "", 1200),)
+    files = (
+        UnmatchedFileEvidence(
+            "long-superfan-title",
+            4000,
+            ("two strong anchors", "two strong anchors"),
+        ),
+    )
+
+    class Provider:
+        @staticmethod
+        def get_subtitles(_series, season, _files, _tmdb_id):
+            return [
+                SubtitleFile(
+                    path=tmp_path / "superfan-20.srt",
+                    content="two strong anchors",
+                    episode_info=EpisodeInfo(
+                        series_name="Example", season=season, episode=20
+                    ),
+                    release_match="compatible",
+                    release_profile="superfan",
+                )
+            ]
+
+    class ASR:
+        @staticmethod
+        def calculate_match_score(transcript, reference):
+            return 0.95 if transcript in reference else 0.1
+
+    assert not analysis._episode_runtime_consistent(4000, catalog[0])
+    assert analysis._episode_runtime_consistent(4000, catalog[0], altered_cut=True)
+    matched, _diagnostics = analysis.match_opensubtitles_seasons(
+        files,
+        catalog,
+        "Example Superfan Episodes",
+        123,
+        (7,),
+        ASR(),
+        min_confidence=0.7,
+        provider=Provider(),
+    )
+
+    assert matched["long-superfan-title"].episode_id == "S07E20"
+
+
 def test_regular_subtitles_match_extended_cut_after_large_timeline_insertions(
     monkeypatch,
 ):
@@ -1720,6 +1849,38 @@ def test_regular_subtitles_match_extended_cut_after_large_timeline_insertions(
 
     assert window_scores == pytest.approx((0.96, 0.96, 0.1))
     assert average == pytest.approx((0.96 + 0.96 + 0.1) / 3)
+
+
+def test_timestamped_evidence_finds_consistent_clock_offset_and_drift(monkeypatch):
+    monkeypatch.setattr(analysis, "_subtitle_reference_windows", lambda *_args: ())
+    content = """1
+00:07:00,000 --> 00:07:20,000
+first rare anchor dialogue
+
+2
+00:22:00,000 --> 00:22:20,000
+second rare anchor dialogue
+
+3
+00:24:59,000 --> 00:25:00,000
+closing words
+"""
+
+    class ASR:
+        @staticmethod
+        def calculate_match_score(transcript, reference):
+            return 0.96 if transcript in reference else 0.1
+
+    average, window_scores = analysis._score_subtitle(
+        ASR(),
+        ("first rare anchor dialogue", "second rare anchor dialogue"),
+        content,
+        3000,
+        sample_start_seconds=(600.0, 2400.0),
+    )
+
+    assert window_scores == pytest.approx((0.96, 0.96))
+    assert average == pytest.approx(0.96)
 
 
 def test_extended_anchor_global_search_is_bounded_and_keeps_rare_dialogue():
@@ -1852,34 +2013,29 @@ def test_opensubtitles_bootstraps_season_without_existing_matches(tmp_path):
     assert scope == (2, 3)
 
 
-def test_subtitle_analysis_budget_yields_and_stops_cpu_scoring():
-    now = [0.0]
+def test_subtitle_analysis_yields_without_a_total_time_deadline():
     yielded = []
 
     def yield_control(seconds):
         yielded.append(seconds)
-        now[0] += 0.6
 
-    budget = analysis._SubtitleAnalysisBudget(
-        1.0,
-        clock=lambda: now[0],
+    progress = analysis._SubtitleAnalysisProgress(
         yield_control=yield_control,
         yield_every=1,
     )
 
-    with pytest.raises(analysis.SubtitleAnalysisBudgetError):
-        analysis._score_subtitle(
-            SimpleNamespace(calculate_match_score=lambda *_args: 0.5),
-            ("synthetic dialogue evidence",),
-            "synthetic reference dialogue evidence",
-            1200,
-            analysis_budget=budget,
-        )
+    average, scores = analysis._score_subtitle(
+        SimpleNamespace(calculate_match_score=lambda *_args: 0.5),
+        ("synthetic dialogue evidence",),
+        "synthetic reference dialogue evidence",
+        1200,
+        analysis_progress=progress,
+    )
 
-    assert yielded == [
-        analysis._SUBTITLE_YIELD_SECONDS,
-        analysis._SUBTITLE_YIELD_SECONDS,
-    ]
+    assert average == pytest.approx(0.5)
+    assert scores == pytest.approx((0.5,))
+    assert len(yielded) > 2
+    assert set(yielded) == {analysis._SUBTITLE_YIELD_SECONDS}
 
 
 def test_local_sequence_keeps_full_aired_order_when_library_has_gaps(

@@ -46,6 +46,7 @@ class UnmatchedFileEvidence:
     file_id: str
     duration_seconds: float
     transcript_excerpts: tuple[str, ...]
+    transcript_start_seconds: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)

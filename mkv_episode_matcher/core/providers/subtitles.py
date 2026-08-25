@@ -30,6 +30,7 @@ from mkv_episode_matcher.core.subtitle_releases import (
     release_profile_query,
     select_subtitle_release_options,
     subtitle_candidate_release_name,
+    subtitle_release_family,
 )
 from mkv_episode_matcher.core.utils import safe_cache_component
 
@@ -654,7 +655,7 @@ class OpenSubtitlesProvider(SubtitleProvider):
             )
             if alternate_only:
                 untested_options = []
-                selected_per_episode: dict[int, int] = {}
+                selected_families: dict[int, set[str]] = {}
                 for option in selected_options:
                     ep_num, _subtitle, release_name, release_match = option
                     target_path = _subtitle_cache_target(
@@ -667,11 +668,11 @@ class OpenSubtitlesProvider(SubtitleProvider):
                     )
                     if target_path.is_file():
                         continue
-                    if selected_per_episode.get(ep_num, 0) >= 2:
+                    family = subtitle_release_family(release_name)
+                    episode_families = selected_families.setdefault(ep_num, set())
+                    if family in episode_families or len(episode_families) >= 6:
                         continue
-                    selected_per_episode[ep_num] = (
-                        selected_per_episode.get(ep_num, 0) + 1
-                    )
+                    episode_families.add(family)
                     untested_options.append(option)
                 selected_options = tuple(untested_options)
             available_episodes = {

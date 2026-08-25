@@ -36,12 +36,15 @@ def test_exact_source_evidence_survives_restart(tmp_path):
     root = tmp_path / "private"
     first = IdentificationDossierStore(root)
     first.save_evidence(
-        identity, UnmatchedFileEvidence("media-1", 1200, ("bounded dialogue",))
+        identity,
+        UnmatchedFileEvidence("media-1", 1200, ("bounded dialogue",), (321.5,)),
     )
 
     restored = IdentificationDossierStore(root).load_evidence("media-1", identity)
 
-    assert restored == UnmatchedFileEvidence("media-1", 1200, ("bounded dialogue",))
+    assert restored == UnmatchedFileEvidence(
+        "media-1", 1200, ("bounded dialogue",), (321.5,)
+    )
 
 
 def test_runtime_only_evidence_is_cached_for_provider_fallback(tmp_path):
@@ -124,7 +127,10 @@ def test_supplemental_collection_merges_one_offset_pass(tmp_path, monkeypatch):
                 SimpleNamespace(
                     file_id=items[0].file_id,
                     windows=tuple(
-                        SimpleNamespace(text=f"new dialogue {index}")
+                        SimpleNamespace(
+                            text=f"new dialogue {index}",
+                            start_seconds=100 + index * 100,
+                        )
                         for index in range(6)
                     ),
                 ),
@@ -133,7 +139,10 @@ def test_supplemental_collection_merges_one_offset_pass(tmp_path, monkeypatch):
 
     monkeypatch.setattr(dossier_module, "collect_transcript_batch", collect)
     existing = UnmatchedFileEvidence(
-        "media-1", 1200, tuple(f"old dialogue {index}" for index in range(6))
+        "media-1",
+        1200,
+        tuple(f"old dialogue {index}" for index in range(6)),
+        tuple(float(index * 100) for index in range(6)),
     )
 
     evidence, store = collect_supplemental_dossier_evidence(
@@ -145,6 +154,20 @@ def test_supplemental_collection_merges_one_offset_pass(tmp_path, monkeypatch):
     )
 
     assert len(evidence[0].transcript_excerpts) == 12
+    assert evidence[0].transcript_start_seconds == (
+        0.0,
+        100.0,
+        200.0,
+        300.0,
+        400.0,
+        500.0,
+        100.0,
+        200.0,
+        300.0,
+        400.0,
+        500.0,
+        600.0,
+    )
     identity = source_identity(payload, source, "small")
     assert store.load_evidence("media-1", identity) == evidence[0]
 

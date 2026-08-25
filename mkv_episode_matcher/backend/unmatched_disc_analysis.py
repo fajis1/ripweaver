@@ -105,56 +105,38 @@ class DiscCoherenceError(GeminiAnalysisError):
         )
 
 
-class SubtitleAnalysisBudgetError(RuntimeError):
-    """Stop bounded local subtitle scoring without rejecting later fallbacks."""
-
-
-_KNOWN_SEASON_SUBTITLE_BUDGET_SECONDS = 600.0
-_ALL_SEASON_SUBTITLE_BUDGET_SECONDS = 300.0
 _SUBTITLE_YIELD_EVERY_COMPARISONS = 32
 _SUBTITLE_YIELD_SECONDS = 0.001
 
 
-class _SubtitleAnalysisBudget:
-    """Bound fuzzy subtitle work and cooperatively yield to WebUI requests."""
+class _SubtitleAnalysisProgress:
+    """Cooperatively yield during finite fuzzy work without a time deadline."""
 
     def __init__(
         self,
-        seconds: float,
         *,
-        clock: Callable[[], float] = perf_counter,
         yield_control: Callable[[float], None] = sleep,
         yield_every: int = _SUBTITLE_YIELD_EVERY_COMPARISONS,
     ) -> None:
-        if seconds <= 0 or yield_every <= 0:
-            raise ValueError("Subtitle analysis budget is invalid")
-        self.seconds = float(seconds)
-        self._clock = clock
+        if yield_every <= 0:
+            raise ValueError("Subtitle analysis progress interval is invalid")
         self._yield_control = yield_control
         self._yield_every = yield_every
-        self._deadline: float | None = None
         self._checkpoints = 0
 
     def checkpoint(self) -> None:
-        """Yield periodically and stop once the shared disc budget expires."""
+        """Yield periodically while deterministic work keys keep the pass finite."""
 
-        now = self._clock()
-        if self._deadline is None:
-            self._deadline = now + self.seconds
-        elif now >= self._deadline:
-            raise SubtitleAnalysisBudgetError
         self._checkpoints += 1
         if self._checkpoints % self._yield_every == 0:
             self._yield_control(_SUBTITLE_YIELD_SECONDS)
-            if self._clock() >= self._deadline:
-                raise SubtitleAnalysisBudgetError
 
 
-def _checkpoint_subtitle_budget(
-    analysis_budget: _SubtitleAnalysisBudget | None,
+def _checkpoint_subtitle_progress(
+    analysis_progress: _SubtitleAnalysisProgress | None,
 ) -> None:
-    if analysis_budget is not None:
-        analysis_budget.checkpoint()
+    if analysis_progress is not None:
+        analysis_progress.checkpoint()
 
 
 @dataclass(frozen=True)
@@ -490,8 +472,43 @@ def dominant_season_scope(
     return _ordered_neighbor_scope(dominant, tuple(dominant_episodes), catalog)
 
 
+def _subtitle_cues(content: str) -> tuple[tuple[float, float, str], ...]:
+    """Parse bounded SRT timing without retaining dialogue outside the caller."""
+
+    cues = []
+    for block in re.split(r"\r?\n\r?\n", content.strip()):
+        lines = block.splitlines()
+        timestamp_index = next(
+            (index for index, line in enumerate(lines[:3]) if "-->" in line), None
+        )
+        if timestamp_index is None or timestamp_index + 1 >= len(lines):
+            continue
+        try:
+            start_text, end_text = lines[timestamp_index].split("-->", maxsplit=1)
+            start = SubtitleReader.parse_timestamp(start_text.strip())
+            end = SubtitleReader.parse_timestamp(end_text.strip().split()[0])
+        except (TypeError, ValueError):
+            continue
+        text = " ".join(lines[timestamp_index + 1 :]).strip()
+        if text and end >= start:
+            cues.append((start, end, text))
+    return tuple(cues)
+
+
+def _subtitle_chunk_from_cues(
+    cues: tuple[tuple[float, float, str], ...], start: float, end: float
+) -> str:
+    return " ".join(
+        text
+        for cue_start, cue_end, text in cues
+        if cue_end >= start and cue_start <= end
+    )
+
+
 def _subtitle_reference_windows(content: str, excerpt: str) -> tuple[str, ...]:
-    words = clean_text(re.sub(r"<[^>]+>", " ", content)).split()
+    cues = _subtitle_cues(content)
+    dialogue = " ".join(text for _start, _end, text in cues) if cues else content
+    words = clean_text(re.sub(r"<[^>]+>", " ", dialogue)).split()
     excerpt_words = max(8, len(clean_text(excerpt).split()))
     # Keep enough surrounding reference dialogue to tolerate ASR omissions,
     # without diluting a short anchor inside a window twice its size.  These
@@ -537,7 +554,7 @@ def _best_global_subtitle_pair(
     excerpt: str,
     content: str,
     *,
-    analysis_budget: _SubtitleAnalysisBudget | None = None,
+    analysis_progress: _SubtitleAnalysisProgress | None = None,
 ) -> tuple[float, str]:
     cleaned = clean_text(excerpt)
     windows = _subtitle_reference_windows(content, cleaned)
@@ -545,8 +562,8 @@ def _best_global_subtitle_pair(
         return 0.0, ""
     scored = []
     for window in windows:
-        if analysis_budget is not None:
-            analysis_budget.checkpoint()
+        if analysis_progress is not None:
+            analysis_progress.checkpoint()
         scored.append((asr.calculate_match_score(cleaned, window), window))
     return max(scored, key=lambda value: value[0])
 
@@ -557,7 +574,7 @@ def _gemini_subtitle_comparisons(  # noqa: C901 - bounded evidence selection
     candidate_evaluations: Mapping[str, list[dict[str, object]]],
     asr,
     *,
-    analysis_budget: _SubtitleAnalysisBudget | None = None,
+    analysis_progress: _SubtitleAnalysisProgress | None = None,
 ) -> dict[str, tuple[GeminiSubtitleComparisonEvidence, ...]]:
     """Build bounded paired evidence for only the strongest local candidates."""
 
@@ -607,7 +624,7 @@ def _gemini_subtitle_comparisons(  # noqa: C901 - bounded evidence selection
                         asr,
                         excerpt,
                         content,
-                        analysis_budget=analysis_budget,
+                        analysis_progress=analysis_progress,
                     )
                     if reference:
                         scored_pairs.append((
@@ -641,6 +658,17 @@ def _select_gemini_file_evidence(
 
     selected_files = []
     for item in files:
+        start_by_excerpt = (
+            dict(
+                zip(
+                    item.transcript_excerpts,
+                    item.transcript_start_seconds,
+                    strict=True,
+                )
+            )
+            if len(item.transcript_start_seconds) == len(item.transcript_excerpts)
+            else {}
+        )
         strength = {
             pair.whisper_excerpt: pair.local_score
             for pair in comparisons.get(item.file_id, ())
@@ -667,7 +695,15 @@ def _select_gemini_file_evidence(
                 break
         selected_files.append(
             UnmatchedFileEvidence(
-                item.file_id, item.duration_seconds, tuple(chosen[:6])
+                item.file_id,
+                item.duration_seconds,
+                tuple(chosen[:6]),
+                (
+                    tuple(start_by_excerpt[excerpt] for excerpt in chosen[:6])
+                    if start_by_excerpt
+                    and all(excerpt in start_by_excerpt for excerpt in chosen[:6])
+                    else ()
+                ),
             )
         )
     return tuple(selected_files)
@@ -693,61 +729,167 @@ def _filter_gemini_subtitle_comparisons(
     }
 
 
+def _subtitle_alignment_scores(  # noqa: C901 - explicit finite clock grid
+    asr,
+    cleaned_excerpts: tuple[str, ...],
+    starts: tuple[float, ...],
+    content: str,
+    duration_seconds: float,
+    *,
+    analysis_progress: _SubtitleAnalysisProgress | None = None,
+) -> tuple[float, ...]:
+    """Choose one scale/offset transform that best supports multiple anchors."""
+
+    cues = _subtitle_cues(content)
+    subtitle_duration = max((end for _start, end, _text in cues), default=0.0)
+    scales = [1.0]
+    if duration_seconds > 0 and subtitle_duration > 0:
+        normalized_scale = subtitle_duration / duration_seconds
+        if 0.5 <= normalized_scale <= 1.5 and abs(normalized_scale - 1.0) >= 0.01:
+            scales.append(normalized_scale)
+    offsets = (
+        -300.0,
+        -180.0,
+        -120.0,
+        -60.0,
+        -30.0,
+        0.0,
+        30.0,
+        60.0,
+        120.0,
+        180.0,
+        300.0,
+    )
+    best_aligned: tuple[float, ...] = tuple(0.0 for _excerpt in cleaned_excerpts)
+    best_alignment_rank = (-1.0, -1.0)
+    for scale in scales:
+        for offset in offsets:
+            transform_scores = []
+            for cleaned, start in zip(cleaned_excerpts, starts, strict=True):
+                _checkpoint_subtitle_progress(analysis_progress)
+                if not cleaned:
+                    transform_scores.append(0.0)
+                    continue
+                predicted = max(0.0, start * scale + offset)
+                if cues:
+                    reference = clean_text(
+                        _subtitle_chunk_from_cues(
+                            cues,
+                            max(0.0, predicted - 30.0),
+                            predicted + 60.0,
+                        )
+                    )
+                else:
+                    reference = clean_text(
+                        " ".join(
+                            SubtitleReader.extract_subtitle_chunk(
+                                content,
+                                max(0.0, predicted - 30.0),
+                                predicted + 60.0,
+                            )
+                        )
+                    )
+                transform_scores.append(
+                    asr.calculate_match_score(cleaned, reference) if reference else 0.0
+                )
+            strongest = sorted(transform_scores, reverse=True)[:2]
+            alignment_rank = (sum(strongest), sum(transform_scores))
+            if alignment_rank > best_alignment_rank:
+                best_alignment_rank = alignment_rank
+                best_aligned = tuple(transform_scores)
+    return best_aligned
+
+
 def _score_subtitle(
     asr,
     excerpts: tuple[str, ...],
     content: str,
     duration_seconds: float,
     *,
-    analysis_budget: _SubtitleAnalysisBudget | None = None,
+    sample_start_seconds: tuple[float, ...] = (),
+    analysis_progress: _SubtitleAnalysisProgress | None = None,
 ) -> tuple[float, tuple[float, ...]]:
-    """Score independent dialogue anchors against one regular-edition subtitle.
+    """Score dialogue using one expanded clock plus global scene recovery.
 
-    Timestamp-near matches remain useful for ordinary cuts, but every excerpt
-    also receives a bounded whole-subtitle search.  That makes regular episode
-    subtitles valid references for extended editions: unchanged scenes vote
-    for the episode wherever they moved, while inserted-scene excerpts simply
-    remain below the qualifying threshold and do not lower consensus.
+    The clock grid admits a constant offset and duration drift across multiple
+    anchors.  Every excerpt also receives a bounded timestamp-free search, so
+    added Superfan scenes may introduce discontinuous jumps without hiding the
+    unchanged broadcast dialogue on either side.
     """
 
-    scores = []
-    starts = tuple(
-        max(0.0, duration_seconds * position / (len(excerpts) + 1) - 15.0)
-        for position in range(1, len(excerpts) + 1)
+    starts = (
+        sample_start_seconds
+        if len(sample_start_seconds) == len(excerpts)
+        else tuple(
+            max(0.0, duration_seconds * position / (len(excerpts) + 1) - 15.0)
+            for position in range(1, len(excerpts) + 1)
+        )
     )
-    for excerpt, start in zip(excerpts, starts, strict=False):
-        _checkpoint_subtitle_budget(analysis_budget)
-        cleaned = clean_text(excerpt)
+    cleaned_excerpts = tuple(clean_text(excerpt) for excerpt in excerpts)
+    best_aligned = _subtitle_alignment_scores(
+        asr,
+        cleaned_excerpts,
+        starts,
+        content,
+        duration_seconds,
+        analysis_progress=analysis_progress,
+    )
+
+    scores = []
+    for index, cleaned in enumerate(cleaned_excerpts):
+        _checkpoint_subtitle_progress(analysis_progress)
         if not cleaned:
             continue
-        aligned = []
-        for offset in (-60.0, -30.0, 0.0, 30.0, 60.0):
-            window_start = max(0.0, start + offset)
-            reference = clean_text(
-                " ".join(
-                    SubtitleReader.extract_subtitle_chunk(
-                        content, window_start, window_start + 45.0
-                    )
-                )
-            )
-            if reference:
-                _checkpoint_subtitle_budget(analysis_budget)
-                aligned.append(asr.calculate_match_score(cleaned, reference))
         # Always search the regular subtitle globally as well.  A reconstructed
         # cut may still have valid subtitle text at the calculated timestamp,
         # but it can be a completely different scene after earlier insertions.
         windows = _subtitle_reference_windows(content, cleaned)
         global_scores = []
         for window in windows:
-            _checkpoint_subtitle_budget(analysis_budget)
+            _checkpoint_subtitle_progress(analysis_progress)
             global_scores.append(asr.calculate_match_score(cleaned, window))
         global_score = max(global_scores) if global_scores else 0.0
-        if aligned or global_score:
-            scores.append(max((*aligned, global_score)))
+        aligned_score = best_aligned[index]
+        if aligned_score or global_score:
+            scores.append(max(aligned_score, global_score))
     if not scores:
         return 0.0, ()
     scores.sort(reverse=True)
     return sum(scores) / len(scores), tuple(scores)
+
+
+_ALTERED_RELEASE_PROFILES = frozenset({
+    "superfan",
+    "extended",
+    "unrated",
+    "supercut",
+    "directors_cut",
+})
+
+
+def _references_use_altered_cut(references: tuple) -> bool:
+    return any(
+        getattr(reference, "release_profile", None) in _ALTERED_RELEASE_PROFILES
+        for reference in references
+    )
+
+
+def _release_ladder_references(references: tuple, tier: str) -> tuple:
+    if tier == "altered":
+        return tuple(
+            reference
+            for reference in references
+            if getattr(reference, "release_match", "unresolved")
+            in {"exact", "compatible"}
+        )
+    if tier == "generic":
+        return tuple(
+            reference
+            for reference in references
+            if getattr(reference, "release_match", "unresolved")
+            in {"generic", "unresolved"}
+        )
+    raise ValueError("Subtitle release ladder tier is invalid")
 
 
 def _subtitle_candidates(  # noqa: C901 - per-reference rejection audit
@@ -759,16 +901,17 @@ def _subtitle_candidates(  # noqa: C901 - per-reference rejection audit
     min_confidence,
     rejected_candidates=None,
     phase="direct",
-    analysis_budget: _SubtitleAnalysisBudget | None = None,
+    analysis_progress: _SubtitleAnalysisProgress | None = None,
 ):
     scored = {}
+    altered_cut = _references_use_altered_cut(tuple(references))
     for item in files:
-        if analysis_budget is not None:
-            analysis_budget.checkpoint()
+        if analysis_progress is not None:
+            analysis_progress.checkpoint()
         candidates_by_episode = {}
         for subtitle in references:
-            if analysis_budget is not None:
-                analysis_budget.checkpoint()
+            if analysis_progress is not None:
+                analysis_progress.checkpoint()
             info = subtitle.episode_info
             if info is None:
                 continue
@@ -785,7 +928,11 @@ def _subtitle_candidates(  # noqa: C901 - per-reference rejection audit
                         "reason": "episode_not_in_aired_catalogue",
                     })
                 continue
-            if not _episode_runtime_consistent(item.duration_seconds, entry):
+            if not _episode_runtime_consistent(
+                item.duration_seconds,
+                entry,
+                altered_cut=altered_cut,
+            ):
                 if rejected_candidates is not None:
                     rejected_candidates.setdefault(item.file_id, []).append({
                         "phase": phase,
@@ -820,7 +967,8 @@ def _subtitle_candidates(  # noqa: C901 - per-reference rejection audit
                 item.transcript_excerpts,
                 content,
                 item.duration_seconds,
-                analysis_budget=analysis_budget,
+                sample_start_seconds=item.transcript_start_seconds,
+                analysis_progress=analysis_progress,
             )
             qualifying = tuple(
                 score for score in window_scores if score >= min_confidence
@@ -888,6 +1036,7 @@ def _missing_subtitle_reference_audit(
 ):
     """Record aired options that could not be scored for lack of a reference."""
 
+    altered_cut = _references_use_altered_cut(tuple(references))
     referenced = {
         (subtitle.episode_info.season, subtitle.episode_info.episode)
         for subtitle in references
@@ -907,12 +1056,18 @@ def _missing_subtitle_reference_audit(
                 "season": entry.season,
                 "episode": entry.episode,
                 "runtime_consistent": _episode_runtime_consistent(
-                    item.duration_seconds, entry
+                    item.duration_seconds,
+                    entry,
+                    altered_cut=altered_cut,
                 ),
                 "disposition": "rejected",
                 "reason": (
                     "subtitle_reference_unavailable"
-                    if _episode_runtime_consistent(item.duration_seconds, entry)
+                    if _episode_runtime_consistent(
+                        item.duration_seconds,
+                        entry,
+                        altered_cut=altered_cut,
+                    )
                     else "runtime_mismatch"
                 ),
             }
@@ -1130,7 +1285,7 @@ def discover_opensubtitles_season(  # noqa: C901 - season discovery audit ledger
     season_order: tuple[int, ...] | None = None,
     candidate_evaluations: dict[str, list[dict[str, object]]] | None = None,
     audit_phase: str = "season-discovery",
-    analysis_budget: _SubtitleAnalysisBudget | None = None,
+    analysis_progress: _SubtitleAnalysisProgress | None = None,
 ) -> tuple[int, ...]:
     """Discover a season from independent transcript matches across the series."""
 
@@ -1153,14 +1308,14 @@ def discover_opensubtitles_season(  # noqa: C901 - season discovery audit ledger
         season for season in preferred if season in available_seasons
     ) + tuple(sorted(available_seasons - set(preferred)))
     for season in ordered_seasons:
-        if analysis_budget is not None:
-            analysis_budget.checkpoint()
+        if analysis_progress is not None:
+            analysis_progress.checkpoint()
         references = reference_cache.get(season)
         if references is None:
             references = tuple(provider.get_subtitles(series_name, season, [], tmdb_id))
             reference_cache[season] = references
-        if analysis_budget is not None:
-            analysis_budget.checkpoint()
+        if analysis_progress is not None:
+            analysis_progress.checkpoint()
         rejected_candidates = _missing_subtitle_reference_audit(
             representatives,
             references,
@@ -1176,7 +1331,7 @@ def discover_opensubtitles_season(  # noqa: C901 - season discovery audit ledger
             min_confidence=min_confidence,
             rejected_candidates=rejected_candidates,
             phase=audit_phase,
-            analysis_budget=analysis_budget,
+            analysis_progress=analysis_progress,
         )
         details: dict[str, dict[str, object]] = {}
         accepted, diagnostics = _accept_subtitle_candidates(
@@ -1240,7 +1395,7 @@ def match_opensubtitles_seasons(  # noqa: C901 - direct and residual audit ledge
     candidate_evaluations: dict[str, list[dict[str, object]]] | None = None,
     release_failover_attempted: set[int] | None = None,
     allow_release_failover: bool = True,
-    analysis_budget: _SubtitleAnalysisBudget | None = None,
+    analysis_progress: _SubtitleAnalysisProgress | None = None,
 ) -> tuple[dict[str, EpisodeCatalogEntry], dict[str, tuple[float, float]]]:
     """Match cached Whisper excerpts independently against bounded season subtitles."""
 
@@ -1260,33 +1415,44 @@ def match_opensubtitles_seasons(  # noqa: C901 - direct and residual audit ledge
     initial_scored_by_season: dict[
         int, dict[str, list[tuple[float, int, EpisodeCatalogEntry]]]
     ] = {}
+    release_ladder_seasons: set[int] = set()
     for season in seasons:
         if not remaining:
             break
-        if analysis_budget is not None:
-            analysis_budget.checkpoint()
+        if analysis_progress is not None:
+            analysis_progress.checkpoint()
         references = reference_cache.get(season)
         if references is None:
             references = tuple(provider.get_subtitles(series_name, season, [], tmdb_id))
             reference_cache[season] = references
-        if analysis_budget is not None:
-            analysis_budget.checkpoint()
+        if len(seasons) == 1 and _references_use_altered_cut(references):
+            release_ladder_seasons.add(season)
+        scoring_references = (
+            _release_ladder_references(references, "altered")
+            if season in release_ladder_seasons
+            else references
+        )
+        direct_phase = (
+            "season-release-altered" if season in release_ladder_seasons else "direct"
+        )
+        if analysis_progress is not None:
+            analysis_progress.checkpoint()
         rejected_candidates = _missing_subtitle_reference_audit(
             tuple(remaining.values()),
-            references,
+            scoring_references,
             catalog,
             season,
-            phase="direct",
+            phase=direct_phase,
         )
         scored = _subtitle_candidates(
             tuple(remaining.values()),
-            references,
+            scoring_references,
             catalog_by_number,
             asr,
             min_confidence=min_confidence,
             rejected_candidates=rejected_candidates,
-            phase="direct",
-            analysis_budget=analysis_budget,
+            phase=direct_phase,
+            analysis_progress=analysis_progress,
         )
         initial_scored_by_season[season] = scored
         for file_id, candidates in scored.items():
@@ -1299,12 +1465,18 @@ def match_opensubtitles_seasons(  # noqa: C901 - direct and residual audit ledge
             used,
             diagnostic_details=diagnostic_details,
         )
+        if season in release_ladder_seasons and diagnostic_details is not None:
+            for file_id in scored:
+                if file_id in diagnostic_details:
+                    diagnostic_details[file_id]["subtitle_reference_pass"] = (
+                        "season-release-altered"
+                    )
         accepted.update(season_matches)
         diagnostics.update(season_diagnostics)
         if candidate_evaluations is not None:
             details = diagnostic_details or {}
             scored_audit = _scored_candidate_audit(
-                scored, season_matches, details, phase="direct"
+                scored, season_matches, details, phase=direct_phase
             )
             for file_id in {**rejected_candidates, **scored_audit}:
                 candidate_evaluations.setdefault(file_id, []).extend(
@@ -1319,8 +1491,8 @@ def match_opensubtitles_seasons(  # noqa: C901 - direct and residual audit ledge
     for season in seasons:
         if not remaining:
             break
-        if analysis_budget is not None:
-            analysis_budget.checkpoint()
+        if analysis_progress is not None:
+            analysis_progress.checkpoint()
         alternate_getter = getattr(provider, "get_alternate_subtitles", None)
         should_try_alternates = (
             allow_release_failover
@@ -1344,8 +1516,8 @@ def match_opensubtitles_seasons(  # noqa: C901 - direct and residual audit ledge
                 )
                 alternate_failure_reason = "alternate_release_lookup_failed"
                 alternate_references = ()
-            if analysis_budget is not None:
-                analysis_budget.checkpoint()
+            if analysis_progress is not None:
+                analysis_progress.checkpoint()
             if diagnostic_details is not None:
                 for file_id in remaining:
                     diagnostic_details.setdefault(file_id, {})[
@@ -1364,26 +1536,35 @@ def match_opensubtitles_seasons(  # noqa: C901 - direct and residual audit ledge
                         or "no_untested_subtitle_references",
                     })
             if alternate_references:
+                if len(seasons) == 1 and _references_use_altered_cut(
+                    alternate_references
+                ):
+                    release_ladder_seasons.add(season)
                 references = (
                     tuple(reference_cache.get(season, ())) + alternate_references
                 )
                 reference_cache[season] = references
+                alternate_scoring_references = (
+                    _release_ladder_references(alternate_references, "altered")
+                    if season in release_ladder_seasons
+                    else alternate_references
+                )
                 failover_rejected = _missing_subtitle_reference_audit(
                     tuple(remaining.values()),
-                    references,
+                    alternate_scoring_references,
                     catalog,
                     season,
                     phase="alternate-release-failover",
                 )
                 failover_scored = _subtitle_candidates(
                     tuple(remaining.values()),
-                    alternate_references,
+                    alternate_scoring_references,
                     catalog_by_number,
                     asr,
                     min_confidence=min_confidence,
                     rejected_candidates=failover_rejected,
                     phase="alternate-release-failover",
-                    analysis_budget=analysis_budget,
+                    analysis_progress=analysis_progress,
                 )
                 combined_scored = {}
                 for file_id in remaining:
@@ -1426,6 +1607,72 @@ def match_opensubtitles_seasons(  # noqa: C901 - direct and residual audit ledge
                         )
                 for file_id in failover_matches:
                     remaining.pop(file_id, None)
+    # A confidently known altered-cut season exhausts exact/compatible release
+    # families before generic broadcast subtitles.  This keeps a regular cut
+    # from pre-empting the intended Superfan/extended evidence while retaining
+    # the generic season as a final same-season fallback.
+    for season in seasons:
+        if not remaining or season not in release_ladder_seasons:
+            continue
+        generic_references = _release_ladder_references(
+            tuple(reference_cache.get(season, ())), "generic"
+        )
+        generic_rejected = _missing_subtitle_reference_audit(
+            tuple(remaining.values()),
+            generic_references,
+            catalog,
+            season,
+            phase="season-release-generic",
+        )
+        generic_scored = _subtitle_candidates(
+            tuple(remaining.values()),
+            generic_references,
+            catalog_by_number,
+            asr,
+            min_confidence=min_confidence,
+            rejected_candidates=generic_rejected,
+            phase="season-release-generic",
+            analysis_progress=analysis_progress,
+        )
+        combined_scored = {}
+        for file_id in remaining:
+            combined_scored[file_id] = _merge_subtitle_candidate_rankings(
+                initial_scored_by_season.get(season, {}).get(file_id, []),
+                residual_scored.get(file_id, []),
+                generic_scored.get(file_id, []),
+            )
+            residual_scored[file_id] = _merge_subtitle_candidate_rankings(
+                residual_scored.get(file_id, []), generic_scored.get(file_id, [])
+            )
+        generic_matches, generic_diagnostics = _accept_subtitle_candidates(
+            combined_scored,
+            min_confidence,
+            used,
+            diagnostic_details=diagnostic_details,
+        )
+        if diagnostic_details is not None:
+            for file_id in combined_scored:
+                if file_id in diagnostic_details:
+                    diagnostic_details[file_id]["subtitle_reference_pass"] = (
+                        "season-release-generic"
+                    )
+        accepted.update(generic_matches)
+        diagnostics.update(generic_diagnostics)
+        if candidate_evaluations is not None:
+            details = diagnostic_details or {}
+            generic_audit = _scored_candidate_audit(
+                combined_scored,
+                generic_matches,
+                details,
+                phase="season-release-generic",
+            )
+            for file_id in {**generic_rejected, **generic_audit}:
+                candidate_evaluations.setdefault(file_id, []).extend(
+                    generic_rejected.get(file_id, [])
+                )
+                candidate_evaluations[file_id].extend(generic_audit.get(file_id, []))
+        for file_id in generic_matches:
+            remaining.pop(file_id, None)
     residual_details = diagnostic_details if diagnostic_details is not None else {}
     used_before_residual = set(used)
     residual_matches = (
@@ -1483,14 +1730,21 @@ def match_opensubtitles_seasons(  # noqa: C901 - direct and residual audit ledge
 
 
 def _episode_runtime_consistent(
-    source_duration: float, candidate: EpisodeCatalogEntry
+    source_duration: float,
+    candidate: EpisodeCatalogEntry,
+    *,
+    altered_cut: bool = False,
 ) -> bool:
-    """Reject obvious play-all/compilation titles from one-episode assignment."""
+    """Reject obvious play-all titles while admitting known extended editions."""
 
     candidate_duration = candidate.runtime_seconds
     if candidate_duration is None or candidate_duration <= 0:
         return True
-    maximum = max(candidate_duration * 1.75, candidate_duration + 1800)
+    maximum = (
+        max(candidate_duration * 3.0, candidate_duration + 3600)
+        if altered_cut
+        else max(candidate_duration * 1.75, candidate_duration + 1800)
+    )
     return source_duration <= maximum
 
 
@@ -2176,11 +2430,6 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
     subtitle_series_name, subtitle_release_profile = _subtitle_lookup_series_name(
         series_name, selected
     )
-    subtitle_budget_seconds = (
-        _KNOWN_SEASON_SUBTITLE_BUDGET_SECONDS
-        if season is not None
-        else _ALL_SEASON_SUBTITLE_BUDGET_SECONDS
-    )
     dossier = IdentificationDossierStore(
         contract_root.parent / "identification-evidence"
     )
@@ -2196,7 +2445,7 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
             "requested_season": season,
             "reviewed_candidate_scope": candidate_scope_label,
             "subtitle_release_profile": subtitle_release_profile or "unresolved",
-            "subtitle_analysis_budget_seconds": subtitle_budget_seconds,
+            "subtitle_analysis_mode": "finite-progress-no-total-deadline",
             "gemini_enabled": allow_gemini,
         },
     )
@@ -2253,12 +2502,10 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
         if season is not None
         else dominant_season_scope(disc_episodes, catalog)
     )
-    subtitle_analysis_budget = _SubtitleAnalysisBudget(subtitle_budget_seconds)
+    subtitle_analysis_progress = _SubtitleAnalysisProgress()
     subtitle_provider = None
     subtitle_reference_cache: dict[int, tuple] = {}
     subtitle_release_failover_attempted: set[int] = set()
-    subtitle_budget_exhausted = False
-    subtitle_budget_audit_recorded = False
     anchors = _anchor_titles(selected)
     anchor_evidence: tuple[UnmatchedFileEvidence, ...] = ()
     collected_dossier = None
@@ -2284,11 +2531,8 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
                         season_order=preferred_season_order(catalog, known_episodes),
                         candidate_evaluations=anchor_candidate_evaluations,
                         audit_phase="anchor-season-discovery",
-                        analysis_budget=subtitle_analysis_budget,
+                        analysis_progress=subtitle_analysis_progress,
                     )
-                except SubtitleAnalysisBudgetError:
-                    subtitle_budget_exhausted = True
-                    logger.info("All-season anchor discovery reached its safe budget")
                 except Exception as exc:
                     logger.info(
                         "All-season anchor discovery was inconclusive: {}",
@@ -2420,7 +2664,11 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
         candidate = sequence_candidates.get(media_id)
         runtime_consistent = bool(
             candidate is not None
-            and _episode_runtime_consistent(duration_by_id[media_id], candidate)
+            and _episode_runtime_consistent(
+                duration_by_id[media_id],
+                candidate,
+                altered_cut=subtitle_release_profile is not None,
+            )
         )
         dossier.record_attempt(
             (media_id,),
@@ -2451,10 +2699,7 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
         )
     proposed: dict[str, EpisodeCatalogEntry] = {}
     opensubtitles_candidate_evaluations: dict[str, list[dict[str, object]]] = {}
-    if (
-        any(item.transcript_excerpts for item in gemini_evidence)
-        and not subtitle_budget_exhausted
-    ):
+    if any(item.transcript_excerpts for item in gemini_evidence):
         try:
             subtitle_provider = subtitle_provider or OpenSubtitlesProvider()
             if not season_scope:
@@ -2470,7 +2715,7 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
                     season_order=preferred_season_order(catalog, known_episodes),
                     candidate_evaluations=opensubtitles_candidate_evaluations,
                     audit_phase="full-season-discovery",
-                    analysis_budget=subtitle_analysis_budget,
+                    analysis_progress=subtitle_analysis_progress,
                 )
             opensubtitles_details: dict[str, dict[str, object]] = {}
             proposed, opensubtitles_diagnostics = match_opensubtitles_seasons(
@@ -2487,7 +2732,7 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
                 prior_disc_assignments=bool(disc_episodes),
                 candidate_evaluations=opensubtitles_candidate_evaluations,
                 release_failover_attempted=subtitle_release_failover_attempted,
-                analysis_budget=subtitle_analysis_budget,
+                analysis_progress=subtitle_analysis_progress,
             )
             unresolved_ids = {
                 item.file_id for item in gemini_evidence if item.file_id not in proposed
@@ -2551,7 +2796,7 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
                             release_failover_attempted=(
                                 subtitle_release_failover_attempted
                             ),
-                            analysis_budget=subtitle_analysis_budget,
+                            analysis_progress=subtitle_analysis_progress,
                         )
                     )
                     proposed.update(supplemental_matches)
@@ -2632,20 +2877,6 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
                         ),
                     },
                 )
-        except SubtitleAnalysisBudgetError:
-            subtitle_budget_exhausted = True
-            dossier.record_attempt(
-                media_ids,
-                branch="tv-opensubtitles",
-                disposition="review",
-                analysis_run_id=analysis_run_id,
-                summary={
-                    "candidate_scope": candidate_scope_label,
-                    "subtitle_analysis_budget_seconds": subtitle_budget_seconds,
-                    "reason": "subtitle_analysis_budget_exceeded",
-                },
-            )
-            subtitle_budget_audit_recorded = True
         except Exception as exc:
             dossier.record_attempt(
                 media_ids,
@@ -2663,20 +2894,6 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
                     branch="tv-opensubtitles",
                     evaluations=tuple(evaluations),
                 )
-
-    if subtitle_budget_exhausted and not subtitle_budget_audit_recorded:
-        dossier.record_attempt(
-            media_ids,
-            branch="tv-opensubtitles",
-            disposition="review",
-            analysis_run_id=analysis_run_id,
-            summary={
-                "candidate_scope": candidate_scope_label,
-                "subtitle_analysis_budget_seconds": subtitle_budget_seconds,
-                "reason": "subtitle_analysis_budget_exceeded",
-            },
-        )
-        subtitle_budget_audit_recorded = True
 
     direct_range_anchors = tuple(
         entry
@@ -2748,33 +2965,13 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
         for scoped_season in season_scope
         for reference in subtitle_reference_cache.get(scoped_season, ())
     )
-    try:
-        gemini_subtitle_comparisons = (
-            {}
-            if subtitle_budget_exhausted
-            else _gemini_subtitle_comparisons(
-                unresolved_for_gemini,
-                subtitle_references,
-                opensubtitles_candidate_evaluations,
-                asr,
-                analysis_budget=subtitle_analysis_budget,
-            )
-        )
-    except SubtitleAnalysisBudgetError:
-        subtitle_budget_exhausted = True
-        gemini_subtitle_comparisons = {}
-        dossier.record_attempt(
-            tuple(item.file_id for item in unresolved_for_gemini),
-            branch="tv-opensubtitles",
-            disposition="review",
-            analysis_run_id=analysis_run_id,
-            summary={
-                "candidate_scope": candidate_scope_label,
-                "subtitle_analysis_budget_seconds": subtitle_budget_seconds,
-                "reason": "subtitle_analysis_budget_exceeded",
-            },
-        )
-        subtitle_budget_audit_recorded = True
+    gemini_subtitle_comparisons = _gemini_subtitle_comparisons(
+        unresolved_for_gemini,
+        subtitle_references,
+        opensubtitles_candidate_evaluations,
+        asr,
+        analysis_progress=subtitle_analysis_progress,
+    )
     # Preserve independent subtitle matches, but let Gemini inspect unresolved
     # titles against only the established season scope and unassigned episodes.
     if unresolved_for_gemini and allow_gemini:
@@ -2932,6 +3129,7 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
                 and _episode_runtime_consistent(
                     duration_by_id[file_id],
                     gemini_catalog_by_id[str(match.episode_id)],
+                    altered_cut=subtitle_release_profile is not None,
                 )
             }
             gemini_entries = tuple(
@@ -2985,6 +3183,7 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
                     or _episode_runtime_consistent(
                         duration_by_id[file_id],
                         gemini_catalog_by_id[str(match.episode_id)],
+                        altered_cut=subtitle_release_profile is not None,
                     )
                 )
                 confirmation_reason = (
@@ -3083,6 +3282,7 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
                                     diagnostic_details=outside_details,
                                     candidate_evaluations=outside_evaluations,
                                     allow_release_failover=False,
+                                    analysis_progress=subtitle_analysis_progress,
                                 )
                             )
                             outside_by_id = {

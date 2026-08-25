@@ -4250,7 +4250,7 @@ for review rather than forcing a TV identity.
   dialogue-redacted audit data; no optical disc, MKV, transcode, organization,
   or live provider operation was performed.
 
-### Exact-disc context reconciliation and responsive subtitle budgets (2026-08-25)
+### Exact-disc context reconciliation and responsive subtitle analysis (2026-08-25)
 
 - Automatic TV recovery now reconciles the exact fingerprint's complete held
   sibling set before starting disc analysis. A valid season retained by any
@@ -4262,13 +4262,38 @@ for review rather than forcing a TV identity.
   fingerprints, or an explicit non-TV sibling stop for review. RipWeaver no
   longer chooses whichever context happened to appear on the first held item
   or silently expands a known-season disc to the complete aired catalogue.
-- CPU-heavy fuzzy subtitle comparisons now share a per-disc wall-clock budget
-  and cooperatively yield to API/WebUI threads. Known-season analysis retains a
-  larger ten-minute local-evidence window; truly seasonless discovery is capped
-  at five minutes. A reached budget is retained in the redacted identification
-  audit and proceeds to the already bounded Gemini fallback when enabled rather
-  than repeating an open-ended all-season scan.
+- CPU-heavy fuzzy subtitle comparisons cooperatively yield to API/WebUI threads
+  while traversing a finite candidate/release work set. There is no fixed total
+  matching deadline: long but advancing whole-disc analysis may finish, while
+  individual provider calls retain their own bounded network behavior.
 - Synthetic regressions cover mixed seasonless/Season 7 siblings, release-name
-  canonicalization, conflicting-season refusal, cooperative CPU yielding, and
-  deterministic budget exhaustion. No optical drive, staged MKV, provider,
-  transcode, organization, or eject operation was used for validation.
+  canonicalization, conflicting-season refusal, and cooperative CPU yielding.
+  No optical drive, staged MKV, provider, transcode, organization, or eject
+  operation was used for validation.
+
+### Known-season altered-cut ladder and timestamped dialogue (2026-08-25)
+
+- A confidently known altered-cut season now tests exact and compatible
+  Superfan/extended references before generic broadcast subtitles. The
+  alternate-release provider retains distinct Extended, Uncut, Unrated,
+  Supercut, Director's Cut, Peacock, and generic families rather than allowing
+  two early provider results to hide the remaining families. Other seasons are
+  still reached only after this same-season ladder is exhausted.
+- Private Whisper evidence now retains each sample's source timestamp. The
+  subtitle scorer tests one consistent scale/offset clock across multiple
+  anchors (including offsets up to five minutes), then keeps the bounded global
+  timestamp-free dialogue search for discontinuous inserted-scene jumps.
+  Existing version-3 transcript dossiers are invalidated by the new sampling
+  identity and will be recollected only when a separately triggered real retry
+  is allowed to read that exact staged source.
+- Known altered cuts receive an expanded but finite runtime envelope before
+  dialogue scoring, so a long Superfan episode is not rejected by the ordinary
+  broadcast-runtime guard. Independent multi-window confidence, margin,
+  one-to-one assignment, play-all review, and whole-disc coherence checks still
+  control automatic naming.
+- Synthetic tests cover release-ladder ordering, distinct release-family
+  retention, timestamp persistence, constant offset plus duration drift,
+  inserted-scene global recovery, expanded altered-cut runtime, and
+  cooperative progress without a total-time cutoff. Validation did not read an
+  MKV, access a disc, call TMDb/OpenSubtitles/Gemini, rip, transcode, organize,
+  delete, or eject anything.

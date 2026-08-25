@@ -53,7 +53,7 @@ SCHEMA_VERSION = 1
 AUDIT_SCHEMA_VERSION = 1
 GEMINI_TRANSACTION_SCHEMA_VERSION = 1
 MAX_GEMINI_RAW_RESPONSE_BYTES = 1024 * 1024
-SAMPLING_VERSION = "twelve-window-fallback-v3"
+SAMPLING_VERSION = "timestamped-twelve-window-fallback-v4"
 
 
 @dataclass(frozen=True)
@@ -351,6 +351,7 @@ class IdentificationDossierStore:
             return None
         duration = evidence.get("duration_seconds")
         excerpts = evidence.get("transcript_excerpts")
+        starts = evidence.get("transcript_start_seconds", [])
         if (
             not isinstance(duration, int | float)
             or duration <= 0
@@ -360,9 +361,23 @@ class IdentificationDossierStore:
                 not isinstance(value, str) or not value.strip() or len(value) > 600
                 for value in excerpts
             )
+            or not isinstance(starts, list)
+            or len(starts) not in {0, len(excerpts)}
+            or any(
+                not isinstance(value, int | float)
+                or isinstance(value, bool)
+                or value < 0
+                or value > duration
+                for value in starts
+            )
         ):
             return None
-        return UnmatchedFileEvidence(media_id, float(duration), tuple(excerpts))
+        return UnmatchedFileEvidence(
+            media_id,
+            float(duration),
+            tuple(excerpts),
+            tuple(float(value) for value in starts),
+        )
 
     def load_evidence_by_identity(
         self, media_id: str, identity: SourceIdentity
@@ -404,6 +419,7 @@ class IdentificationDossierStore:
                 "evidence": {
                     "duration_seconds": evidence.duration_seconds,
                     "transcript_excerpts": list(evidence.transcript_excerpts),
+                    "transcript_start_seconds": list(evidence.transcript_start_seconds),
                 },
                 "attempts": attempts,
                 "updated_at": datetime.now(UTC).isoformat(),
@@ -945,14 +961,14 @@ def collect_dossier_evidence(  # noqa: C901 - linear cache/probe/audio guards
                 raise PipelineQueueError(
                     "Transcript collection omitted a reviewed title"
                 )
+            usable_windows = tuple(
+                window for window in transcript.windows if window.text.strip()
+            )[:6]
             evidence = UnmatchedFileEvidence(
                 item.media_id,
                 float(transcript.duration_seconds),
-                tuple(
-                    window.text[:600]
-                    for window in transcript.windows
-                    if window.text.strip()
-                )[:6],
+                tuple(window.text[:600] for window in usable_windows),
+                tuple(float(window.start_seconds) for window in usable_windows),
             )
             dossier.save_evidence(identities[item.media_id], evidence)
             cached[item.media_id] = evidence
@@ -983,6 +999,7 @@ def collect_dossier_evidence(  # noqa: C901 - linear cache/probe/audio guards
     }
     for evidence in ordered:
         excerpts = evidence.transcript_excerpts
+        excerpt_starts = evidence.transcript_start_seconds
         try:
             item_visual_root = (
                 visual_root
@@ -1017,6 +1034,10 @@ def collect_dossier_evidence(  # noqa: C901 - linear cache/probe/audio guards
             if visual.ocr_excerpt:
                 on_screen = f"On-screen text (OCR): {visual.ocr_excerpt}"[:600]
                 excerpts = (on_screen, *excerpts[:5])
+                # OCR text is not an audio sample and therefore has no honest
+                # source clock.  The dialogue scorer will use its legacy
+                # evenly-spaced fallback for this visual-only evidence tuple.
+                excerpt_starts = ()
         except (OSError, RuntimeError, ValueError) as exc:
             dossier.record_attempt(
                 (evidence.file_id,),
@@ -1030,6 +1051,7 @@ def collect_dossier_evidence(  # noqa: C901 - linear cache/probe/audio guards
                 evidence.file_id,
                 evidence.duration_seconds,
                 excerpts,
+                excerpt_starts,
             )
         )
     return tuple(augmented), dossier
@@ -1078,15 +1100,29 @@ def collect_supplemental_dossier_evidence(
         for transcript in result.files:
             current = existing_by_id[transcript.file_id]
             added = tuple(
-                window.text[:600]
+                (window.text[:600], float(window.start_seconds))
                 for window in transcript.windows
                 if window.text.strip()
                 and window.text[:600] not in current.transcript_excerpts
             )
+            combined_excerpts = (
+                *current.transcript_excerpts,
+                *(text for text, _start in added),
+            )[:12]
+            combined_starts = (
+                (
+                    *current.transcript_start_seconds,
+                    *(start for _text, start in added),
+                )[:12]
+                if len(current.transcript_start_seconds)
+                == len(current.transcript_excerpts)
+                else ()
+            )
             combined = UnmatchedFileEvidence(
                 current.file_id,
                 current.duration_seconds,
-                (*current.transcript_excerpts, *added)[:12],
+                combined_excerpts,
+                combined_starts,
             )
             dossier.save_evidence(identities[transcript.file_id], combined)
             existing_by_id[transcript.file_id] = combined

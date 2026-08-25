@@ -14,6 +14,7 @@ from mkv_episode_matcher.core.subtitle_releases import (
     classify_subtitle_release,
     infer_subtitle_release_profile,
     select_subtitle_release_options,
+    subtitle_release_family,
 )
 
 
@@ -181,6 +182,27 @@ def test_provider_failover_downloads_only_previously_untested_release(tmp_path):
     assert 1 <= len(failover_queries) <= 6
     assert any("Supercut" in query for query in failover_queries)
     assert any("Unrated" in query for query in failover_queries)
+
+
+def test_provider_failover_retains_distinct_altered_release_families(tmp_path):
+    provider, _searches = _provider(
+        tmp_path,
+        (
+            _candidate("The.Office.Superfan.Episodes.S05E10.PCOK.srt"),
+            _candidate("The.Office.S05E10.Extended.Cut.srt"),
+            _candidate("The.Office.S05E10.Unrated.srt"),
+            _candidate("The.Office.S05E10.Supercut.srt"),
+            _candidate("The.Office.S05E10.Directors.Cut.srt"),
+            _candidate("The.Office.S05E10.HDTV.srt"),
+        ),
+    )
+    provider.get_subtitles("The Office Superfan Episodes", 5, [])
+
+    alternates = provider.get_alternate_subtitles("The Office Superfan Episodes", 5, [])
+
+    assert {
+        subtitle_release_family(item.release_name or "") for item in alternates
+    } == {"unrated", "supercut", "directors_cut", "generic"}
 
 
 def test_composite_provider_exposes_deduplicated_alternate_releases(tmp_path):

@@ -103,8 +103,8 @@ def infer_subtitle_release_profile(
     ):
         if pattern.search(combined):
             canonical = pattern.sub(" ", show_name)
-            canonical = (
-                _clean_name(canonical).strip(" -:()[]") or _clean_name(show_name)
+            canonical = _clean_name(canonical).strip(" -:()[]") or _clean_name(
+                show_name
             )
             return SubtitleReleaseProfile(
                 key=key,
@@ -194,6 +194,22 @@ def release_match_priority(value: SubtitleReleaseMatch | str | None) -> int:
     }.get(value or "unresolved", 0)
 
 
+def subtitle_release_family(release_name: str) -> str:
+    """Return one stable altered-cut family for bounded failover diversity."""
+
+    for pattern, family in (
+        (_SUPERFAN, "superfan"),
+        (_EXTENDED, "extended"),
+        (_UNRATED, "unrated"),
+        (_SUPERCUT, "supercut"),
+        (_DIRECTORS_CUT, "directors_cut"),
+        (_PEACOCK, "peacock"),
+    ):
+        if pattern.search(release_name):
+            return family
+    return "generic"
+
+
 def select_subtitle_release_options(
     candidates: list[object] | tuple[object, ...],
     profile: SubtitleReleaseProfile,
@@ -259,9 +275,7 @@ def alternate_release_queries(
     for key, label in _FAILOVER_QUERY_LABELS:
         if profile.key == key:
             continue
-        queries.append(
-            f"{profile.canonical_series_name} {label} S{season:02d}".strip()
-        )
+        queries.append(f"{profile.canonical_series_name} {label} S{season:02d}".strip())
     return tuple(queries[:6])
 
 
