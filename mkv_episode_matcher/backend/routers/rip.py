@@ -317,25 +317,17 @@ def _pipeline_item_saved_disc_fingerprint(item) -> str | None:
     return str(payload["disc_fingerprint"]) if payload is not None else None
 
 
-def _safely_present_pipeline_title_indexes(
-    store: PipelineQueueStore,
-    disc_fingerprint: str,
-) -> frozenset[int]:
-    """Return concrete staged or organized titles, never predictive scope rows."""
+def _payload_has_verified_media_file(payload: dict[str, object]) -> bool:
+    """Verify one concrete pipeline media path without trusting stage labels."""
 
-    present: set[int] = set()
-    for item in store.list_items():
-        payload = _pipeline_item_saved_rip_payload(item)
-        if payload is None or payload.get("disc_fingerprint") != disc_fingerprint:
-            continue
-        title_index = payload.get("title_index")
-        if not isinstance(title_index, int) or isinstance(title_index, bool):
-            continue
-        if item.stage == "organize" and item.state == "completed":
-            present.add(title_index)
-            continue
-        source_value = payload.get("source_path")
-        source_size = payload.get("source_size_bytes")
+    for path_key, size_key in (
+        ("source_path", "source_size_bytes"),
+        ("encoded_path", "encoded_size_bytes"),
+        ("original_source_path", "original_source_size_bytes"),
+        ("archived_source_path", "archived_source_size_bytes"),
+    ):
+        source_value = payload.get(path_key)
+        source_size = payload.get(size_key)
         if not isinstance(source_value, str) or not isinstance(source_size, int):
             continue
         try:
@@ -345,9 +337,43 @@ def _safely_present_pipeline_title_indexes(
                 and source.is_file()
                 and source.stat().st_size == source_size
             ):
-                present.add(title_index)
+                return True
         except OSError:
             continue
+    return False
+
+
+def _safely_present_pipeline_title_indexes(
+    store: PipelineQueueStore,
+    disc_fingerprint: str,
+) -> frozenset[int]:
+    """Return concrete staged, encoded, retained, or organized disc titles."""
+
+    present: set[int] = set()
+    for item in store.list_items():
+        rip_payload = _pipeline_item_saved_rip_payload(item)
+        if (
+            rip_payload is None
+            or rip_payload.get("disc_fingerprint") != disc_fingerprint
+        ):
+            continue
+        title_index = rip_payload.get("title_index")
+        if not isinstance(title_index, int) or isinstance(title_index, bool):
+            continue
+        if item.stage == "organize" and item.state == "completed":
+            present.add(title_index)
+            continue
+        payloads = [rip_payload]
+        try:
+            current_payload = json.loads(
+                item.artifact.contract_path.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            current_payload = None
+        if isinstance(current_payload, dict) and current_payload != rip_payload:
+            payloads.append(current_payload)
+        if any(_payload_has_verified_media_file(payload) for payload in payloads):
+            present.add(title_index)
     return frozenset(present)
 
 
@@ -2656,6 +2682,7 @@ class PipelineItemResponse(BaseModel):
     retention_candidate_available: bool = False
     original_source_unavailable: bool = False
     staged_source_available: bool = False
+    pipeline_media_available: bool = False
     provisional_match: bool = False
     gemini_confidence: float | None = None
     gemini_series_proposal: dict[str, object] | None = None
@@ -3291,6 +3318,7 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
     retention_candidate_available = False
     original_source_unavailable = False
     staged_source_available = False
+    pipeline_media_available = False
     provisional_match = False
     gemini_confidence = None
     gemini_series_proposal = None
@@ -3398,6 +3426,11 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
                 payload["original_source_path"]
             ).is_file()
         provisional_match = bool(payload.get("provisional_match"))
+        pipeline_media_available = (
+            item.stage == "organize" and item.state == "completed"
+        ) or _payload_has_verified_media_file(payload)
+        if not pipeline_media_available and rip_payload:
+            pipeline_media_available = _payload_has_verified_media_file(rip_payload)
         confidence = payload.get("gemini_confidence")
         if isinstance(confidence, int | float) and not isinstance(confidence, bool):
             gemini_confidence = float(confidence)
@@ -3435,6 +3468,7 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
         "retention_candidate_available": retention_candidate_available,
         "original_source_unavailable": original_source_unavailable,
         "staged_source_available": staged_source_available,
+        "pipeline_media_available": pipeline_media_available,
         "provisional_match": provisional_match,
         "gemini_confidence": gemini_confidence,
         "gemini_series_proposal": gemini_series_proposal,

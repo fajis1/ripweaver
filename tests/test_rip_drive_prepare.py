@@ -317,6 +317,68 @@ def _record_safe_pipeline_title(
     store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
 
 
+def test_safe_pipeline_titles_include_verified_encoded_staging(tmp_path):
+    fingerprint = "0123456789abcdef"
+    media_id = "encoded-title"
+    removed_rip = tmp_path / "removed-rip.mkv"
+    rip_contract = tmp_path / f"{media_id}.verified-rip.json"
+    rip_contract.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "media_id": media_id,
+            "source_path": str(removed_rip),
+            "source_size_bytes": 128,
+            "disc_fingerprint": fingerprint,
+            "title_index": 1,
+        }),
+        encoding="utf-8",
+    )
+    identify_contract = tmp_path / f"{media_id}.identify.json"
+    identify_contract.write_text(
+        json.dumps({
+            "mode": "identified-episode-contract",
+            "media_id": media_id,
+            "source_path": str(removed_rip),
+            "source_size_bytes": 128,
+            "episode_id": "S08E01",
+        }),
+        encoding="utf-8",
+    )
+    encoded = tmp_path / "encoded.mkv"
+    encoded.write_bytes(b"verified-encoded-media")
+    transcode_contract = tmp_path / f"{media_id}.transcode.json"
+    transcode_contract.write_text(
+        json.dumps({
+            "mode": "verified-transcode-contract",
+            "media_id": media_id,
+            "encoded_path": str(encoded),
+            "encoded_size_bytes": encoded.stat().st_size,
+            "original_source_path": str(removed_rip),
+            "original_source_size_bytes": 128,
+            "episode_id": "S08E01",
+        }),
+        encoding="utf-8",
+    )
+    store = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+    store.enqueue_verified_rip(media_id, build_artifact("rip", rip_contract))
+    store.claim_next()
+    store.complete_stage(
+        media_id, "identify", build_artifact("identify", identify_contract)
+    )
+    store.claim_next()
+    store.complete_stage(
+        media_id, "transcode", build_artifact("transcode", transcode_contract)
+    )
+
+    assert store.get(media_id).stage == "organize"
+    assert rip._safely_present_pipeline_title_indexes(store, fingerprint) == frozenset(
+        {1}
+    )
+    assert rip._pipeline_item_response(store.get(media_id))[
+        "pipeline_media_available"
+    ] is True
+
+
 def test_gemini_retry_starts_only_the_exact_requested_item(tmp_path, monkeypatch):
     requested = SimpleNamespace(
         media_id="disc-title-001",

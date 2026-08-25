@@ -356,6 +356,7 @@ interface PipelineQueueItem {
   retained_source_available: boolean;
   original_source_unavailable: boolean;
   staged_source_available: boolean;
+  pipeline_media_available: boolean;
   provisional_match: boolean;
   gemini_confidence: number | null;
   gemini_series_proposal: {
@@ -3712,7 +3713,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
               const safelyPresentTitleIndexes = new Set([
                 ...organizedTitleIndexes,
                 ...drivePipelineItems
-                  .filter((item) => item.staged_source_available && typeof item.title_index === 'number')
+                  .filter((item) => item.pipeline_media_available && typeof item.title_index === 'number')
                   .map((item) => item.title_index as number),
                 ...currentDiscJobs.flatMap((candidate) => (
                   candidate.preview?.jobs
