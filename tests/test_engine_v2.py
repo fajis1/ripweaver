@@ -10,8 +10,120 @@ from unittest.mock import Mock, patch
 import pytest
 
 from mkv_episode_matcher.core.config_manager import ConfigManager
-from mkv_episode_matcher.core.engine import CacheManager, MatchEngineV2
-from mkv_episode_matcher.core.models import Config, EpisodeInfo, MatchResult
+from mkv_episode_matcher.core.engine import (
+    CacheManager,
+    MatchEngineV2,
+    remap_subtitle_season,
+)
+from mkv_episode_matcher.core.models import (
+    Config,
+    EpisodeInfo,
+    MatchResult,
+    SubtitleFile,
+)
+
+
+def test_remap_subtitle_season_copies_without_mutating_cache(tmp_path):
+    original = SubtitleFile(
+        path=tmp_path / "global-S05E07.srt",
+        episode_info=EpisodeInfo(
+            series_name="DreamWorks Dragons",
+            season=5,
+            episode=7,
+        ),
+    )
+
+    remapped = remap_subtitle_season([original], 3)
+
+    assert remapped[0].episode_info.season == 3
+    assert remapped[0].episode_info.episode == 7
+    assert original.episode_info.season == 5
+
+
+@patch("mkv_episode_matcher.core.engine.get_asr_provider")
+def test_known_season_match_uses_alternate_release_failover(mock_asr, tmp_path):
+    mock_asr.return_value = Mock()
+    engine = MatchEngineV2(Config(cache_dir=tmp_path / "cache", sub_provider="local"))
+    video = tmp_path / "title.mkv"
+    video.touch()
+    broadcast = SubtitleFile(
+        path=tmp_path / "broadcast.srt",
+        episode_info=EpisodeInfo(
+            series_name="The Office", season=7, episode=20, title="Training Day"
+        ),
+        release_profile="superfan",
+        release_match="compatible",
+    )
+    superfan = SubtitleFile(
+        path=tmp_path / "superfan.srt",
+        episode_info=EpisodeInfo(
+            series_name="The Office", season=7, episode=20, title="Training Day"
+        ),
+        release_profile="superfan",
+        release_match="exact",
+    )
+
+    class _Provider:
+        alternate_calls = 0
+
+        def get_subtitles(self, *_args):
+            return [broadcast]
+
+        def get_alternate_subtitles(self, *_args):
+            self.alternate_calls += 1
+            return [superfan]
+
+    class _Matcher:
+        def __init__(self):
+            self.reference_sets = []
+            self.last_decision_trace = {}
+
+        def match(self, selected, references, **_kwargs):
+            self.reference_sets.append(tuple(item.path.name for item in references))
+            matched = any(item.path == superfan.path for item in references)
+            self.last_decision_trace = {
+                "schema_version": 1,
+                "reason": "segment_vote_winner" if matched else "no_candidate",
+                "reference_variant_count": len(references),
+                "segments": [],
+            }
+            if not matched:
+                return None
+            return MatchResult(
+                episode_info=superfan.episode_info,
+                confidence=0.91,
+                matched_file=selected,
+                matched_time=30.0,
+                model_name="synthetic",
+                subtitle_release_name="Superfan",
+                subtitle_release_match="exact",
+            )
+
+    provider = _Provider()
+    matcher = _Matcher()
+    engine.subtitle_provider = provider
+    engine.matcher = matcher
+
+    results, failures = engine.process_path(
+        video,
+        season_override=7,
+        show_name_override="The Office Superfan Episodes",
+        files_override=[video],
+        dry_run=True,
+        json_output=True,
+    )
+
+    assert failures == []
+    assert len(results) == 1
+    assert provider.alternate_calls == 1
+    assert matcher.reference_sets == [
+        ("broadcast.srt",),
+        ("broadcast.srt", "superfan.srt"),
+    ]
+    assert results[0].decision_trace["subtitle_reference_pass"] == (
+        "alternate-release-failover"
+    )
+    assert results[0].decision_trace["alternate_reference_variant_count"] == 1
 
 
 class TestCacheManager:
@@ -67,10 +179,11 @@ class TestConfigManagerV2:
             assert config_path.exists()
             assert config.asr_provider == "whisper"
 
-    def test_config_save_load(self):
+    def test_config_save_load(self, monkeypatch):
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_path = Path(tmp_dir) / "config.json"
             cm = ConfigManager(config_path)
+            monkeypatch.setenv("TMDB_API_KEY", "environment-key")
 
             # Create custom config
             config = Config(
@@ -82,7 +195,8 @@ class TestConfigManagerV2:
 
             assert loaded_config.asr_provider == "whisper"
             assert loaded_config.min_confidence == 0.8
-            assert loaded_config.tmdb_api_key == "test_key"
+            assert loaded_config.tmdb_api_key == "environment-key"
+            assert "test_key" not in config_path.read_text(encoding="utf-8")
 
     def test_legacy_config_migration(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -105,8 +219,7 @@ class TestConfigManagerV2:
             cm = ConfigManager(config_path)
             config = cm.load()
 
-            assert config.tmdb_api_key == "legacy_key"
-            assert config.tmdb_api_key == "legacy_key"
+            assert config.tmdb_api_key is None
             assert str(config.show_dir) == str(show_dir)
 
     def test_invalid_json_handling(self):
@@ -266,6 +379,51 @@ class TestMatchEngineV2:
                 assert isinstance(show_name, str)
                 assert isinstance(season, int)
                 assert len(group_files) > 0
+
+    @patch("mkv_episode_matcher.core.engine.get_asr_provider")
+    def test_group_generic_staging_with_explicit_context(self, mock_asr, tmp_path):
+        """Explicit metadata makes ordinal staging paths matcher-ready."""
+        mock_asr.return_value = Mock()
+        config = Config(cache_dir=tmp_path / "cache", sub_provider="local")
+        engine = MatchEngineV2(config)
+        staged_file = tmp_path / "disc-02" / "title-000" / "A1_t00.mkv"
+        staged_file.parent.mkdir(parents=True)
+        staged_file.touch()
+
+        groups = engine._group_files_by_series(
+            [staged_file],
+            season_override=1,
+            show_name_override="  Dragons:  Race to the Edge  ",
+        )
+
+        assert groups == {("Dragons: Race to the Edge", 1): [staged_file]}
+
+    @patch("mkv_episode_matcher.core.engine.get_asr_provider")
+    def test_detects_context_above_isolated_disc_staging(
+        self,
+        mock_asr,
+        tmp_path,
+    ):
+        """Safe nested rip folders still inherit Show/Season context."""
+        mock_asr.return_value = Mock()
+        config = Config(cache_dir=tmp_path / "cache", sub_provider="local")
+        engine = MatchEngineV2(config)
+        staged_file = (
+            tmp_path
+            / "TV Shows"
+            / "Dragons Race to the Edge"
+            / "Season 01"
+            / "Disc 02 [disc-02]"
+            / "title-000"
+            / "A1_t00.mkv"
+        )
+        staged_file.parent.mkdir(parents=True)
+        staged_file.touch()
+
+        assert engine._detect_context(staged_file) == (
+            "Dragons Race to the Edge",
+            1,
+        )
 
 
 class TestIntegrationUseCases:
@@ -455,8 +613,12 @@ class TestIntegrationUseCases:
             test_file.touch()
 
             # Mock subtitle availability
-            mock_dependencies["local"].return_value.get_subtitles.return_value = [Mock()]
-            mock_dependencies["opensubtitles"].return_value.get_subtitles.return_value = [Mock()]
+            mock_dependencies["local"].return_value.get_subtitles.return_value = [
+                Mock()
+            ]
+            mock_dependencies[
+                "opensubtitles"
+            ].return_value.get_subtitles.return_value = [Mock()]
 
             # Process with manual TMDB ID to override show detection
             results, _ = engine.process_path(test_file, tmdb_id=549, dry_run=True)
@@ -464,10 +626,14 @@ class TestIntegrationUseCases:
             # Verify tmdb_id was passed to subtitle providers
             # Check if get_subtitles was called on any provider
             local_called = mock_dependencies["local"].return_value.get_subtitles.called
-            os_called = mock_dependencies["opensubtitles"].return_value.get_subtitles.called
+            os_called = mock_dependencies[
+                "opensubtitles"
+            ].return_value.get_subtitles.called
 
             if local_called:
-                call_args = mock_dependencies["local"].return_value.get_subtitles.call_args
+                call_args = mock_dependencies[
+                    "local"
+                ].return_value.get_subtitles.call_args
                 # Verify tmdb_id parameter was passed
                 assert call_args is not None
                 # Check if tmdb_id is in kwargs

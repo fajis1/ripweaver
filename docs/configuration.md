@@ -201,3 +201,39 @@ For cache directory issues:
 1. Ensure write permissions to cache directory
 2. Try custom cache directory: `--cache-dir "/writable/path"`
 3. Check disk space availability
+
+## RipWeaver Catalogue
+
+The community catalogue is optional and disabled by default. Enable it in the
+Web UI and keep the server URL at `https://api.ripweaver.com` unless testing a
+loopback development server. On first use, RipWeaver registers a pseudonymous
+installation and stores the returned bearer token only in the ignored local
+`.env` as `RIPWEAVER_CATALOGUE_TOKEN`; API responses and JSON configuration
+never expose or persist the token.
+
+Lookups send only the compatibility disc identifier derived from disc file
+names and sizes. Media, paths, drive details, Jellyfin locations, transcripts,
+screenshots, and command output are not uploaded. Ten successful uncached
+automatic disc resolutions are free each UTC month. Accepted contributions and
+support can add non-expiring credits. When automatic credits are exhausted,
+the disc remains in review until the person explicitly continues the lookup
+manually or chooses support; it is never a hard paywall.
+
+Matched-disc contributions require a second, separately disabled setting:
+`Share matched disc layouts`. Enabling it is standing consent for future
+completed layouts. RipWeaver keeps a private local snapshot while matching and
+does not create a public payload until every selected title has a durable
+outcome. The payload contains the compatibility hash, media type, playlist and
+segment identifiers, durations, sizes, classifications, matched episode/movie
+or extra names, and evidence provenance. It does not contain the private local
+fingerprint, files, filesystem paths, Jellyfin state, drive identity, or
+credentials. Failed sends remain in a private retryable outbox.
+
+Consensus is title-by-title. Two independent installations must submit the same
+structure and assignment with a strict lead before a title becomes automatic.
+One vote is only a candidate; ties remain in review. Confirmed titles from a
+mostly agreed disc can be used while disputed bonus items continue through local
+matching. If local matching is confused, a single catalogue candidate can be
+shown as a review hint, but it is never applied automatically. Any layout that
+used such server assistance cannot vote toward consensus or earn contribution
+credit.

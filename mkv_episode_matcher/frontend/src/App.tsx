@@ -4,6 +4,13 @@ import FileBrowser from './components/FileBrowser';
 import FileReviewGrid from './components/FileReviewGrid';
 import SettingsView from './components/SettingsView';
 import OnboardingModal from './components/OnboardingModal';
+import RipPipelineView from './components/RipPipelineView';
+import RecentActivityView from './components/RecentActivityView';
+import LogsView from './components/LogsView';
+import SystemCleanupView from './components/SystemCleanupView';
+import JellyfinCleanupPanel from './components/JellyfinCleanupPanel';
+import ExpiredSourceCleanupModal from './components/ExpiredSourceCleanupModal';
+import LibraryEpisodeRepairView from './components/LibraryEpisodeRepairView';
 
 interface ScannedFile {
   path: string;
@@ -26,7 +33,10 @@ interface JobStatus {
   status: 'pending' | 'processing' | 'completed' | 'failed' | 'not_found';
   results?: JobResult[];
   failures?: string[];
+  play_all_aggregates?: { file: string; component_episode_ids: string[]; duration_ratio: number; size_ratio: number | null }[];
   error?: string;
+  error_type?: 'credential' | 'service';
+  credential_url?: string;
   progress?: { current: number; total: number; filename: string };
   phase?: { name: string; message: string };
 }
@@ -34,14 +44,19 @@ interface JobStatus {
 type WorkflowState = 'IDLE' | 'SCANNING' | 'REVIEW' | 'PROCESSING' | 'DONE';
 
 function App() {
-  const [currentView, setCurrentView] = useState('dashboard');
+  // Disc processing is the primary workflow. The legacy folder matcher remains
+  // available from the Library Scan navigation item.
+  const [currentView, setCurrentView] = useState('rip-pipeline');
   const [workflowState, setWorkflowState] = useState<WorkflowState>('IDLE');
   const [scannedFiles, setScannedFiles] = useState<ScannedFile[]>([]);
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
+  const [unmatchedSeriesName, setUnmatchedSeriesName] = useState('');
+  const [smartGeminiFallback, setSmartGeminiFallback] = useState(false);
   const [systemStatus, setSystemStatus] = useState({ status: 'loading', model_loaded: false, version: '...' });
   const [activityLog, setActivityLog] = useState<{ time: string, message: string, type: 'info' | 'success' | 'warning' }[]>([]);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [libraryMode, setLibraryMode] = useState<'standard' | 'repair'>('standard');
 
   // Check if onboarding is needed
   useEffect(() => {
@@ -63,22 +78,41 @@ function App() {
 
   // Poll system status
   useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    const schedule = () => {
+      if (!cancelled && document.visibilityState !== 'hidden') {
+        timer = window.setTimeout(checkStatus, 5000);
+      }
+    };
     const checkStatus = async () => {
+      if (cancelled || document.visibilityState === 'hidden') return;
       try {
         const res = await fetch('/system/status');
+        if (cancelled) return;
         if (res.ok) {
           const data = await res.json();
-          setSystemStatus(data);
+          if (!cancelled) setSystemStatus(data);
         } else {
           setSystemStatus(prev => ({ ...prev, status: 'error' }));
         }
       } catch {
-        setSystemStatus(prev => ({ ...prev, status: 'error' }));
+        if (!cancelled) setSystemStatus(prev => ({ ...prev, status: 'error' }));
+      } finally {
+        schedule();
       }
     };
-    checkStatus();
-    const interval = setInterval(checkStatus, 5000);
-    return () => clearInterval(interval);
+    const handleVisibility = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      if (document.visibilityState === 'visible') void checkStatus();
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    void checkStatus();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
   }, []);
 
   // Handlers
@@ -99,6 +133,8 @@ function App() {
       // Filter out already-processed files by default
       const unprocessedFiles = data.files.filter((f: ScannedFile) => !f.is_processed);
       setScannedFiles(unprocessedFiles);
+      const suggestedSeries = unprocessedFiles.find((file: ScannedFile) => file.series)?.series;
+      setUnmatchedSeriesName(suggestedSeries || '');
       setWorkflowState('REVIEW');
     } catch (err) {
       console.error(err);
@@ -122,6 +158,80 @@ function App() {
     } catch (err) {
       console.error(err);
       alert('Failed to start matching');
+      setWorkflowState('REVIEW');
+    }
+  };
+
+  const handleStartUnmatchedMatch = async () => {
+    const seriesName = unmatchedSeriesName.trim();
+    if (!seriesName) {
+      alert('Enter the canonical TV series name before starting unmatched analysis.');
+      return;
+    }
+    if (scannedFiles.length < 1) {
+      alert('Select at least one MKV file for unmatched analysis.');
+      return;
+    }
+    if (!window.confirm(`Read audio from ${scannedFiles.length} selected MKVs and look up the aired episode catalogue for “${seriesName}”? Files will be preserved and will not be renamed, moved, deleted, or transcoded.`)) return;
+    setWorkflowState('PROCESSING');
+    setJobStatus(null);
+    try {
+      const res = await fetch('/match/start-unmatched', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          files: scannedFiles.map(file => file.path),
+          series_name: seriesName,
+          confirm_media_read: true,
+          confirm_provider_lookup: true,
+          confirm_external_fallback: false,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Unmatched analysis could not be started.');
+      setActivityLog([{ time: new Date().toLocaleTimeString(), message: `Started all-season analysis for ${data.item_count} verified MKV(s).`, type: 'info' }]);
+      setWorkflowState('DONE');
+      setCurrentView('pipeline-queue');
+    } catch (err) {
+      console.error(err);
+      alert(err instanceof Error ? err.message : 'Unmatched analysis could not be started.');
+      setWorkflowState('REVIEW');
+    }
+  };
+
+  const handleStartSmartPipeline = async () => {
+    if (scannedFiles.length === 0) return;
+    const reviewedName = unmatchedSeriesName.trim();
+    const externalText = smartGeminiFallback
+      ? ' If local analysis is ambiguous, bounded transcript excerpts and candidate metadata may be sent to Gemini.'
+      : ' Ambiguous movie or extras results will remain held for review without Gemini.';
+    if (!window.confirm(`Inspect metadata and short audio evidence from ${scannedFiles.length} selected MKV(s), classify the folder, and admit it to the durable pipeline?${externalText} Files will not be renamed, moved, deleted, or transcoded by this preparation action.`)) return;
+    setWorkflowState('PROCESSING');
+    setJobStatus(null);
+    try {
+      const response = await fetch('/match/start-smart-folder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          files: scannedFiles.map(file => file.path),
+          series_name: reviewedName || null,
+          content_hint: null,
+          confirm_media_read: true,
+          confirm_provider_lookup: true,
+          confirm_external_fallback: smartGeminiFallback,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : 'Smart pipeline preparation failed.');
+      setActivityLog([{
+        time: new Date().toLocaleTimeString(),
+        message: `Classified ${payload.item_count} MKV(s) as ${payload.classification}: ${payload.classification_reason}.`,
+        type: 'info',
+      }]);
+      setWorkflowState('DONE');
+      setCurrentView('pipeline-queue');
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Smart pipeline preparation failed.');
       setWorkflowState('REVIEW');
     }
   };
@@ -169,12 +279,18 @@ function App() {
             setJobStatus({
               status: 'completed',
               results: msg.results,
-              failures: msg.failures
+              failures: msg.failures,
+              play_all_aggregates: msg.play_all_aggregates,
             });
             setActivityLog(prev => [...prev.slice(-50), { time: timestamp, message: `✅ Completed! ${msg.results?.length || 0} matched, ${msg.failures?.length || 0} failed`, type: 'success' }]);
           }
           else if (msg.type === 'job_failed' && msg.job_id === jobId) {
-            setJobStatus({ status: 'failed', error: msg.error });
+            setJobStatus({
+              status: 'failed',
+              error: msg.error,
+              error_type: msg.error_type,
+              credential_url: msg.credential_url
+            });
             setActivityLog(prev => [...prev.slice(-50), { time: timestamp, message: `❌ Failed: ${msg.error}`, type: 'warning' }]);
           }
           else if (msg.type === 'phase_update' && msg.job_id === jobId) {
@@ -205,8 +321,32 @@ function App() {
   // Render content based on view
   // Render content based on view
   const renderContent = () => {
+    if (currentView === 'rip-pipeline') {
+      return <RipPipelineView onOpenSettings={() => setCurrentView('settings')} />;
+    }
+
+    if (currentView === 'pipeline-queue') {
+      return <RipPipelineView queueOnly onOpenSettings={() => setCurrentView('settings')} onOpenDashboard={() => setCurrentView('rip-pipeline')} />;
+    }
+
+    if (currentView === 'pipeline-errors') {
+      return <RipPipelineView attentionOnly onOpenSettings={() => setCurrentView('settings')} onOpenDashboard={() => setCurrentView('rip-pipeline')} />;
+    }
+
     if (currentView === 'settings') {
       return <SettingsView />;
+    }
+
+    if (currentView === 'recent-activity') {
+      return <RecentActivityView onOpenDashboard={() => setCurrentView('rip-pipeline')} />;
+    }
+
+    if (currentView === 'logs') {
+      return <LogsView />;
+    }
+
+    if (currentView === 'system-cleanup') {
+      return <><JellyfinCleanupPanel /><SystemCleanupView /></>;
     }
 
     if (currentView === 'help') {
@@ -238,9 +378,22 @@ function App() {
                 <p className="text-sm text-muted">Start the process. The AI will listen to the audio, find the episode, and rename the file.</p>
               </div>
             </div>
+            <div className="mt-8 border-t border-[var(--border-color)] pt-6">
+              <h3 className="text-xl font-bold text-white">Credits &amp; Attributions</h3>
+              <a href="https://www.themoviedb.org" target="_blank" rel="noopener noreferrer" className="mt-4 inline-block">
+                <img src="https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg" alt="TMDB" className="h-16 w-auto" />
+              </a>
+              <p className="mt-3 text-sm text-[var(--text-muted)]">This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
+              <p className="mt-3 text-sm text-[var(--text-muted)]">RipWeaver is based on MKV Episode Matcher by Jonathan Sakkos and incorporates selected ideas or adapted behavior from Riplex by AnyCredit5518. It can use independent OpenSubtitles.com and Google Gemini services and user-installed MakeMKV, HandBrake, FFmpeg, and Jellyfin tools.</p>
+              <p className="mt-3 text-sm"><a className="text-blue-300 hover:underline" href="https://github.com/fajis1/ripweaver/blob/main/THIRD_PARTY_NOTICES.md" target="_blank" rel="noopener noreferrer">Third-party notices and license details</a></p>
+            </div>
           </div>
         </div>
       );
+    }
+
+    if (currentView === 'dashboard' && libraryMode === 'repair') {
+      return <LibraryEpisodeRepairView onBackToStandard={() => setLibraryMode('standard')} />;
     }
 
     // DASHBOARD VIEW
@@ -265,15 +418,49 @@ function App() {
           </div>
 
           <div className="flex gap-3">
+            {workflowState === 'IDLE' && (
+              <button className="btn btn-secondary" onClick={() => setLibraryMode('repair')}>
+                Verify existing episode names
+              </button>
+            )}
             {workflowState === 'REVIEW' && (
               <>
                 <button className="btn btn-secondary" onClick={resetWorkflow}>Cancel</button>
+                <button
+                  className="btn btn-primary"
+                  onClick={handleStartSmartPipeline}
+                  disabled={scannedFiles.length === 0}
+                >
+                  Prepare smart pipeline
+                </button>
+                <label className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
+                  <input
+                    type="checkbox"
+                    checked={smartGeminiFallback}
+                    onChange={event => setSmartGeminiFallback(event.target.checked)}
+                  />
+                  Use Gemini fallback
+                </label>
                 <button
                   className="btn btn-primary"
                   onClick={handleStartMatch}
                   disabled={scannedFiles.length === 0}
                 >
                   Start Matching ✨
+                </button>
+                <input
+                  className="input"
+                  value={unmatchedSeriesName}
+                  onChange={event => setUnmatchedSeriesName(event.target.value)}
+                  placeholder="Canonical series name"
+                  aria-label="Canonical series name for unmatched analysis"
+                />
+                <button
+                  className="btn btn-secondary"
+                  onClick={handleStartUnmatchedMatch}
+                  disabled={scannedFiles.length < 1}
+                >
+                  Analyze as Unmatched TV
                 </button>
               </>
             )}
@@ -317,12 +504,9 @@ function App() {
               <div className="flex-shrink-0 p-4 bg-[var(--bg-tertiary)]/50 rounded-xl border border-[var(--border-color)] mb-4">
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-4">
-                    <div className={`w-3 h-3 rounded-full 
-                       ${jobStatus?.status === 'completed' ? 'bg-green-500' :
-                        jobStatus?.status === 'processing' ? 'bg-indigo-500 animate-pulse' :
-                          jobStatus?.status === 'failed' ? 'bg-red-500' : 'bg-gray-500'}
-                       ring-4 ring-white/5
-                     `}></div>
+                    <div className={`w-3 h-3 rounded-full ${jobStatus?.status === 'completed' ? 'bg-green-500' :
+                      jobStatus?.status === 'processing' ? 'bg-indigo-500 animate-pulse' :
+                        jobStatus?.status === 'failed' ? 'bg-red-500' : 'bg-gray-500'} ring-4 ring-white/5`}></div>
                     <div>
                       <div className="font-bold text-white text-sm uppercase tracking-wider">
                         {jobStatus?.status || 'INITIALIZING'}
@@ -362,6 +546,33 @@ function App() {
 
               {/* Results List */}
               <div className="flex-1 overflow-auto space-y-3 pr-2">
+                {jobStatus?.status === 'failed' && (
+                  <div className="p-5 bg-red-500/10 rounded-xl border border-red-500/20">
+                    <div className="text-red-300 font-bold">Matching stopped safely</div>
+                    <div className="text-sm text-red-200/80 mt-2">{jobStatus.error}</div>
+                    {jobStatus.error_type === 'credential' && (
+                      <div className="flex flex-wrap gap-3 mt-4">
+                        <button
+                          className="btn btn-primary"
+                          onClick={() => setCurrentView('settings')}
+                        >
+                          Paste replacement key
+                        </button>
+                        {jobStatus.credential_url && (
+                          <a
+                            className="btn btn-secondary"
+                            href={jobStatus.credential_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            Get or manage key
+                          </a>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {jobStatus?.results?.map((res, idx) => (
                   <div key={idx} className="group p-4 bg-[var(--bg-tertiary)]/30 hover:bg-[var(--bg-tertiary)]/60 rounded-xl border border-[var(--border-color)] hover:border-[var(--accent-primary)]/30 transition-all">
                     <div className="flex justify-between items-start">
@@ -388,6 +599,18 @@ function App() {
                           {res.original_file.split(/[/\\]/).pop()}
                         </div>
                       </div>
+                    </div>
+                  </div>
+                ))}
+
+                {jobStatus?.play_all_aggregates?.map((aggregate, idx) => (
+                  <div key={`play-all-${idx}`} className="p-4 bg-amber-500/10 rounded-xl border border-amber-500/30">
+                    <div className="text-amber-200 font-bold">Likely play-all aggregate</div>
+                    <div className="text-sm text-amber-100/80 mt-1">
+                      {aggregate.file.split(/[/\\\\]/).pop()} was excluded from failures because it matches {aggregate.component_episode_ids.join(', ')}.
+                    </div>
+                    <div className="text-xs text-amber-100/70 mt-2">
+                      Runtime ratio: {aggregate.duration_ratio.toFixed(3)}{aggregate.size_ratio === null ? '' : ` · Size ratio: ${aggregate.size_ratio.toFixed(3)}`}. The file was preserved and not renamed.
                     </div>
                   </div>
                 ))}
@@ -458,6 +681,7 @@ function App() {
           onSkip={() => setShowOnboarding(false)}
         />
       )}
+      {!showOnboarding && <ExpiredSourceCleanupModal />}
       <Layout currentView={currentView} onNavigate={setCurrentView} systemStatus={systemStatus}>
         {renderContent()}
       </Layout>

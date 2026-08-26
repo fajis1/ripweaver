@@ -58,7 +58,8 @@ class TestFetchShowDetails:
         mock_get.assert_called_once()
         call_url = mock_get.call_args[0][0]
         assert "549" in call_url
-        assert "test_api_key" in call_url
+        assert "test_api_key" not in call_url
+        assert mock_get.call_args.kwargs["params"]["api_key"] == "test_api_key"
 
     @patch("mkv_episode_matcher.tmdb_client.requests.get")
     @patch("mkv_episode_matcher.tmdb_client.get_config_manager")
@@ -71,9 +72,7 @@ class TestFetchShowDetails:
 
         # Mock 404 response
         mock_response = Mock()
-        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError(
-            "404 Not Found"
-        )
+        mock_response.status_code = 404
         mock_get.return_value = mock_response
 
         # Call function
@@ -90,11 +89,10 @@ class TestFetchShowDetails:
         mock_config.tmdb_api_key = None
         mock_config_mgr.return_value.load.return_value = mock_config
 
-        # Call function
-        result = fetch_show_details(549)
+        from mkv_episode_matcher.core.credentials import ApiCredentialError
 
-        # Verify None is returned
-        assert result is None
+        with pytest.raises(ApiCredentialError):
+            fetch_show_details(549)
 
     @patch("mkv_episode_matcher.tmdb_client.requests.get")
     @patch("mkv_episode_matcher.tmdb_client.get_config_manager")
@@ -305,7 +303,8 @@ class TestOpenSubtitlesProviderWithTmdbId:
             # Verify TMDB was called with ID 549
             mock_tmdb_get.assert_called()
             tmdb_url = mock_tmdb_get.call_args[0][0]
-            assert "/tv/549?" in tmdb_url
+            assert tmdb_url.endswith("/tv/549")
+            assert mock_tmdb_get.call_args.kwargs["params"]["api_key"] == "test_api_key"
 
             # CRITICAL ASSERTION: Verify OpenSubtitles search used TMDB ID 549
             # This ensures we get "Law & Order" results, NOT "Law & Order: SVU"

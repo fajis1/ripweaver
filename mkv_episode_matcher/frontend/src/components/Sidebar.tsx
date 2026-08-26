@@ -12,7 +12,13 @@ interface SidebarProps {
 
 const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, systemStatus }) => {
     const menuItems = [
-        { id: 'dashboard', label: 'Dashboard', icon: '📺' },
+        { id: 'pipeline-errors', label: 'Needs Attention', icon: '!' },
+        { id: 'recent-activity', label: 'Recently Finished', icon: '✓' },
+        { id: 'rip-pipeline', label: 'Disc Dashboard', icon: '💿' },
+        { id: 'pipeline-queue', label: 'Queue', icon: '⏳' },
+        { id: 'dashboard', label: 'Library Scan', icon: '📺' },
+        { id: 'logs', label: 'Logs', icon: '📋' },
+        { id: 'system-cleanup', label: 'System Cleanup', icon: '🧹' },
         { id: 'settings', label: 'Settings', icon: '⚙️' },
         { id: 'help', label: 'Help', icon: '❓' },
     ];
@@ -28,9 +34,21 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, systemStatus
     const statusColor = getStatusColor();
 
     const handleShutdown = async () => {
-        if (confirm('Are you sure you want to shut down the server?')) {
+        try {
+            const statusResponse = await fetch('/system/shutdown/status');
+            if (!statusResponse.ok) throw new Error('Unable to check active work');
+            const activity = await statusResponse.json();
+            const warning = activity.safe_to_shutdown
+                ? 'No active media work was detected. Shut down RipWeaver?'
+                : `${activity.active_count} operation(s) are still active. Shutting down now will interrupt them. Downstream work will be requeued after restart; an interrupted physical rip will return paused for review.\n\nInterrupt active work and shut down?`;
+            if (!confirm(warning)) return;
             try {
-                await fetch('/system/shutdown', { method: 'POST' });
+                const response = await fetch('/system/shutdown', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ confirm_interrupt: !activity.safe_to_shutdown }),
+                });
+                if (!response.ok) throw new Error('Shutdown was refused');
                 // Force reload/close window or show disconnected state
                 document.body.innerHTML = `
                     <div style="height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #0f172a; color: white; font-family: system-ui, sans-serif;">
@@ -43,17 +61,20 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, systemStatus
                 console.error('Shutdown failed:', err);
                 alert('Failed to shut down server');
             }
+        } catch (err) {
+            console.error('Shutdown status check failed:', err);
+            alert('RipWeaver could not verify whether media work is active. Shutdown was cancelled.');
         }
     };
 
     return (
-        <aside className="w-72 flex-shrink-0 flex flex-col bg-[var(--glass-bg)] backdrop-blur-xl border-r border-[var(--glass-border)]">
+        <aside className="h-full min-h-0 w-72 flex-shrink-0 flex flex-col overflow-x-hidden overflow-y-auto overscroll-contain [scrollbar-gutter:stable] bg-[var(--glass-bg)] backdrop-blur-xl border-r border-[var(--glass-border)]">
             {/* Logo Section */}
             <div className="p-6 border-b border-[var(--border-color)]">
                 <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400">
-                    MKV Matcher
+                    RipWeaver
                 </h1>
-                <p className="text-xs text-[var(--text-muted)] mt-1">Episode Identifier v{systemStatus.version}</p>
+                <p className="text-xs text-[var(--text-muted)] mt-1">Version {systemStatus.version}</p>
             </div>
 
             {/* Navigation */}

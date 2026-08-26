@@ -5,6 +5,90 @@ All notable changes to MKV Episode Matcher are documented here.
 > [!TIP]
 > For the complete changelog history, see [CHANGELOG.md](https://github.com/Jsakkos/mkv-episode-matcher/blob/main/CHANGELOG.md) in the repository.
 
+## Unreleased - 2026-08-11
+
+- Added bounded alternate-release subtitle failover for confidently resolved TV
+  series and seasons. When usable Whisper evidence fails against every normal
+  reference, RipWeaver now searches previously untested Superfan, extended,
+  uncut, unrated, supercut, and director's-cut release aliases and retries only
+  the unresolved titles.
+- Alternate-release matching retains at most two new references per episode,
+  runs at most once per season in an analysis, and keeps the normal two-window,
+  confidence, margin, runtime, one-to-one, residual, and whole-disc coherence
+  requirements. Normal references for the entire season scope are always tried
+  before the failover can run.
+- Added TV-related movie detection before generic bonus-feature naming.
+  Feature-length TV-disc titles now compare bounded, runtime-compatible TMDb
+  movie candidates against ordinary OpenSubtitles movie dialogue. Confident
+  films are routed to the movie library; unmatched items retain the existing
+  provisional Gemini/manual review path.
+- Fixed TV-disc bonus analysis incorrectly discarding a valid Gemini `movie`
+  classification merely because the parent disc had television-series context.
+- Fixed legacy unmatched-disc recovery with a whole-disc retry directly on its
+  Needs Attention cards. The reviewed or inferred canonical series name now
+  overrides stale packaging text, and labels such as Superfan `S1` and `S2-D1`
+  automatically select the correct season.
+- Changed automatic TV-series resolution so a lone inexact TMDb search result
+  is no longer trusted before Gemini. With automatic Gemini fallback enabled,
+  every inexact or packaging-style disc label is reviewed by Gemini and its
+  proposed canonical name is validated through a fresh TMDb search before any
+  user-name prompt appears.
+- Added a configurable retained-original TTL with a 30-day default. The
+  retained-source notices in the dashboard and cleanup views now show the live
+  expiry window from Settings.
+- TTL expiration now opens a guarded cleanup prompt showing the exact file
+  count and size. Users can approve deletion of only those retained originals
+  or durably postpone the prompt for 1, 7, or 30 days; Jellyfin is unaffected.
+- Added extended-edition subtitle matching: every Whisper excerpt now receives
+  a bounded whole-subtitle anchor search, so regular episode subtitles can
+  identify reconstructed cuts even after inserted scenes shift the timeline.
+  Unmatched added-scene excerpts remain neutral once multiple independent
+  regular-dialogue anchors agree.
+- Fixed catalogue-less packaging-label matches so the confirmed Gemini fallback
+  can resolve a canonical series name, validate it through TMDb, and continue
+  into local/OpenSubtitles episode matching.
+- Restored `Play staged rip for review` on Gemini and manual-identification
+  review cards whenever the verified staged source is still available.
+- Fixed automatic HandBrake and Jellyfin placement cards so unattended,
+  collision-free work continues without contradictory manual approval prompts.
+- Added resolution-aware episode coexistence: different versions such as 480p
+  and 1080p can coexist, while exact and same-resolution collisions remain held.
+- Fixed the final local OCR fallback's missing evidence-directory bug, made OCR
+  success/failure visible in the identification trail, and hold likely warning
+  screens or disc menus outside episode matching without deleting them.
+- Fixed organization incorrectly requiring an old ripped source after its
+  verified encode was ready. A missing old source now skips optional archival;
+  an existing but changed source still stops safely.
+- Added a schema-v3 catalogue compatibility handshake and a Settings connection
+  panel showing registration, lookup allowance, contribution outbox, and quorum.
+- Changed matched-layout sharing to cumulative title-level updates. Only durable
+  matches are included, unresolved titles wait locally, and a newer update
+  supersedes older unsent retries for the same disc.
+- Added an explicit review action for single-upload community candidates.
+  Accepted candidates remain `server_assisted`, so they cannot reinforce their
+  own consensus vote or earn contribution credit.
+- Added opt-in, path-free matched-disc contributions with a private retryable
+  outbox and durable match-provenance tracking.
+- Added piecewise community consensus: two independent matching uploads with a
+  strict lead confirm each title, while conflicts hold only affected titles.
+- Added non-authorizing single-upload candidate help after local matching is
+  unable to resolve a title; server-assisted results cannot vote or earn credit.
+- Added partial catalogue lookup handling so confirmed titles can continue while
+  disputed bonus items remain in local review.
+- Added stable hashed Windows optical-device mapping so temporary MakeMKV slot
+  renumbering cannot redirect work to another physical drive.
+- Added a first-run/change-detection wizard with one-click approval for all
+  currently detected intentional drives and exact-snapshot batch saving.
+- Added fail-closed USB identity-change handling, safe similar-device warnings,
+  and retirement of absent old trusted identities.
+- Added a MakeMKV-confirmation guard: a Windows-only provisional slot cannot
+  prepare or rip a disc.
+- Added separately confirmed continuation for loaded discs after drive setup
+  when automatic processing is enabled.
+- Documented exact-device Windows restart, USB/SATA power-cycle recovery, and
+  the remaining loaded-but-Windows-unreadable state distinction in
+  [Windows optical-drive mapping and recovery](WINDOWS_OPTICAL_DRIVE_RECOVERY.md).
+
 ## [1.1.0] - 2026-01-11 - Polish Release ✨
 
 ### 🖥️ UI/UX Improvements

@@ -3,7 +3,17 @@ from pathlib import Path
 
 from loguru import logger
 
+from mkv_episode_matcher.core.environment import load_environment_settings
 from mkv_episode_matcher.core.models import Config
+
+SECRET_CONFIG_FIELDS = {
+    "tmdb_api_key",
+    "open_subtitles_api_key",
+    "open_subtitles_username",
+    "open_subtitles_password",
+    "gemini_primary_api_key",
+    "gemini_paid_api_key",
+}
 
 
 class ConfigManager:
@@ -28,8 +38,25 @@ class ConfigManager:
                 logger.info("Migrating legacy INI config to JSON")
                 data = self._migrate_legacy_config(data)
 
+            persisted_secrets = SECRET_CONFIG_FIELDS.intersection(data)
+            if persisted_secrets:
+                for field in persisted_secrets:
+                    data.pop(field, None)
+                logger.warning(
+                    "Ignored credential fields in JSON configuration. "
+                    "Move them with 'mkv-match credentials'."
+                )
+
+            environment = self._environment_overrides()
+            for key, value in environment.items():
+                # Credentials remain environment-authoritative. Non-secret
+                # tool paths are only environment defaults so a path selected
+                # and saved in the web UI remains stable on the next load.
+                if key in SECRET_CONFIG_FIELDS or key not in data:
+                    data[key] = value
+
             config = Config(**data)
-            logger.debug(f"Config loaded from {self.config_path}")
+            logger.debug("Application configuration loaded")
             return config
 
         except json.JSONDecodeError as e:
@@ -41,11 +68,28 @@ class ConfigManager:
 
     def _create_default_config(self) -> Config:
         """Create default configuration."""
-        config = Config()
+        config = Config(**self._environment_overrides())
         # Auto-save default config
         self.save(config)
         logger.info(f"Created default configuration at {self.config_path}")
         return config
+
+    @staticmethod
+    def _environment_overrides() -> dict[str, str]:
+        environment = load_environment_settings()
+        values = {
+            "tmdb_api_key": environment.tmdb_api_key,
+            "open_subtitles_api_key": environment.opensubtitles_api_key,
+            "open_subtitles_username": environment.opensubtitles_username,
+            "open_subtitles_password": environment.opensubtitles_password,
+            "makemkv_path": environment.makemkv_path,
+            "handbrake_path": environment.handbrake_path,
+            "ffmpeg_path": environment.ffmpeg_path,
+            "ffprobe_path": environment.ffprobe_path,
+            "tesseract_path": environment.tesseract_path,
+            "gemini_model": environment.gemini_model,
+        }
+        return {key: value for key, value in values.items() if value not in (None, "")}
 
     def _migrate_legacy_config(self, legacy_data: dict) -> dict:
         """Migrate legacy INI-style config to new JSON format."""
@@ -60,10 +104,10 @@ class ConfigManager:
             asr_model_name = legacy_config.get("asr_model_name", "small")
 
         migrated = {
-            "tmdb_api_key": legacy_config.get("tmdb_api_key"),
             "show_dir": legacy_config.get("show_dir"),
             "cache_dir": str(Path.home() / ".mkv-episode-matcher" / "cache"),
             "min_confidence": 0.7,
+            "gemini_model": "gemini-3.6-flash",
             "asr_provider": "whisper",
             "asr_model_name": asr_model_name,
             "sub_provider": "opensubtitles",
@@ -83,6 +127,7 @@ class ConfigManager:
 
             # Serialize config to JSON
             config_data = config.model_dump(
+                exclude=SECRET_CONFIG_FIELDS,
                 exclude_none=True,  # Don't save None values
                 by_alias=True,  # Use field aliases if defined
             )

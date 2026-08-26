@@ -36,6 +36,85 @@ from mkv_episode_matcher.core.providers.subtitles import (
 )
 
 
+def remap_subtitle_season(subtitles, target_season: int):
+    """Copy references while translating provider season numbering."""
+
+    remapped = []
+    for subtitle in subtitles:
+        copied = subtitle.model_copy(deep=True)
+        if copied.episode_info is not None:
+            copied.episode_info.season = target_season
+        remapped.append(copied)
+    return remapped
+
+
+def merge_subtitle_references(primary, alternates):
+    """Merge release variants without giving one cached file extra weight."""
+
+    merged = []
+    seen: set[tuple[str, int | None, int | None]] = set()
+    for subtitle in (*primary, *alternates):
+        episode = subtitle.episode_info
+        signature = (
+            str(subtitle.path),
+            episode.season if episode is not None else None,
+            episode.episode if episode is not None else None,
+        )
+        if signature in seen:
+            continue
+        seen.add(signature)
+        merged.append(subtitle)
+    return merged
+
+
+def _release_aware_trace(
+    trace: dict[str, object],
+    references,
+    *,
+    reference_pass: str,
+    initial_reference_count: int,
+    alternate_reference_count: int,
+    alternate_lookup_attempted: bool,
+) -> dict[str, object]:
+    """Attach safe release-failover diagnostics to one matcher decision."""
+
+    finalized = dict(trace)
+    profiles = sorted({
+        subtitle.release_profile
+        for subtitle in references
+        if isinstance(subtitle.release_profile, str) and subtitle.release_profile
+    })
+    finalized.update({
+        "subtitle_reference_pass": reference_pass,
+        "subtitle_release_profile": ",".join(profiles) or "unresolved",
+        "initial_reference_variant_count": initial_reference_count,
+        "alternate_reference_variant_count": alternate_reference_count,
+        "alternate_lookup_attempted": alternate_lookup_attempted,
+    })
+    return finalized
+
+
+def _matcher_decision_trace(matcher: object) -> dict[str, object]:
+    trace = getattr(matcher, "last_decision_trace", None)
+    return dict(trace) if isinstance(trace, dict) else {}
+
+
+def _finalize_engine_decision_trace(
+    trace: dict[str, object],
+    *,
+    confidence_threshold: float,
+    decision: str,
+    reason: str,
+) -> dict[str, object]:
+    finalized = dict(trace)
+    finalized.update({
+        "engine_threshold": round(float(confidence_threshold), 6),
+        "engine_decision": decision,
+        "engine_reason": reason,
+    })
+    return finalized
+
+
 class CacheManager:
     """Enhanced caching system with memory bounds and LRU eviction."""
 
@@ -150,7 +229,9 @@ class MatchEngineV2:
         self.console = Console()
 
         # Initialize ASR provider (singleton pattern for Parakeet optimization)
-        logger.info(f"Initializing ASR provider: {config.asr_provider} with model: {config.asr_model_name}")
+        logger.info(
+            f"Initializing ASR provider: {config.asr_provider} with model: {config.asr_model_name}"
+        )
         self.asr = get_asr_provider(
             model_type=config.asr_provider,
             model_name=config.asr_model_name,
@@ -201,26 +282,33 @@ class MatchEngineV2:
         show_name = None
         season = None
 
-        # Heuristic 1: Standard folder structure (Show/Season X/file.mkv)
+        # Heuristic 1: Standard folder structure. Search ancestors so safe
+        # per-disc/per-title staging can live below Show/Season X.
         try:
-            parent_name = video_file.parent.name
-            if "season" in parent_name.lower():
-                # Extract season number
+            for ancestor in video_file.parents:
+                parent_name = ancestor.name
+                if "season" not in parent_name.lower():
+                    continue
                 s_match = re.search(r"(\d+)", parent_name)
                 if s_match:
                     season = int(s_match.group(1))
-                    show_name = video_file.parent.parent.name
+                    show_name = ancestor.parent.name
+                    break
         except Exception:
             pass
 
-        # Heuristic 2: Season folder with S## pattern
+        # Heuristic 2: Ancestor season folder with an S## pattern.
         if not season:
             try:
-                parent_name = video_file.parent.name
-                s_match = re.search(r"[Ss](\d{1,2})", parent_name)
-                if s_match:
-                    season = int(s_match.group(1))
-                    show_name = video_file.parent.parent.name
+                for ancestor in video_file.parents:
+                    s_match = re.fullmatch(
+                        r"[Ss](\d{1,2})",
+                        ancestor.name,
+                    )
+                    if s_match:
+                        season = int(s_match.group(1))
+                        show_name = ancestor.parent.name
+                        break
             except Exception:
                 pass
 
@@ -274,11 +362,19 @@ class MatchEngineV2:
         return False
 
     def _group_files_by_series(
-        self, files: list[Path], season_override: int | None
+        self,
+        files: list[Path],
+        season_override: int | None,
+        show_name_override: str | None = None,
     ) -> dict[tuple[str, int], list[Path]]:
         """Group files by series and season for batch processing."""
         groups = {}
         skipped = []
+        normalized_show_override = (
+            re.sub(r"\s+", " ", show_name_override).strip()
+            if show_name_override
+            else None
+        )
 
         for video_file in files:
             # Check if file is already processed
@@ -289,6 +385,8 @@ class MatchEngineV2:
 
             show_name, season = self._detect_context(video_file)
 
+            if normalized_show_override:
+                show_name = normalized_show_override
             if season_override:
                 season = season_override
 
@@ -307,7 +405,11 @@ class MatchEngineV2:
         return groups
 
     def _get_subtitles_with_fallback(
-        self, show_name: str, season: int, video_files: list[Path] = None, tmdb_id: int | None = None
+        self,
+        show_name: str,
+        season: int,
+        video_files: list[Path] = None,
+        tmdb_id: int | None = None,
     ):
         """Get subtitles with fallback chain (local -> subliminal)."""
         # Try to get from cache first
@@ -319,7 +421,9 @@ class MatchEngineV2:
 
         # Get subtitles from providers (pass video files for Subliminal)
         logger.info(f"Fetching subtitles for {show_name} S{season:02d}")
-        subs = self.subtitle_provider.get_subtitles(show_name, season, video_files, tmdb_id)
+        subs = self.subtitle_provider.get_subtitles(
+            show_name, season, video_files, tmdb_id
+        )
 
         # Cache results
         if subs:
@@ -331,6 +435,33 @@ class MatchEngineV2:
             logger.warning(f"No subtitles found for {show_name} S{season:02d}")
 
         return subs
+
+    def _get_alternate_subtitles_after_failure(
+        self,
+        show_name: str,
+        season: int,
+        video_files: list[Path],
+        tmdb_id: int | None,
+    ):
+        """Fetch a bounded second release set after normal evidence fails."""
+
+        getter = getattr(self.subtitle_provider, "get_alternate_subtitles", None)
+        if not callable(getter):
+            return []
+        logger.info(
+            "Normal subtitle evidence was inconclusive for {} S{:02d}; "
+            "trying alternate releases",
+            show_name,
+            season,
+        )
+        try:
+            return list(getter(show_name, season, video_files, tmdb_id))
+        except Exception as exc:
+            logger.info(
+                "Alternate subtitle release lookup failed safely: {}",
+                type(exc).__name__,
+            )
+            return []
 
     def _perform_rename(
         self, match: MatchResult, output_dir: Path | None = None
@@ -394,9 +525,11 @@ class MatchEngineV2:
         json_output: bool = False,
         confidence_threshold: float = None,
         tmdb_id: int | None = None,
+        show_name_override: str | None = None,
         progress_callback=None,
         phase_callback=None,
         files_override: list[Path] | None = None,
+        reference_season: int | None = None,
     ) -> tuple[list[MatchResult], list]:
         """
         Process path for MKV files with enhanced workflow and progress tracking.
@@ -410,9 +543,12 @@ class MatchEngineV2:
             json_output: If True, suppress rich console output for JSON mode
             confidence_threshold: Minimum confidence score for matches
             tmdb_id: Manually specify the TMDB Show ID to avoid auto-detection issues
+            show_name_override: Canonical show name for files in staging paths
             progress_callback: Optional callback(current, total)
             files_override: Optional list of specific files to process (skips validation/scanning)
             phase_callback: Optional callback(phase, message) for phase updates
+            reference_season: Provider season to translate to the desired
+                output season
 
         Returns:
             Tuple of (successful matches, failed matches)
@@ -422,7 +558,7 @@ class MatchEngineV2:
 
         results = []
         failures = []
-        
+
         if files_override:
             files = files_override
         else:
@@ -434,7 +570,11 @@ class MatchEngineV2:
             return []
 
         # Group files by series for batch processing
-        file_groups = self._group_files_by_series(files, season_override)
+        file_groups = self._group_files_by_series(
+            files,
+            season_override,
+            show_name_override,
+        )
 
         if not json_output:
             self.console.print(
@@ -443,7 +583,10 @@ class MatchEngineV2:
 
         # Emit phase update for grouping complete
         if phase_callback:
-            phase_callback("grouped", f"Grouped {len(files)} files into {len(file_groups)} series/seasons")
+            phase_callback(
+                "grouped",
+                f"Grouped {len(files)} files into {len(file_groups)} series/seasons",
+            )
 
         # Track total files for progress callback
         total_files = len(files)
@@ -468,10 +611,48 @@ class MatchEngineV2:
 
                 # Emit phase update for subtitle download
                 if phase_callback:
-                    phase_callback("downloading_subtitles", f"Downloading subtitles for {show_name} Season {season}")
+                    phase_callback(
+                        "downloading_subtitles",
+                        f"Downloading subtitles for {show_name} Season {season}",
+                    )
 
                 # Get subtitles for this series/season (pass video files for Subliminal)
-                subs = self._get_subtitles_with_fallback(show_name, season, group_files, tmdb_id)
+                provider_season = reference_season or season
+                initial_subs = list(
+                    self._get_subtitles_with_fallback(
+                        show_name,
+                        provider_season,
+                        group_files,
+                        tmdb_id,
+                    )
+                )
+                if initial_subs and provider_season != season:
+                    logger.info(
+                        "Remapping provider season S{:02d} references to "
+                        "output season S{:02d}",
+                        provider_season,
+                        season,
+                    )
+                    initial_subs = remap_subtitle_season(initial_subs, season)
+
+                alternate_subs = []
+                alternate_lookup_attempted = False
+
+                subs = initial_subs
+                reference_pass = "initial"
+                if not subs:
+                    alternate_lookup_attempted = True
+                    alternate_subs = self._get_alternate_subtitles_after_failure(
+                        show_name,
+                        provider_season,
+                        group_files,
+                        tmdb_id,
+                    )
+                    if alternate_subs and provider_season != season:
+                        alternate_subs = remap_subtitle_season(alternate_subs, season)
+                    subs = alternate_subs
+                    if subs:
+                        reference_pass = "alternate-release-failover"
 
                 if not subs:
                     if not json_output:
@@ -488,6 +669,17 @@ class MatchEngineV2:
                                 reason=f"No subtitles found for {show_name} S{season:02d}",
                                 series_name=show_name,
                                 season=season,
+                                decision_trace={
+                                    "schema_version": 1,
+                                    "policy": "multi_segment_dialogue_v1",
+                                    "engine_threshold": round(
+                                        float(confidence_threshold), 6
+                                    ),
+                                    "engine_decision": "review",
+                                    "engine_reason": "no_subtitle_references",
+                                    "reference_variant_count": 0,
+                                    "segments": [],
+                                },
                             )
                         )
                         files_processed += 1
@@ -499,23 +691,97 @@ class MatchEngineV2:
 
                 # Emit phase update for matching
                 if phase_callback:
-                    phase_callback("matching", f"Matching {len(group_files)} files for {show_name} S{season:02d}")
+                    phase_callback(
+                        "matching",
+                        f"Matching {len(group_files)} files for {show_name} S{season:02d}",
+                    )
 
                 # Process files in this group
                 for video_file in group_files:
                     try:
                         # Emit per-file status
                         if phase_callback:
-                            phase_callback("processing_file", f"🎬 Processing: {video_file.name}")
-                        
-                        match = self.matcher.match(video_file, subs, phase_callback=phase_callback)
+                            phase_callback(
+                                "processing_file", f"🎬 Processing: {video_file.name}"
+                            )
+
+                        match = self.matcher.match(
+                            video_file,
+                            subs,
+                            phase_callback=phase_callback,
+                            acceptance_threshold=confidence_threshold,
+                        )
+                        matcher_trace = _release_aware_trace(
+                            _matcher_decision_trace(self.matcher),
+                            subs,
+                            reference_pass=reference_pass,
+                            initial_reference_count=len(initial_subs),
+                            alternate_reference_count=len(alternate_subs),
+                            alternate_lookup_attempted=alternate_lookup_attempted,
+                        )
+                        if match is not None:
+                            match.decision_trace = dict(matcher_trace)
+                        if (
+                            not (match and match.confidence >= confidence_threshold)
+                            and initial_subs
+                        ):
+                            if not alternate_lookup_attempted:
+                                alternate_lookup_attempted = True
+                                alternate_subs = (
+                                    self._get_alternate_subtitles_after_failure(
+                                        show_name,
+                                        provider_season,
+                                        group_files,
+                                        tmdb_id,
+                                    )
+                                )
+                                if alternate_subs and provider_season != season:
+                                    alternate_subs = remap_subtitle_season(
+                                        alternate_subs, season
+                                    )
+                            combined_subs = merge_subtitle_references(
+                                initial_subs, alternate_subs
+                            )
+                            if len(combined_subs) > len(initial_subs):
+                                initial_reason = matcher_trace.get("engine_reason") or (
+                                    matcher_trace.get("reason")
+                                )
+                                match = self.matcher.match(
+                                    video_file,
+                                    combined_subs,
+                                    phase_callback=phase_callback,
+                                    acceptance_threshold=confidence_threshold,
+                                )
+                                matcher_trace = _release_aware_trace(
+                                    _matcher_decision_trace(self.matcher),
+                                    combined_subs,
+                                    reference_pass="alternate-release-failover",
+                                    initial_reference_count=len(initial_subs),
+                                    alternate_reference_count=len(alternate_subs),
+                                    alternate_lookup_attempted=True,
+                                )
+                                if isinstance(initial_reason, str):
+                                    matcher_trace["initial_engine_reason"] = (
+                                        initial_reason
+                                    )
+                                if match is not None:
+                                    match.decision_trace = dict(matcher_trace)
                         if match and match.confidence >= confidence_threshold:
+                            match.decision_trace = _finalize_engine_decision_trace(
+                                match.decision_trace or matcher_trace,
+                                confidence_threshold=confidence_threshold,
+                                decision="matched",
+                                reason="candidate_met_engine_threshold",
+                            )
                             match.episode_info.series_name = show_name
                             results.append(match)
 
                             # Emit match success
                             if phase_callback:
-                                phase_callback("file_matched", f"✅ {video_file.name} → {match.episode_info.s_e_format} ({match.confidence:.0%})")
+                                phase_callback(
+                                    "file_matched",
+                                    f"✅ {video_file.name} → {match.episode_info.s_e_format} ({match.confidence:.0%})",
+                                )
 
                             if not json_output:
                                 self.console.print(
@@ -546,7 +812,10 @@ class MatchEngineV2:
                             # Emit match failure
                             if phase_callback:
                                 conf_str = f" ({match.confidence:.0%})" if match else ""
-                                phase_callback("file_failed", f"❌ {video_file.name} - No match{conf_str}")
+                                phase_callback(
+                                    "file_failed",
+                                    f"❌ {video_file.name} - No match{conf_str}",
+                                )
 
                             if not json_output:
                                 conf_str = (
@@ -565,17 +834,50 @@ class MatchEngineV2:
                                     confidence=match.confidence if match else 0.0,
                                     series_name=show_name,
                                     season=season,
+                                    decision_trace=_finalize_engine_decision_trace(
+                                        (
+                                            match.decision_trace
+                                            if match is not None
+                                            else matcher_trace
+                                        ),
+                                        confidence_threshold=confidence_threshold,
+                                        decision="review",
+                                        reason=(
+                                            "candidate_below_engine_threshold"
+                                            if match is not None
+                                            else "matcher_returned_no_candidate"
+                                        ),
+                                    ),
                                 )
                             )
 
                     except Exception as e:
-                        logger.error(f"Error processing {video_file}: {e}")
+                        logger.error("Error processing one video: {}", type(e).__name__)
                         if phase_callback:
-                            phase_callback("file_error", f"⚠️ {video_file.name} - Error: {str(e)[:50]}")
+                            phase_callback(
+                                "file_error",
+                                f"⚠️ {video_file.name} - Error: {str(e)[:50]}",
+                            )
                         if not json_output:
                             self.console.print(
                                 f"[red]ERROR[/red] {video_file.name} - Error: {e}"
                             )
+                        from mkv_episode_matcher.core.models import FailedMatch
+
+                        failures.append(
+                            FailedMatch(
+                                original_file=video_file,
+                                reason=f"Matcher error: {type(e).__name__}",
+                                series_name=show_name,
+                                season=season,
+                                decision_trace=_finalize_engine_decision_trace(
+                                    _matcher_decision_trace(self.matcher),
+                                    confidence_threshold=confidence_threshold,
+                                    decision="review",
+                                    reason="matcher_exception",
+                                ),
+                            )
+                        )
 
                     # Update progress after each file
                     files_processed += 1
