@@ -23,3 +23,6 @@ mkv_episode_matcher.egg-info
 /tmp_run_*.out
 /tmp_run_*.ps1
 /mkv_episode_matcher/frontend/mkv_episode_matcher/
+
+# Local research and future-planning notes; intentionally not published.
+/docs/ARM_INSPIRED_ROADMAP.md
