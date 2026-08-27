@@ -5336,7 +5336,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                 return (
                   <details key={group.key} className="overflow-hidden rounded-xl border border-amber-400/30 bg-amber-500/5">
                     <summary className="cursor-pointer px-4 py-4 text-amber-50 marker:text-amber-300 hover:bg-amber-500/10">
-                      <div className="ml-2 inline-flex w-[calc(100%-1rem)] flex-wrap items-center justify-between gap-3 align-middle">
+                      <div className="ml-2 inline-flex w-[calc(100%_-_1rem)] flex-wrap items-center justify-between gap-3 align-middle">
                         <div>
                           <div className="font-bold text-white">{group.label}</div>
                           <div className="mt-1 text-xs text-[var(--text-muted)]">{group.recordLabel} · {group.titleLabel}</div>
