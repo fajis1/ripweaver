@@ -2,9 +2,11 @@ import hashlib
 import json
 import shutil
 import string
+import threading
+import time
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from loguru import logger
 
 from mkv_episode_matcher import __version__
@@ -551,13 +553,8 @@ def shutdown_status():
 
 
 @router.post("/shutdown")
-def shutdown_server(payload: dict | None = None):
+def shutdown_server(request: Request, payload: dict | None = None):
     """Shutdown the application server."""
-    import os
-    import signal
-    import threading
-    import time
-
     activity = _shutdown_activity()
     if not activity["safe_to_shutdown"] and not (payload or {}).get(
         "confirm_interrupt"
@@ -570,10 +567,27 @@ def shutdown_server(payload: dict | None = None):
             },
         )
 
-    def kill_server():
-        time.sleep(1)
-        os.kill(os.getpid(), signal.SIGTERM)
+    request_shutdown = getattr(request.app.state, "request_server_shutdown", None)
+    if not callable(request_shutdown):
+        raise HTTPException(
+            status_code=503,
+            detail="The server shutdown controller is unavailable",
+        )
 
-    # Schedule shutdown in a separate thread to allow response to return
-    threading.Thread(target=kill_server).start()
+    def stop_server():
+        time.sleep(1)
+        try:
+            request_shutdown()
+        except Exception as error:
+            logger.error(
+                "Graceful server shutdown request failed: {}",
+                type(error).__name__,
+            )
+
+    # Return the HTTP response before asking Uvicorn to stop accepting requests.
+    threading.Thread(
+        target=stop_server,
+        name="ripweaver-server-shutdown",
+        daemon=True,
+    ).start()
     return {"status": "shutting_down", "interrupted_work": activity["active_count"]}

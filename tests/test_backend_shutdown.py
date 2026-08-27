@@ -4,6 +4,7 @@ import threading
 from types import SimpleNamespace
 
 from mkv_episode_matcher.backend import automatic_rip, main
+from mkv_episode_matcher.backend.routers import system
 from mkv_episode_matcher.cli import serve
 from mkv_episode_matcher.disc.makemkv_process_control import (
     SupervisedShutdownResult,
@@ -163,10 +164,26 @@ def test_held_review_startup_skips_unattended_workers(tmp_path, monkeypatch):
 def test_cli_serve_bounds_graceful_shutdown_before_child_settlement(monkeypatch):
     calls = []
 
-    def run(application, **kwargs):
-        calls.append((application, kwargs))
+    class Config:
+        def __init__(self, application, **kwargs):
+            self.application = application
+            self.kwargs = kwargs
 
-    monkeypatch.setitem(sys.modules, "uvicorn", SimpleNamespace(run=run))
+    class Server:
+        def __init__(self, config):
+            self.config = config
+            self.should_exit = False
+
+        def run(self):
+            calls.append((self.config.application, self.config.kwargs))
+            self.config.application.state.request_server_shutdown()
+            assert self.should_exit is True
+
+    monkeypatch.setitem(
+        sys.modules,
+        "uvicorn",
+        SimpleNamespace(Config=Config, Server=Server),
+    )
 
     serve(
         port=8765,
@@ -185,3 +202,36 @@ def test_cli_serve_bounds_graceful_shutdown_before_child_settlement(monkeypatch)
             },
         )
     ]
+    assert not hasattr(main.app.state, "request_server_shutdown")
+
+
+def test_shutdown_route_requests_registered_graceful_exit(monkeypatch):
+    requested = []
+
+    class ImmediateThread:
+        def __init__(self, *, target, name, daemon):
+            self.target = target
+            assert name == "ripweaver-server-shutdown"
+            assert daemon is True
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(
+        system,
+        "_shutdown_activity",
+        lambda: {"safe_to_shutdown": True, "active_count": 0},
+    )
+    monkeypatch.setattr(system.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(system.time, "sleep", lambda *_args: None)
+    main.app.state.request_server_shutdown = lambda: requested.append(True)
+    try:
+        result = system.shutdown_server(
+            SimpleNamespace(app=main.app),
+            payload={},
+        )
+    finally:
+        del main.app.state.request_server_shutdown
+
+    assert result == {"status": "shutting_down", "interrupted_work": 0}
+    assert requested == [True]
