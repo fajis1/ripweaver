@@ -418,6 +418,57 @@ interface PipelineQueue {
   }>;
 }
 
+interface AttentionDiscGroup {
+  key: string;
+  label: string;
+  recordLabel: string;
+  items: PipelineQueueItem[];
+  identificationCount: number;
+  failedCount: number;
+  titleLabel: string;
+  updatedAt: number;
+}
+
+const attentionDiscGroups = (items: PipelineQueueItem[]): AttentionDiscGroup[] => {
+  const grouped = items.reduce((groups, item) => {
+    const key = item.disc_fingerprint || `untracked:${item.media_id}`;
+    const existing = groups.get(key);
+    if (existing) existing.push(item);
+    else groups.set(key, [item]);
+    return groups;
+  }, new Map<string, PipelineQueueItem[]>());
+
+  return Array.from(grouped.entries()).map(([key, discItems], index) => {
+    const seriesNames = Array.from(new Set(discItems.flatMap((item) => {
+      const seriesName = item.series_name?.trim() || item.catalogue_candidate_help?.series_name.trim();
+      return seriesName ? [seriesName] : [];
+    })));
+    const titleIndexes = Array.from(new Set(discItems.flatMap((item) => (
+      typeof item.title_index === 'number' ? [item.title_index] : []
+    )))).sort((left, right) => left - right);
+    const titleLabel = titleIndexes.length === 0
+      ? `${discItems.length} item${discItems.length === 1 ? '' : 's'}`
+      : titleIndexes.length === 1
+        ? `Title ${titleIndexes[0]}`
+        : `Titles ${titleIndexes[0]}–${titleIndexes[titleIndexes.length - 1]}`;
+    const label = seriesNames.length === 1
+      ? seriesNames[0]
+      : seriesNames.length > 1
+        ? `${seriesNames[0]} + ${seriesNames.length - 1} more`
+        : `Disc needing attention ${index + 1}`;
+    return {
+      key,
+      label,
+      recordLabel: key.startsWith('untracked:') ? 'Disc identity unavailable' : `Disc ${key.slice(0, 8).toUpperCase()}`,
+      items: discItems,
+      identificationCount: discItems.filter((item) => item.stage === 'identify').length,
+      failedCount: discItems.filter((item) => item.state === 'failed').length,
+      titleLabel,
+      updatedAt: Math.max(...discItems.map((item) => Date.parse(item.updated_at) || 0)),
+    };
+  }).sort((left, right) => right.updatedAt - left.updatedAt || left.label.localeCompare(right.label));
+};
+
 const requiresDiscWideTvRecovery = (item: PipelineQueueItem): boolean => {
   const reviewCode = item.review_code || '';
   if (episodeSequenceReviewCodes.has(reviewCode)) return true;
@@ -3055,6 +3106,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
   const visiblePipelineItems = activePipelineItems
     .filter((item) => !showLikelyRemovableOnly || item.likely_removable)
     .sort((left, right) => Number(right.likely_removable) - Number(left.likely_removable));
+  const visibleAttentionDiscGroups = attentionOnly ? attentionDiscGroups(visiblePipelineItems) : [];
   const sequenceRecoveryByDisc = new Map<string, { firstMediaId: string; itemCount: number }>();
   const seriesResolutionRecoveryByDisc = new Map<string, string>();
   for (const item of visiblePipelineItems) {
@@ -4437,9 +4489,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
         <div className="glass-panel rounded-xl p-5 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <div className="font-bold text-white">{attentionOnly ? 'Pipeline errors and review choices' : queueOnly ? 'Downstream queue' : 'Selected disc queue'}</div>
+              <div className="font-bold text-white">{attentionOnly ? 'Discs needing attention' : queueOnly ? 'Downstream queue' : 'Selected disc queue'}</div>
               <div className="text-sm text-[var(--text-muted)]">
-                {attentionOnly ? 'Items that need a decision are collected here without occupying an optical drive or blocking unrelated work.' : 'Each stage handles one item at a time, while unrelated stages may overlap. Identification runs automatically; transcoding and organization use validated automatic or reviewed authorization.'}
+                {attentionOnly ? 'Each disc stays collapsed until you open it. Expand a disc to review only the episode titles and pipeline items from that disc that need help.' : 'Each stage handles one item at a time, while unrelated stages may overlap. Identification runs automatically; transcoding and organization use validated automatic or reviewed authorization.'}
               </div>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -4693,7 +4745,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
               <p>These items are intentionally held. Starting or resuming the queue cannot overwrite or bypass this review. The match was checked against Jellyfin before HandBrake for new work; older jobs that had already encoded remain safely held here.</p>
             </div>
           )}
-          {visiblePipelineItems.some((item) => item.state === 'review_required' && item.review_code !== 'all_season_analysis_running') && (
+          {!attentionOnly && visiblePipelineItems.some((item) => item.state === 'review_required' && item.review_code !== 'all_season_analysis_running') && (
             <div className="rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-sm text-amber-100 space-y-2">
               <div className="font-semibold">Review choices required</div>
               {visiblePipelineItems.some(requiresDiscWideTvRecovery) && (
@@ -4736,11 +4788,24 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
           {visiblePipelineItems.length === 0 ? (
             <div className="text-sm text-[var(--text-muted)]">{showLikelyRemovableOnly ? 'No active items are currently flagged as likely removable.' : attentionOnly ? 'No pipeline errors or review choices need attention.' : queueOnly ? 'No actionable downstream work is waiting. Completed items are available in Recently Finished.' : savedJob?.state === 'queued' ? 'This disc has not produced verified rips yet. Complete the MakeMKV confirmation below; identification will enter this queue automatically after each rip verifies.' : selectedDiscFingerprint ? 'No actionable downstream work belongs to this selected disc. Completed items are available in Recently Finished.' : 'Select a disc to see only its downstream items.'}</div>
           ) : (
-            <div id="pipeline-review-actions" className="divide-y divide-[var(--border-color)] scroll-mt-4">
-              {visiblePipelineItems.map((item) => (
+            <div id="pipeline-review-actions" className={`${attentionOnly ? 'space-y-3' : 'divide-y divide-[var(--border-color)]'} scroll-mt-4`}>
+              {(attentionOnly
+                ? visibleAttentionDiscGroups
+                : [{
+                    key: 'visible-pipeline-items',
+                    label: '',
+                    recordLabel: '',
+                    items: visiblePipelineItems,
+                    identificationCount: 0,
+                    failedCount: 0,
+                    titleLabel: '',
+                    updatedAt: 0,
+                  }]
+              ).map((group) => {
+                const itemCards = group.items.map((item) => (
                 <div id={pipelineItemElementId(item.media_id)} tabIndex={-1} key={item.media_id} className="scroll-mt-24 rounded-lg py-3 flex flex-wrap items-center justify-between gap-3 outline-none focus:ring-2 focus:ring-amber-300/70">
                   <div>
-                    <div className="font-mono text-sm text-white"><span className="mr-2">{stageIcon[item.state === 'completed' ? 'complete' : item.stage] || '⏸️'}</span>{item.media_id}</div>
+                    <div className="font-mono text-sm text-white"><span className="mr-2">{stageIcon[item.state === 'completed' ? 'complete' : item.stage] || '⏸️'}</span>{attentionOnly && item.title_index !== null ? `Title ${item.title_index}` : item.media_id}</div>
                     <div className="text-sm font-semibold text-white">Matched title: {item.display_name || 'Not matched yet'}</div>
                     {item.match_summary && <div className="mt-1 max-w-2xl text-xs text-[var(--text-muted)]">{item.match_summary}</div>}
                     {item.review_code === 'catalogue_candidate_help_available' && item.catalogue_candidate_help && (
@@ -4748,7 +4813,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                         Community candidate: {item.catalogue_candidate_help.series_name} - S{String(item.catalogue_candidate_help.season).padStart(2, '0')}E{String(item.catalogue_candidate_help.episode).padStart(2, '0')} - {item.catalogue_candidate_help.title}. This has one independent upload and was not applied automatically.
                       </div>
                     )}
-                    <div className="text-[11px] text-[var(--text-muted)]">The identifier above is the internal recovery ID.</div>
+                    {!attentionOnly && <div className="text-[11px] text-[var(--text-muted)]">The identifier above is the internal recovery ID.</div>}
                     <div className={`text-xs font-semibold ${item.state === 'running' ? 'text-blue-200' : item.state === 'queued' ? 'text-amber-200' : item.state === 'failed' ? 'text-red-200' : 'text-[var(--text-muted)]'}`}>
                       {pipelineStatusLabel(item)}
                       {item.review_code ? ` · ${item.review_code}` : ''}
@@ -5266,7 +5331,39 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                     )
                   )}
                 </div>
-              ))}
+                ));
+                if (!attentionOnly) return <Fragment key={group.key}>{itemCards}</Fragment>;
+                return (
+                  <details key={group.key} className="overflow-hidden rounded-xl border border-amber-400/30 bg-amber-500/5">
+                    <summary className="cursor-pointer px-4 py-4 text-amber-50 marker:text-amber-300 hover:bg-amber-500/10">
+                      <div className="ml-2 inline-flex w-[calc(100%-1rem)] flex-wrap items-center justify-between gap-3 align-middle">
+                        <div>
+                          <div className="font-bold text-white">{group.label}</div>
+                          <div className="mt-1 text-xs text-[var(--text-muted)]">{group.recordLabel} · {group.titleLabel}</div>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 text-xs font-semibold">
+                          <span className="rounded-full border border-amber-300/40 bg-amber-400/10 px-2.5 py-1 text-amber-100">
+                            {group.items.length} need attention
+                          </span>
+                          {group.identificationCount > 0 && (
+                            <span className="rounded-full border border-indigo-300/35 bg-indigo-400/10 px-2.5 py-1 text-indigo-100">
+                              {group.identificationCount} matching
+                            </span>
+                          )}
+                          {group.failedCount > 0 && (
+                            <span className="rounded-full border border-red-300/35 bg-red-400/10 px-2.5 py-1 text-red-100">
+                              {group.failedCount} failed
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </summary>
+                    <div className="divide-y divide-[var(--border-color)] border-t border-amber-300/20 px-4">
+                      {itemCards}
+                    </div>
+                  </details>
+                );
+              })}
             </div>
           )}
         </div>
