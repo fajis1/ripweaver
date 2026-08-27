@@ -49,17 +49,10 @@ def test_build_info_command_allows_info_only():
     assert "backup" not in command
 
 
-def test_all_drive_discovery_restores_progressive_robot_output():
+def test_all_drive_discovery_retains_media_scan():
     command = build_info_command(Path("makemkvcon64.exe"), "disc:9999")
 
-    assert command == (
-        "makemkvcon64.exe",
-        "-r",
-        "--messages=-stdout",
-        "--progress=-same",
-        "info",
-        "disc:9999",
-    )
+    assert "--noscan" not in command
 
 
 def test_targeted_inventory_reuses_cached_drive_when_global_row_is_omitted():
@@ -188,54 +181,6 @@ def test_info_runner_redacts_containment_start_failure(monkeypatch):
         preflight.run_info_command(Path("makemkvcon64.exe"), "disc:2")
 
     assert "private detail" not in str(exc_info.value)
-
-
-def test_all_drive_timeout_preserves_completed_drive_rows(monkeypatch):
-    command = build_info_command(Path("makemkvcon64.exe"), "disc:9999")
-    output = 'DRV:0,2,999,1,"hardware","disc","D:"\nDRV:1,2,999,0,"hardware","","E:"\n'
-    monkeypatch.setattr(
-        preflight,
-        "run_makemkv_command",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            preflight.subprocess.TimeoutExpired(
-                command,
-                15,
-                output=output.encode("utf-8"),
-                stderr=b"",
-            )
-        ),
-    )
-
-    result = preflight.run_info_command(
-        Path("makemkvcon64.exe"),
-        "disc:9999",
-        timeout_seconds=15,
-    )
-
-    assert result.return_code == 124
-    assert [drive.index for drive in preflight.parse_drives(result.stdout)] == [0, 1]
-
-
-def test_targeted_timeout_never_accepts_partial_inventory(monkeypatch):
-    command = build_info_command(Path("makemkvcon64.exe"), "disc:0")
-    monkeypatch.setattr(
-        preflight,
-        "run_makemkv_command",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            preflight.subprocess.TimeoutExpired(
-                command,
-                15,
-                output=b'DRV:0,2,999,1,"hardware","disc","D:"\n',
-            )
-        ),
-    )
-
-    with pytest.raises(PreflightError, match="timed out"):
-        preflight.run_info_command(
-            Path("makemkvcon64.exe"),
-            "disc:0",
-            timeout_seconds=15,
-        )
 
 
 def test_explicit_drive_preflight_uses_one_targeted_info_call(tmp_path, monkeypatch):

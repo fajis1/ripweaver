@@ -830,32 +830,7 @@ const stageIcon: Record<string, string> = {
   rip: '💿', identify: '🔎', transcode: '🎞️', organize: '📁', complete: '✅',
 };
 
-const hasSavedIdentification = (item: PipelineQueueItem): boolean => Boolean(item.display_name);
-
-const isRecoveryPipelineItem = (item: PipelineQueueItem): boolean => item.media_id.includes('-recovery-');
-
-const preferredPipelineItem = (
-  current: PipelineQueueItem | undefined,
-  candidate: PipelineQueueItem,
-): PipelineQueueItem => {
-  if (!current) return candidate;
-  if (candidate.state === 'discarded' && current.state !== 'discarded') return current;
-  if (current.state === 'discarded' && candidate.state !== 'discarded') return candidate;
-
-  const currentIsRecovery = isRecoveryPipelineItem(current);
-  const candidateIsRecovery = isRecoveryPipelineItem(candidate);
-  if (currentIsRecovery !== candidateIsRecovery) {
-    // A recovery item is the current logical attempt for this disc/title. A
-    // later retry timestamp on the superseded original must not hide it.
-    return candidateIsRecovery ? candidate : current;
-  }
-
-  return Date.parse(candidate.updated_at) >= Date.parse(current.updated_at)
-    ? candidate
-    : current;
-};
-
-const pipelineStatusLabel = (item: PipelineQueueItem, processingPaused = false) => {
+const pipelineStatusLabel = (item: PipelineQueueItem) => {
   const action = {
     rip: { active: 'Ripping now', waiting: 'Waiting to rip' },
     identify: { active: 'Matching now', waiting: 'Waiting to match' },
@@ -863,16 +838,6 @@ const pipelineStatusLabel = (item: PipelineQueueItem, processingPaused = false) 
     organize: { active: 'Transferring to Jellyfin now', waiting: 'Waiting to transfer to Jellyfin' },
   }[item.stage];
   if (item.state === 'running') return action?.active || `${item.stage} running`;
-  if (item.state === 'queued' && item.stage === 'identify' && hasSavedIdentification(item)) {
-    return processingPaused
-      ? 'Match found · resume processing to continue'
-      : 'Match found · waiting to continue';
-  }
-  if (item.state === 'queued' && processingPaused) {
-    return item.stage === 'identify'
-      ? 'Ready to match · resume processing'
-      : `Ready to ${item.stage} · resume processing`;
-  }
   if (item.state === 'queued') return action?.waiting || `${item.stage} queued`;
   if (item.state === 'review_required') return item.review_code === 'all_season_analysis_running' ? 'Running all-season matching' : item.review_code === 'play_all_aggregate_detected' ? 'Likely play-all aggregate' : 'Review required';
   if (item.state === 'failed') return 'Stopped after an error';
@@ -1256,7 +1221,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
     }
   };
 
-  const refreshDrives = async (timeoutSeconds = 30) => {
+  const refreshDrives = async (timeoutSeconds = 120) => {
     setRefreshingDrives(true);
     setError('');
     try {
@@ -3075,11 +3040,14 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
       : queueOnly || Boolean(selectedDiscFingerprint && item.disc_fingerprint === selectedDiscFingerprint)
   ) ?? [];
   const latestPipelineItems = Array.from(scopedPipelineItems.reduce((items, item) => {
-    const key = item.disc_fingerprint && typeof item.title_index === 'number'
-      ? `${item.disc_fingerprint}:${item.title_index}`
+    const titleMatch = item.media_id.match(/-title-(\d{3})(?:-|$)/);
+    const key = item.disc_fingerprint && titleMatch
+      ? `${item.disc_fingerprint}:${titleMatch[1]}`
       : item.media_id;
     const previous = items.get(key);
-    items.set(key, preferredPipelineItem(previous, item));
+    const discardedWouldHideActive = item.state === 'discarded' && previous && previous.state !== 'discarded';
+    const activeReplacesDiscarded = previous?.state === 'discarded' && item.state !== 'discarded';
+    if (!discardedWouldHideActive && (!previous || activeReplacesDiscarded || Date.parse(item.updated_at) >= Date.parse(previous.updated_at))) items.set(key, item);
     return items;
   }, new Map<string, PipelineQueueItem>()).values());
   const activePipelineItems = latestPipelineItems.filter((item) => !['completed', 'discarded'].includes(item.state));
@@ -3118,9 +3086,10 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
   const existingRipsInPipeline = existingRipsRestarted || visiblePipelineItems.some(
     (item) => item.disc_fingerprint === selectedDiscFingerprint && item.media_id.includes('-recovery-'),
   );
-  const currentTitleOutcome = (titleIndex: number) => latestPipelineItems.find(
-    (item) => item.title_index === titleIndex,
-  );
+  const currentTitleOutcome = (titleIndex: number) => latestPipelineItems.find((item) => {
+    const match = item.media_id.match(/-title-(\d{3})(?:-|$)/);
+    return match !== null && Number(match[1]) === titleIndex;
+  });
   const heldLibraryTitles = preview?.held_titles ?? [];
   const heldLibraryTitleIndexes = new Set(heldLibraryTitles.map((item) => item.title_index));
   const separatedHeldLibraryTitles = heldLibraryTitles.filter(
@@ -3456,11 +3425,8 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                 ? `Queue resumes in ${pipelineQueue.startup_resume_in_seconds}s`
                 : `Queue ${pipelineQueue.paused ? 'paused' : 'active'}`}
             </span>
-            {pipelineQueue.paused ? (
-              <button type="button" className="btn btn-primary" disabled={controlling} onClick={() => controlPipeline('resume')}>Resume processing</button>
-            ) : (
-              <button type="button" className="btn btn-secondary" disabled={controlling} onClick={() => controlPipeline('pause')} title="Let active work settle, then prevent RipWeaver from starting another disc or downstream item.">Pause after active work</button>
-            )}
+            <button type="button" className="btn btn-secondary" disabled={controlling || pipelineQueue.paused} onClick={() => controlPipeline('pause')} title="Let active work settle, then prevent RipWeaver from starting another disc or downstream item.">Pause active queue</button>
+            <button type="button" className="btn btn-primary" disabled={controlling || !pipelineQueue.paused} onClick={() => controlPipeline('resume')}>Resume queue</button>
           </div>
         )}
       </div>
@@ -3592,7 +3558,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
               {driveDashboard?.refresh_deferred
                 ? 'Drive refresh queued safely'
                 : refreshingDrives || driveDashboard?.refresh_in_progress
-                  ? 'Reading drive slots (normally seconds; stops after 30 seconds)…'
+                  ? 'Reading drive slots (up to 2 minutes)…'
                   : driveDashboard?.automatic_discovery_paused
                     ? 'Retry drive refresh (read-only)'
                     : driveDashboard?.busy_drive_indexes?.length
@@ -3629,12 +3595,12 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                   <li>Close the MakeMKV desktop application and wait for any current rip to stop.</li>
                   <li>Power-cycle external optical drives or their USB hub, then reconnect drives one at a time.</li>
                   <li>Confirm each drive appears normally in Windows before reconnecting the next one.</li>
-                  <li>Retry the 30-second read-only refresh. If it fails again, restart Windows to reset the optical driver stack.</li>
+                  <li>Retry the two-minute read-only refresh. If it fails again, restart Windows to reset the optical driver stack.</li>
                 </ol>
               )}
               {!driveDashboard?.refresh_in_progress && driveDashboard?.status === 'error' && (
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <button type="button" className="btn btn-secondary text-xs" onClick={() => void refreshDrives(30)} disabled={refreshingDrives || driveDashboard?.refresh_in_progress || driveDashboard?.refresh_deferred || Boolean(driveDashboard?.busy_drive_indexes?.length)}>
+                  <button type="button" className="btn btn-secondary text-xs" onClick={() => void refreshDrives(120)} disabled={refreshingDrives || driveDashboard?.refresh_in_progress || driveDashboard?.refresh_deferred || Boolean(driveDashboard?.busy_drive_indexes?.length)}>
                     {driveDashboard.error_code === 'timeout' ? 'Retry after checking drives' : 'Retry drive refresh'}
                   </button>
                   {driveDashboard.error_code !== 'timeout' && (
@@ -3745,7 +3711,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
               const latestDrivePipelineItems = Array.from(drivePipelineItems.reduce((items, item) => {
                 if (typeof item.title_index !== 'number') return items;
                 const previous = items.get(item.title_index);
-                items.set(item.title_index, preferredPipelineItem(previous, item));
+                if (!previous || Date.parse(item.updated_at) >= Date.parse(previous.updated_at)) items.set(item.title_index, item);
                 return items;
               }, new Map<number, PipelineQueueItem>()).values());
               const discResultItems = [...latestDrivePipelineItems].sort((left, right) => (
@@ -3868,10 +3834,6 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
               const identificationReviewItems = latestDrivePipelineItems.filter((item) => item.stage === 'identify' && ['failed', 'review_required'].includes(item.state));
               const identificationNeedsAttention = identificationReviewItems.length > 0;
               const identificationActiveItems = latestDrivePipelineItems.filter((item) => item.stage === 'identify' && ['queued', 'running'].includes(item.state));
-              const queuedDiscItems = latestDrivePipelineItems.filter((item) => item.state === 'queued');
-              const queuedMatchedDiscItems = queuedDiscItems.filter((item) => (
-                item.stage === 'identify' && hasSavedIdentification(item)
-              ));
               const identificationAwaitingFirstAttempt = identificationReviewItems.some((item) => (
                 item.state === 'review_required'
                 && ['missing_season_context', 'unmatched_disc_analysis_required'].includes(item.review_code || '')
@@ -3994,26 +3956,6 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                     </label>
                   </div>}
                   {drive.has_disc && <div className="text-xs text-[var(--text-muted)]">Optional hints: leave blank for automatic classification and the default transcode profile. A content hint changes search priority but still permits fallback.</div>}
-                  {drive.has_disc && pipelineQueue?.paused && queuedDiscItems.length > 0 && !reripJob && (
-                    <div className="rounded-lg border border-blue-300/50 bg-blue-500/15 p-4 text-sm text-blue-50 space-y-3">
-                      <div>
-                        <div className="font-semibold">Next step: resume processing</div>
-                        <div className="mt-1 text-xs text-blue-100/80">
-                          {queuedMatchedDiscItems.length > 0
-                            ? `${queuedMatchedDiscItems.length} ${queuedMatchedDiscItems.length === 1 ? 'title already has a saved episode match' : 'titles already have saved episode matches'}. `
-                            : `${queuedDiscItems.length} ${queuedDiscItems.length === 1 ? 'title is' : 'titles are'} ready to continue. `}
-                          RipWeaver is paused, so it cannot advance them. No rerip or manual naming is needed now.
-                        </div>
-                      </div>
-                      <button type="button" className="btn btn-primary" disabled={controlling} onClick={() => controlPipeline('resume')}>
-                        Resume processing
-                      </button>
-                      <details className="rounded border border-blue-200/20 bg-black/10 p-2 text-xs text-blue-100/75">
-                        <summary className="cursor-pointer font-semibold text-blue-50">Other choices</summary>
-                        <div className="mt-2">Leave processing paused if you are not ready for the queued work to continue. Matching logs and manual review remain available below if RipWeaver later asks for a decision.</div>
-                      </details>
-                    </div>
-                  )}
                   {drive.has_disc && skippedDiscTitles.length > 0 && (
                     <div className="rounded-lg border border-amber-400/40 bg-amber-500/15 p-3 text-sm text-amber-100">
                       <div className="font-semibold">{skippedDiscTitles.length} disc {skippedDiscTitles.length === 1 ? 'title is' : 'titles are'} being forcefully ignored</div>
@@ -4267,39 +4209,28 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                             && typeof selectedEpisodeId === 'string'
                             && typeof selectedScore === 'number'
                             && typeof engineThreshold === 'number';
-                          const savedIdentificationWaiting = item.stage === 'identify'
-                            && item.state === 'queued'
-                            && hasSavedIdentification(item);
                           return (
                             <div key={item.media_id} className={`rounded border p-2 ${skipped ? 'border-slate-300/25 bg-slate-500/10' : item.state === 'review_required' ? 'border-amber-300/35 bg-amber-500/10' : item.state === 'completed' ? 'border-green-300/25 bg-green-500/10' : 'border-blue-300/20 bg-black/10'}`}>
                               <div className="font-semibold text-white">{typeof item.title_index === 'number' ? `Title ${item.title_index} · ` : ''}{skipped ? 'Excluded from episode matching' : item.display_name || 'Not identified'}</div>
                               <div className="mt-1 text-xs text-blue-100/75">
                                 {skipped
                                   ? `not an episode · intentionally skipped${skipReason ? ` · ${skipReason.replaceAll('_', ' ')}` : ''}`
-                                  : savedIdentificationWaiting
-                                    ? `match saved · ${pipelineQueue?.paused ? 'resume processing to continue' : 'waiting to continue'}`
-                                    : `${item.stage} · ${item.state.replaceAll('_', ' ')}${item.review_code ? ` · ${item.review_code.replaceAll('_', ' ')}` : ''}`}
+                                  : `${item.stage} · ${item.state.replaceAll('_', ' ')}${item.review_code ? ` · ${item.review_code.replaceAll('_', ' ')}` : ''}`}
                                 {!skipped && attempts.length > 0 ? ` · ${attempts.length} matching attempts recorded` : ''}
                                 {!skipped && item.state === 'review_required' && attempts.length === 0 ? ' · matching has not started' : ''}
                               </div>
                               {!skipped && item.state === 'queued' && (
                                 <div className="mt-2 rounded border border-blue-300/25 bg-blue-500/10 p-2 text-xs text-blue-100">
-                                  {item.stage === 'identify' && hasSavedIdentification(item)
-                                    ? pipelineQueue?.paused
-                                      ? 'This episode is already matched. Choose Resume processing to validate the saved result and continue.'
-                                      : 'This episode is already matched. RipWeaver will validate the saved result and continue automatically.'
-                                    : item.stage === 'identify'
-                                      ? pipelineQueue?.paused
-                                        ? 'This title is ready for episode identification. Choose Resume processing to start it.'
-                                        : 'Queued to run episode identification.'
+                                  {item.stage === 'identify'
+                                    ? 'Queued to run episode identification.'
                                     : item.stage === 'transcode'
                                       ? 'Queued to transcode the identified title with HandBrake.'
                                       : item.stage === 'organize'
                                         ? 'Queued to place the verified encode in its Jellyfin destination.'
                                         : 'Queued for the next pipeline operation.'}
-                                  {!pipelineQueue?.paused && ((pipelineQueue?.items ?? []).some((candidate) => candidate.media_id !== item.media_id && candidate.state === 'running' && candidate.stage === item.stage)
+                                  {(pipelineQueue?.items ?? []).some((candidate) => candidate.media_id !== item.media_id && candidate.state === 'running' && candidate.stage === item.stage)
                                     ? ` Another ${item.stage} operation is running; this item will start automatically afterward.`
-                                    : ' This stage can run alongside unrelated pipeline stages and should be claimed automatically.')}
+                                    : ' This stage can run alongside unrelated pipeline stages and should be claimed automatically.'}
                                 </div>
                               )}
                               {belowThreshold && (
@@ -4512,44 +4443,33 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
               </div>
             </div>
             <div className="flex flex-wrap gap-2">
+              {(likelyRemovableCount > 0 || showLikelyRemovableOnly) && (
+                <button type="button" className={showLikelyRemovableOnly ? 'btn btn-primary' : 'btn btn-secondary'} onClick={() => setShowLikelyRemovableOnly((current) => !current)}>
+                  Likely removable ({likelyRemovableCount})
+                </button>
+              )}
+              {visiblePipelineItems.some((item) => ['failed', 'review_required'].includes(item.state)) && (
+                <button type="button" className="btn btn-secondary" disabled={controlling} onClick={() => dismissPipelineItems(visiblePipelineItems.filter((item) => ['failed', 'review_required'].includes(item.state)).map((item) => item.media_id))}>
+                  Clear held items
+                </button>
+              )}
+              {visiblePipelineItems.some((item) => item.state === 'queued') && (
+                <button type="button" className="btn btn-secondary" disabled={controlling} onClick={() => cancelQueuedPipelineItems(visiblePipelineItems.filter((item) => item.state === 'queued').map((item) => item.media_id))}>
+                  Remove waiting items
+                </button>
+              )}
               {!queueOnly && !attentionOnly && visiblePipelineItems.length === 0 && savedJob?.state === 'queued' ? (
                 <button type="button" className="btn btn-primary" onClick={() => document.getElementById('rip-execution-confirmation')?.scrollIntoView({ behavior: 'smooth', block: 'center' })}>
                   Continue to rip confirmation
                 </button>
               ) : (
                 <>
-                  {!attentionOnly && pipelineQueue.paused && (
-                    <button type="button" className="btn btn-primary" disabled={controlling} onClick={() => controlPipeline('resume')}>
-                      Resume processing
-                    </button>
-                  )}
-                  {!attentionOnly && !pipelineQueue.paused && (
-                    <button type="button" className="btn btn-secondary" disabled={controlling} onClick={() => controlPipeline('pause')}>
-                      Pause after active work
-                    </button>
-                  )}
-                  {(likelyRemovableCount > 0 || showLikelyRemovableOnly || visiblePipelineItems.some((item) => ['failed', 'review_required', 'queued'].includes(item.state))) && (
-                    <details className="rounded-lg border border-[var(--border-color)] bg-black/10 px-3 py-2 text-sm">
-                      <summary className="cursor-pointer font-semibold text-white">Manual queue options</summary>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        {(likelyRemovableCount > 0 || showLikelyRemovableOnly) && (
-                          <button type="button" className={showLikelyRemovableOnly ? 'btn btn-primary' : 'btn btn-secondary'} onClick={() => setShowLikelyRemovableOnly((current) => !current)}>
-                            Likely removable ({likelyRemovableCount})
-                          </button>
-                        )}
-                        {visiblePipelineItems.some((item) => ['failed', 'review_required'].includes(item.state)) && (
-                          <button type="button" className="btn btn-secondary" disabled={controlling} onClick={() => dismissPipelineItems(visiblePipelineItems.filter((item) => ['failed', 'review_required'].includes(item.state)).map((item) => item.media_id))}>
-                            Clear held items
-                          </button>
-                        )}
-                        {visiblePipelineItems.some((item) => item.state === 'queued') && (
-                          <button type="button" className="btn btn-secondary" disabled={controlling} onClick={() => cancelQueuedPipelineItems(visiblePipelineItems.filter((item) => item.state === 'queued').map((item) => item.media_id))}>
-                            Remove waiting items
-                          </button>
-                        )}
-                      </div>
-                    </details>
-                  )}
+                  {!attentionOnly && <button type="button" className="btn btn-primary" disabled={controlling} onClick={() => controlPipeline('resume')}>
+                    {pipelineQueue.paused ? 'Resume processing' : queueOnly ? 'Start / resume authorized work' : 'Start / resume downstream work'}
+                  </button>}
+                  {!attentionOnly && <button type="button" className="btn btn-secondary" disabled={pipelineQueue.paused} onClick={() => controlPipeline('pause')}>
+                    {pipelineQueue.paused ? 'New processing paused' : 'Pause after active work'}
+                  </button>}
                 </>
               )}
             </div>
@@ -4830,7 +4750,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                     )}
                     <div className="text-[11px] text-[var(--text-muted)]">The identifier above is the internal recovery ID.</div>
                     <div className={`text-xs font-semibold ${item.state === 'running' ? 'text-blue-200' : item.state === 'queued' ? 'text-amber-200' : item.state === 'failed' ? 'text-red-200' : 'text-[var(--text-muted)]'}`}>
-                      {pipelineStatusLabel(item, pipelineQueue.paused)}
+                      {pipelineStatusLabel(item)}
                       {item.review_code ? ` · ${item.review_code}` : ''}
                       {item.error_type ? ` · ${item.error_type}` : ''}
                     </div>

@@ -787,15 +787,10 @@ def run_makemkv_command(
     )
     try:
         stdout, stderr = process.communicate(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired as exc:
+    except subprocess.TimeoutExpired:
         process.kill()
-        stdout, stderr = process.communicate()
-        raise subprocess.TimeoutExpired(
-            exc.cmd,
-            exc.timeout,
-            output=stdout if stdout is not None else exc.output,
-            stderr=stderr if stderr is not None else exc.stderr,
-        ) from exc
+        process.communicate()
+        raise
     finally:
         audit_makemkv_process_exit(process)
     return subprocess.CompletedProcess(
