@@ -2843,7 +2843,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
     const candidates = (driveDashboard?.drives ?? []).flatMap((drive) => {
       if (!drive.has_disc || drive.mapping_status === 'ignored') return [];
       const job = latestJobForDrive(drive.drive_index);
-      if (!job || job.state !== 'awaiting_review' || !job.preview) return [];
+      if (!job || !['awaiting_review', 'completed'].includes(job.state) || !job.preview) return [];
       const discFingerprint = drive.current_disc_fingerprint
         ?? job.preview.jobs
           .map((item) => item.staging_destination.match(/(?:^|\/)([0-9a-f]{16})(?:\/|$)/)?.[1])
