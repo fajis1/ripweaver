@@ -144,6 +144,15 @@ class DriveWatcher:
         self._mapping_store = mapping_store
         self._lock = threading.Lock()
         self._refresh_lock = threading.Lock()
+        self._native_media_worker_lock = threading.Lock()
+        self._native_media_worker: (
+            tuple[
+                threading.Thread,
+                threading.Event,
+                list[dict[str, tuple[bool, str | None]]],
+            ]
+            | None
+        ) = None
         self._snapshot = DriveStatusSnapshot((), None, "not_scanned")
         self._device_names: dict[int, str] = {}
         self._mapping_keys: dict[str, str] = {}
@@ -543,12 +552,8 @@ class DriveWatcher:
     def refresh_native_media(self) -> DriveStatusSnapshot:
         """Update newly inserted idle-drive media while MakeMKV is busy elsewhere."""
 
+        native_media = self._discover_native_media_bounded()
         with self._lock:
-            native_media = {
-                name.strip().upper().rstrip("\\/"): state
-                for name, state in self._native_media_discovery().items()
-                if re.fullmatch(r"[A-Z]:[\\/]?", name.strip().upper())
-            }
             if not native_media:
                 return self._snapshot
             by_index = {drive.drive_index: drive for drive in self._snapshot.drives}
@@ -585,6 +590,49 @@ class DriveWatcher:
                 status="ready",
             )
             return self._snapshot
+
+    def _discover_native_media_bounded(
+        self,
+        *,
+        timeout_seconds: float = 1.0,
+    ) -> dict[str, tuple[bool, str | None]]:
+        """Bound Windows media readiness without accumulating blocked workers."""
+
+        with self._native_media_worker_lock:
+            pending = self._native_media_worker
+            if pending is None:
+                ready = threading.Event()
+                result_box: list[dict[str, tuple[bool, str | None]]] = []
+
+                def discover() -> None:
+                    try:
+                        discovered = {
+                            name.strip().upper().rstrip("\\/"): state
+                            for name, state in self._native_media_discovery().items()
+                            if re.fullmatch(r"[A-Z]:[\\/]?", name.strip().upper())
+                        }
+                    except Exception:
+                        discovered = {}
+                    result_box.append(discovered)
+                    ready.set()
+
+                worker = threading.Thread(
+                    target=discover,
+                    name="ripweaver-native-media",
+                    daemon=True,
+                )
+                pending = (worker, ready, result_box)
+                self._native_media_worker = pending
+                worker.start()
+
+        worker, ready, result_box = pending
+        del worker
+        if not ready.wait(timeout=max(0.0, timeout_seconds)):
+            return {}
+        with self._native_media_worker_lock:
+            if self._native_media_worker is pending:
+                self._native_media_worker = None
+        return dict(result_box[0]) if result_box else {}
 
     def refresh(  # noqa: C901
         self,
@@ -634,18 +682,12 @@ class DriveWatcher:
                     if re.fullmatch(r"[A-Z]:[\\/]?", name.strip().upper())
                 })
             )
-            try:
-                native_media = {
-                    name.strip().upper().rstrip("\\/"): state
-                    for name, state in self._native_media_discovery().items()
-                    if re.fullmatch(r"[A-Z]:[\\/]?", name.strip().upper())
-                }
-            except OSError:
-                native_media = {}
             # Attach safe Windows identities before invoking MakeMKV so a
             # timeout cannot leave every otherwise healthy drive anonymous.
-            # Windows also supplies the inserted/empty state immediately, but
-            # these placeholders remain unusable until MakeMKV confirms them.
+            self._publish_native_placeholders(native_names, native_identities)
+            # Windows media readiness may block inside an optical driver. Give
+            # it one second, then continue to MakeMKV with the identified slots.
+            native_media = self._discover_native_media_bounded()
             self._publish_native_placeholders(
                 native_names,
                 native_identities,

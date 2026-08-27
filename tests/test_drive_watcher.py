@@ -255,6 +255,56 @@ def test_native_media_populates_a_confirmed_noscan_slot():
     assert drive.makemkv_confirmed is True
 
 
+def test_blocked_native_media_does_not_starve_makemkv_slot_listing(tmp_path):
+    media_started = threading.Event()
+    release_media = threading.Event()
+    runner_started = threading.Event()
+    errors: list[Exception] = []
+    native = NativeOpticalDevice(
+        device_name="D:",
+        device_key="b" * 64,
+        display_name="External optical drive",
+        connection_type="USB",
+    )
+
+    def native_media():
+        media_started.set()
+        release_media.wait(timeout=5)
+        return {"D:": (True, "Inserted disc")}
+
+    def runner(*_args, **_kwargs):
+        runner_started.set()
+        return _result('DRV:0,2,999,0,"hardware","","D:"\n')
+
+    watcher = DriveWatcher(
+        runner,
+        native_discovery=lambda: ("D:",),
+        native_media_discovery=native_media,
+        native_identity_discovery=lambda: (native,),
+        mapping_store=DriveMappingStore(tmp_path / "drive-map.json"),
+    )
+
+    def refresh() -> None:
+        try:
+            watcher.refresh(Path("makemkvcon64.exe"))
+        except Exception as exc:  # pragma: no cover - surfaced below
+            errors.append(exc)
+
+    refresh_worker = threading.Thread(target=refresh)
+    refresh_worker.start()
+    assert media_started.wait(timeout=1)
+    provisional = watcher.snapshot().drives[0]
+    assert provisional.mapping_id == native.mapping_id
+    assert provisional.makemkv_confirmed is False
+    assert runner_started.wait(timeout=2)
+    release_media.set()
+    refresh_worker.join(timeout=2)
+
+    assert not refresh_worker.is_alive()
+    assert errors == []
+    assert watcher.snapshot().drives[0].makemkv_confirmed is True
+
+
 def test_partial_refresh_preserves_previously_discovered_empty_slots():
     results = iter([
         _result(
