@@ -213,6 +213,29 @@ def run_info_command(
             timeout_seconds=timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:
+        partial_stdout = exc.output or ""
+        partial_stderr = exc.stderr or ""
+        if isinstance(partial_stdout, bytes):
+            partial_stdout = partial_stdout.decode("utf-8", errors="replace")
+        if isinstance(partial_stderr, bytes):
+            partial_stderr = partial_stderr.decode("utf-8", errors="replace")
+        if source == "disc:9999" and any(
+            drive.visible and drive.enabled and drive.device_name.strip()
+            for drive in parse_drives(partial_stdout)
+        ):
+            # Some optical stacks emit the complete useful drive rows and then
+            # hang while settling one device. The supervised boundary has
+            # already killed and reaped the child. Preserve the safe rows so
+            # Windows-first discovery can enrich the drives that did answer.
+            finished = datetime.now(UTC)
+            return CommandResult(
+                command=command,
+                return_code=124,
+                stdout=partial_stdout,
+                stderr=partial_stderr,
+                started_at=started.isoformat(),
+                finished_at=finished.isoformat(),
+            )
         raise PreflightError(
             f"MakeMKV info timed out after {timeout_seconds}s for {source}"
         ) from exc
