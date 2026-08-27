@@ -3682,7 +3682,6 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
               const driveKey = driveSetupKey(drive);
               const setup = getDiscSetup(driveKey);
               const driveTrusted = !drive.mapping_status || drive.mapping_status === 'trusted';
-              const mediaCheckPending = drive.makemkv_confirmed === false && !drive.has_disc;
               if (!driveTrusted) {
                 const identityUnavailable = drive.mapping_warning === 'identity_unavailable';
                 const ignored = drive.mapping_status === 'ignored';
@@ -3694,11 +3693,11 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                 return (
                   <div key={driveKey} className={`rounded-xl border p-4 space-y-4 ${ignored ? 'border-slate-500/40 bg-slate-500/10' : 'border-amber-400/50 bg-amber-500/10'}`}>
                     <div className="flex items-center justify-between gap-3">
-                      <span className={`text-4xl ${drive.has_disc || mediaCheckPending ? 'text-amber-300' : 'text-slate-600'}`} aria-label={drive.has_disc ? 'Disc inserted' : mediaCheckPending ? 'Media check pending' : 'Empty tray'}>{drive.has_disc ? '●' : '▱'}</span>
+                      <span className={`text-4xl ${drive.has_disc ? 'text-amber-300' : 'text-slate-600'}`} aria-label={drive.has_disc ? 'Disc inserted' : 'Empty tray'}>{drive.has_disc ? '●' : '▱'}</span>
                       <div className="min-w-0 flex-1">
                         <div className="font-semibold text-white">Optical drive {drive.drive_index + 1}{drive.display_name ? ` · ${drive.display_name}` : ''}{drive.disc_label ? ` — ${drive.disc_label}` : ''}</div>
                         <div className={`text-xs font-bold uppercase ${ignored ? 'text-slate-300' : 'text-amber-200'}`}>
-                          {drive.has_disc ? `disc inserted · ${lockedStatus}` : mediaCheckPending ? `media check pending · ${lockedStatus}` : `empty tray · ${lockedStatus}`}
+                          {drive.has_disc ? `disc inserted · ${lockedStatus}` : `empty tray · ${lockedStatus}`}
                         </div>
                       </div>
                     </div>
@@ -3706,9 +3705,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                       {ignored
                         ? 'This optical device is ignored. Manage drive mapping to approve it before RipWeaver can use it.'
                         : identityUnavailable
-                          ? drive.makemkv_confirmed
-                            ? 'MakeMKV detected this slot, but Windows did not return its hardware identity in time. The drive remains visible and safely locked; a read-only refresh retries the identity lookup.'
-                            : 'Windows detected this optical drive, but MakeMKV has not confirmed its slot and Windows did not return its hardware identity in time. The drive remains visible and safely locked.'
+                          ? 'MakeMKV detected this slot, but Windows did not return its hardware identity in time. The drive remains visible and safely locked; a read-only refresh retries the identity lookup.'
                           : 'This device was detected but has not been approved. Open drive setup and choose Use before RipWeaver can read or rip it.'}
                     </div>
                     {drive.mapping_id && (
@@ -3967,20 +3964,15 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                     : 'border-[var(--border-color)] bg-[var(--bg-primary)]/40'
                 }`}>
                   <div className="flex items-center justify-between gap-3">
-                    <span className={`text-4xl ${driveIndicatorClass}`} aria-label={drive.has_disc ? 'Disc inserted' : mediaCheckPending ? 'Media check pending' : 'Empty tray'}>{drive.has_disc ? '●' : '▱'}</span>
+                    <span className={`text-4xl ${driveIndicatorClass}`} aria-label={drive.has_disc ? 'Disc inserted' : 'Empty tray'}>{drive.has_disc ? '●' : '▱'}</span>
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2 font-semibold text-white">
                         <span>Optical drive {drive.drive_index + 1}{drive.display_name ? ` · ${drive.display_name}` : ''}{drive.disc_label ? ` — ${drive.disc_label}` : ''}</span>
                         {skippedDiscTitles.length > 0 && <span className="rounded-full border border-amber-300/50 bg-amber-400/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-200">⚠ {skippedDiscTitles.length} force-ignored {skippedDiscTitles.length === 1 ? 'title' : 'titles'}</span>}
                       </div>
-                      <div className={`text-xs font-bold uppercase ${driveNeedsAction || driveFailed ? 'text-red-300' : driveRipping ? 'text-blue-200' : drivePreparing || mediaCheckPending || discIdentityNeedsVerification || identificationNeedsAttention || outstandingDiscDownstreamItems.length > 0 || skippedDiscTitles.length > 0 ? 'text-amber-300' : driveRipComplete ? 'text-green-300' : drive.has_disc ? 'text-blue-300' : 'text-slate-400'}`}>{drive.has_disc ? driveStatus : mediaCheckPending ? 'media check pending · MakeMKV slot not confirmed' : 'empty tray'}</div>
+                      <div className={`text-xs font-bold uppercase ${driveNeedsAction || driveFailed ? 'text-red-300' : driveRipping ? 'text-blue-200' : drivePreparing || discIdentityNeedsVerification || identificationNeedsAttention || outstandingDiscDownstreamItems.length > 0 || skippedDiscTitles.length > 0 ? 'text-amber-300' : driveRipComplete ? 'text-green-300' : drive.has_disc ? 'text-blue-300' : 'text-slate-400'}`}>{drive.has_disc ? driveStatus : 'empty tray'}</div>
                     </div>
                   </div>
-                  {mediaCheckPending && (
-                    <div className="rounded-lg border border-amber-400/30 bg-amber-500/10 p-3 text-sm text-amber-100">
-                      Windows detected this optical drive. MakeMKV has not yet confirmed whether its tray contains a disc, so RipWeaver keeps the drive visible but will not start disc work.
-                    </div>
-                  )}
                   {drive.has_disc && <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <label className="space-y-1">
                       <span className="text-xs font-semibold text-white">Disc contains</span>

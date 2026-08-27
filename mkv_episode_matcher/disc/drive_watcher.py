@@ -144,15 +144,6 @@ class DriveWatcher:
         self._mapping_store = mapping_store
         self._lock = threading.Lock()
         self._refresh_lock = threading.Lock()
-        self._native_media_worker_lock = threading.Lock()
-        self._native_media_worker: (
-            tuple[
-                threading.Thread,
-                threading.Event,
-                list[dict[str, tuple[bool, str | None]]],
-            ]
-            | None
-        ) = None
         self._snapshot = DriveStatusSnapshot((), None, "not_scanned")
         self._device_names: dict[int, str] = {}
         self._mapping_keys: dict[str, str] = {}
@@ -340,95 +331,6 @@ class DriveWatcher:
             self._refresh_lock.release()
         return not acquired
 
-    def _publish_native_placeholders(
-        self,
-        native_names: tuple[str, ...],
-        native_identities: tuple[NativeOpticalDevice, ...] = (),
-        native_media: dict[str, tuple[bool, str | None]] | None = None,
-    ) -> None:
-        """Keep Windows-detected trays visible while full discovery is pending."""
-
-        if not native_names:
-            return
-        native_by_name = {
-            native.device_name.upper().rstrip("\\/"): native
-            for native in native_identities
-        }
-        native_media = native_media or {}
-        with self._lock:
-            drives = {drive.drive_index: drive for drive in self._snapshot.drives}
-            index_by_device = {
-                device_name.upper().rstrip("\\/"): drive_index
-                for drive_index, device_name in self._device_names.items()
-            }
-            used_indexes = set(drives)
-            device_names = dict(self._device_names)
-            changed = False
-            for ordinal, device_name in enumerate(native_names):
-                native = native_by_name.get(device_name)
-                existing_index = index_by_device.get(device_name)
-                if existing_index is not None:
-                    existing = drives[existing_index]
-                    media_state = native_media.get(device_name)
-                    media_fields: dict[str, object] = {}
-                    if media_state is not None:
-                        has_disc, label = media_state
-                        public_label = (
-                            _public_disc_label(label or "") if has_disc else None
-                        )
-                        same_disc = (
-                            existing.has_disc and existing.disc_label == public_label
-                        )
-                        media_fields = {
-                            "has_disc": has_disc,
-                            "disc_label": public_label,
-                            "current_job_id": (
-                                existing.current_job_id if same_disc else None
-                            ),
-                            "current_disc_fingerprint": (
-                                existing.current_disc_fingerprint if same_disc else None
-                            ),
-                        }
-                    updated = replace(
-                        existing,
-                        available=True,
-                        **media_fields,
-                        **self._mapping_fields(native),
-                    )
-                    if updated != existing:
-                        drives[existing_index] = updated
-                        changed = True
-                    continue
-                drive_index = ordinal
-                if drive_index in used_indexes:
-                    drive_index = next(
-                        index for index in range(32) if index not in used_indexes
-                    )
-                has_disc, label = native_media.get(device_name, (False, None))
-                drives[drive_index] = PublicDriveStatus(
-                    drive_index=drive_index,
-                    available=True,
-                    has_disc=has_disc,
-                    disc_label=_public_disc_label(label or "") if has_disc else None,
-                    makemkv_confirmed=False,
-                    **self._mapping_fields(native),
-                )
-                device_names[drive_index] = device_name
-                used_indexes.add(drive_index)
-                changed = True
-            self._mapping_keys.update({
-                native.mapping_id: native.device_key for native in native_identities
-            })
-            self._mapping_devices.update({
-                native.mapping_id: native for native in native_identities
-            })
-            if changed:
-                self._device_names = device_names
-                self._snapshot = replace(
-                    self._snapshot,
-                    drives=tuple(drives[index] for index in sorted(drives)),
-                )
-
     def mapping_required(self) -> bool:
         """Return whether this watcher enforces the durable device allowlist."""
 
@@ -552,8 +454,12 @@ class DriveWatcher:
     def refresh_native_media(self) -> DriveStatusSnapshot:
         """Update newly inserted idle-drive media while MakeMKV is busy elsewhere."""
 
-        native_media = self._discover_native_media_bounded()
         with self._lock:
+            native_media = {
+                name.strip().upper().rstrip("\\/"): state
+                for name, state in self._native_media_discovery().items()
+                if re.fullmatch(r"[A-Z]:[\\/]?", name.strip().upper())
+            }
             if not native_media:
                 return self._snapshot
             by_index = {drive.drive_index: drive for drive in self._snapshot.drives}
@@ -591,49 +497,6 @@ class DriveWatcher:
             )
             return self._snapshot
 
-    def _discover_native_media_bounded(
-        self,
-        *,
-        timeout_seconds: float = 1.0,
-    ) -> dict[str, tuple[bool, str | None]]:
-        """Bound Windows media readiness without accumulating blocked workers."""
-
-        with self._native_media_worker_lock:
-            pending = self._native_media_worker
-            if pending is None:
-                ready = threading.Event()
-                result_box: list[dict[str, tuple[bool, str | None]]] = []
-
-                def discover() -> None:
-                    try:
-                        discovered = {
-                            name.strip().upper().rstrip("\\/"): state
-                            for name, state in self._native_media_discovery().items()
-                            if re.fullmatch(r"[A-Z]:[\\/]?", name.strip().upper())
-                        }
-                    except Exception:
-                        discovered = {}
-                    result_box.append(discovered)
-                    ready.set()
-
-                worker = threading.Thread(
-                    target=discover,
-                    name="ripweaver-native-media",
-                    daemon=True,
-                )
-                pending = (worker, ready, result_box)
-                self._native_media_worker = pending
-                worker.start()
-
-        worker, ready, result_box = pending
-        del worker
-        if not ready.wait(timeout=max(0.0, timeout_seconds)):
-            return {}
-        with self._native_media_worker_lock:
-            if self._native_media_worker is pending:
-                self._native_media_worker = None
-        return dict(result_box[0]) if result_box else {}
-
     def refresh(  # noqa: C901
         self,
         executable: Path,
@@ -645,20 +508,14 @@ class DriveWatcher:
         if not self._refresh_lock.acquire(blocking=False):
             raise PreflightError("MakeMKV drive discovery is already in progress")
         try:
-            try:
-                native_names = tuple(
-                    sorted({
-                        name.strip().upper().rstrip("\\/")
-                        for name in self._native_discovery()
-                        if re.fullmatch(r"[A-Z]:[\\/]?", name.strip().upper())
-                    })
-                )
-            except OSError:
-                native_names = ()
-            # A MakeMKV all-drive scan or Windows identity lookup can take up
-            # to its bounded timeout. Publish path-redacted, unusable Windows
-            # placeholders first so a fresh process does not show zero trays.
-            self._publish_native_placeholders(native_names)
+            result = self._runner(
+                executable,
+                "disc:9999",
+                timeout_seconds=timeout_seconds,
+            )
+            parsed_drives = sorted(
+                parse_drives(result.stdout), key=lambda item: item.index
+            )
             try:
                 native_identities = self._native_identity_discovery()
             except DriveMappingError:
@@ -676,31 +533,20 @@ class DriveWatcher:
                 sorted({
                     name.strip().upper().rstrip("\\/")
                     for name in (
-                        *native_names,
+                        *self._native_discovery(),
                         *(item.device_name for item in native_identities),
                     )
                     if re.fullmatch(r"[A-Z]:[\\/]?", name.strip().upper())
                 })
             )
-            # Attach safe Windows identities before invoking MakeMKV so a
-            # timeout cannot leave every otherwise healthy drive anonymous.
-            self._publish_native_placeholders(native_names, native_identities)
-            # Windows media readiness may block inside an optical driver. Give
-            # it one second, then continue to MakeMKV with the identified slots.
-            native_media = self._discover_native_media_bounded()
-            self._publish_native_placeholders(
-                native_names,
-                native_identities,
-                native_media,
-            )
-            result = self._runner(
-                executable,
-                "disc:9999",
-                timeout_seconds=timeout_seconds,
-            )
-            parsed_drives = sorted(
-                parse_drives(result.stdout), key=lambda item: item.index
-            )
+            try:
+                native_media = {
+                    name.strip().upper().rstrip("\\/"): state
+                    for name, state in self._native_media_discovery().items()
+                    if re.fullmatch(r"[A-Z]:[\\/]?", name.strip().upper())
+                }
+            except OSError:
+                native_media = {}
             with self._lock:
                 refreshed: dict[int, PublicDriveStatus] = {}
                 parsed_device_names: dict[int, str] = {}
@@ -734,14 +580,8 @@ class DriveWatcher:
                         ),
                         None,
                     )
-                    native_media_state = native_media.get(device_name, (False, None))
-                    has_disc = drive.has_disc or native_media_state[0]
                     public_label = (
-                        _public_disc_label(drive.disc_name)
-                        if drive.has_disc
-                        else _public_disc_label(native_media_state[1] or "")
-                        if native_media_state[0]
-                        else None
+                        _public_disc_label(drive.disc_name) if drive.has_disc else None
                     )
                     same_disc = bool(
                         previous
@@ -751,7 +591,7 @@ class DriveWatcher:
                     refreshed[drive.index] = PublicDriveStatus(
                         drive_index=drive.index,
                         available=bool(drive.visible and drive.enabled),
-                        has_disc=has_disc,
+                        has_disc=drive.has_disc,
                         disc_label=public_label,
                         current_job_id=(
                             previous.current_job_id if same_disc and previous else None
