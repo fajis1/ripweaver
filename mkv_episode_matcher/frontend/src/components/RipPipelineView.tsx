@@ -1256,7 +1256,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
     }
   };
 
-  const refreshDrives = async (timeoutSeconds = 120) => {
+  const refreshDrives = async (timeoutSeconds = 300) => {
     setRefreshingDrives(true);
     setError('');
     try {
@@ -3592,7 +3592,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
               {driveDashboard?.refresh_deferred
                 ? 'Drive refresh queued safely'
                 : refreshingDrives || driveDashboard?.refresh_in_progress
-                  ? 'Reading drive slots (up to 2 minutes)…'
+                  ? 'Reading drive slots (up to 5 minutes)…'
                   : driveDashboard?.automatic_discovery_paused
                     ? 'Retry drive refresh (read-only)'
                     : driveDashboard?.busy_drive_indexes?.length
@@ -3629,12 +3629,12 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                   <li>Close the MakeMKV desktop application and wait for any current rip to stop.</li>
                   <li>Power-cycle external optical drives or their USB hub, then reconnect drives one at a time.</li>
                   <li>Confirm each drive appears normally in Windows before reconnecting the next one.</li>
-                  <li>Retry the two-minute read-only refresh. If it fails again, restart Windows to reset the optical driver stack.</li>
+                  <li>Retry the five-minute read-only refresh. If it fails again, restart Windows to reset the optical driver stack.</li>
                 </ol>
               )}
               {!driveDashboard?.refresh_in_progress && driveDashboard?.status === 'error' && (
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <button type="button" className="btn btn-secondary text-xs" onClick={() => void refreshDrives(120)} disabled={refreshingDrives || driveDashboard?.refresh_in_progress || driveDashboard?.refresh_deferred || Boolean(driveDashboard?.busy_drive_indexes?.length)}>
+                  <button type="button" className="btn btn-secondary text-xs" onClick={() => void refreshDrives(300)} disabled={refreshingDrives || driveDashboard?.refresh_in_progress || driveDashboard?.refresh_deferred || Boolean(driveDashboard?.busy_drive_indexes?.length)}>
                     {driveDashboard.error_code === 'timeout' ? 'Retry after checking drives' : 'Retry drive refresh'}
                   </button>
                   {driveDashboard.error_code !== 'timeout' && (
@@ -3705,7 +3705,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                       {ignored
                         ? 'This optical device is ignored. Manage drive mapping to approve it before RipWeaver can use it.'
                         : identityUnavailable
-                          ? 'MakeMKV detected this slot, but Windows did not return its hardware identity in time. The drive remains visible and safely locked; a read-only refresh retries the identity lookup.'
+                          ? drive.makemkv_confirmed === false
+                            ? 'Windows detected this optical drive, but its hardware identity and MakeMKV slot are not yet confirmed. The drive remains visible and safely locked; a read-only refresh retries both checks.'
+                            : 'MakeMKV detected this slot, but Windows did not return its hardware identity in time. The drive remains visible and safely locked; a read-only refresh retries the identity lookup.'
                           : 'This device was detected but has not been approved. Open drive setup and choose Use before RipWeaver can read or rip it.'}
                     </div>
                     {drive.mapping_id && (

@@ -331,11 +331,19 @@ class DriveWatcher:
             self._refresh_lock.release()
         return not acquired
 
-    def _publish_native_placeholders(self, native_names: tuple[str, ...]) -> None:
+    def _publish_native_placeholders(
+        self,
+        native_names: tuple[str, ...],
+        native_identities: tuple[NativeOpticalDevice, ...] = (),
+    ) -> None:
         """Keep Windows-detected trays visible while full discovery is pending."""
 
         if not native_names:
             return
+        native_by_name = {
+            native.device_name.upper().rstrip("\\/"): native
+            for native in native_identities
+        }
         with self._lock:
             drives = {drive.drive_index: drive for drive in self._snapshot.drives}
             index_by_device = {
@@ -346,7 +354,18 @@ class DriveWatcher:
             device_names = dict(self._device_names)
             changed = False
             for ordinal, device_name in enumerate(native_names):
-                if device_name in index_by_device:
+                native = native_by_name.get(device_name)
+                existing_index = index_by_device.get(device_name)
+                if existing_index is not None:
+                    existing = drives[existing_index]
+                    updated = replace(
+                        existing,
+                        available=True,
+                        **self._mapping_fields(native),
+                    )
+                    if updated != existing:
+                        drives[existing_index] = updated
+                        changed = True
                     continue
                 drive_index = ordinal
                 if drive_index in used_indexes:
@@ -358,11 +377,17 @@ class DriveWatcher:
                     available=True,
                     has_disc=False,
                     makemkv_confirmed=False,
-                    **self._mapping_fields(None),
+                    **self._mapping_fields(native),
                 )
                 device_names[drive_index] = device_name
                 used_indexes.add(drive_index)
                 changed = True
+            self._mapping_keys.update({
+                native.mapping_id: native.device_key for native in native_identities
+            })
+            self._mapping_devices.update({
+                native.mapping_id: native for native in native_identities
+            })
             if changed:
                 self._device_names = device_names
                 self._snapshot = replace(
@@ -542,7 +567,7 @@ class DriveWatcher:
         *,
         timeout_seconds: int = 30,
     ) -> DriveStatusSnapshot:
-        if timeout_seconds < 5 or timeout_seconds > 120:
+        if timeout_seconds < 5 or timeout_seconds > 300:
             raise PreflightError("Drive discovery timeout is outside the safe range")
         if not self._refresh_lock.acquire(blocking=False):
             raise PreflightError("MakeMKV drive discovery is already in progress")
@@ -561,14 +586,6 @@ class DriveWatcher:
             # to its bounded timeout. Publish path-redacted, unusable Windows
             # placeholders first so a fresh process does not show zero trays.
             self._publish_native_placeholders(native_names)
-            result = self._runner(
-                executable,
-                "disc:9999",
-                timeout_seconds=timeout_seconds,
-            )
-            parsed_drives = sorted(
-                parse_drives(result.stdout), key=lambda item: item.index
-            )
             try:
                 native_identities = self._native_identity_discovery()
             except DriveMappingError:
@@ -591,6 +608,18 @@ class DriveWatcher:
                     )
                     if re.fullmatch(r"[A-Z]:[\\/]?", name.strip().upper())
                 })
+            )
+            # Attach safe Windows identities before invoking MakeMKV so a
+            # timeout cannot leave every otherwise healthy drive anonymous.
+            # These placeholders remain unusable until MakeMKV confirms them.
+            self._publish_native_placeholders(native_names, native_identities)
+            result = self._runner(
+                executable,
+                "disc:9999",
+                timeout_seconds=timeout_seconds,
+            )
+            parsed_drives = sorted(
+                parse_drives(result.stdout), key=lambda item: item.index
             )
             try:
                 native_media = {

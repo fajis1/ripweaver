@@ -271,7 +271,7 @@ def start_windows_drive_events() -> bool:
         watcher = get_drive_watcher()
         with _rip_execution_registry.claim_all_drive_discovery():
             executable = resolve_makemkv_path(config.makemkv_path)
-            snapshot = watcher.refresh(executable, timeout_seconds=120)
+            snapshot = watcher.refresh(executable, timeout_seconds=300)
         from mkv_episode_matcher.backend.automatic_rip import observe_automatic_drives
 
         observe_automatic_drives(

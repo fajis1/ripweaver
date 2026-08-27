@@ -53,6 +53,7 @@ def test_all_drive_discovery_retains_media_scan():
     command = build_info_command(Path("makemkvcon64.exe"), "disc:9999")
 
     assert "--noscan" not in command
+    assert "--cache=1" in command
 
 
 def test_targeted_inventory_reuses_cached_drive_when_global_row_is_omitted():

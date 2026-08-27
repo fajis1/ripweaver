@@ -733,7 +733,7 @@ def preflight(  # noqa: C901
             discovery = run_info_command(
                 executable,
                 "disc:9999",
-                timeout_seconds=min(timeout, 120),
+                timeout_seconds=min(timeout, 300),
             )
             (output_dir / "drive-discovery.robot.log").write_text(
                 sanitize_robot_output(discovery.stdout)

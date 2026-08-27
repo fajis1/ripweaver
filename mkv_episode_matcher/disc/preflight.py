@@ -180,7 +180,12 @@ def build_info_command(
         "--messages=-stdout",
         "--progress=-same",
     ]
-    if source != "disc:9999":
+    if source == "disc:9999":
+        # MakeMKV's documented drive-list command uses a minimal read cache.
+        # Keep discovery from inheriting the much larger media-conversion
+        # default before any title inventory has been requested.
+        command.append("--cache=1")
+    else:
         # A targeted inventory must not perform MakeMKV's normal media scan
         # against every other optical drive before opening the selected one.
         command.append("--noscan")

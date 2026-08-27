@@ -3,6 +3,10 @@ from pathlib import Path
 
 import pytest
 
+from mkv_episode_matcher.disc.drive_mapping import (
+    DriveMappingStore,
+    NativeOpticalDevice,
+)
 from mkv_episode_matcher.disc.drive_watcher import DriveWatcher
 from mkv_episode_matcher.disc.preflight import CommandResult, PreflightError
 
@@ -202,6 +206,36 @@ def test_first_failed_refresh_keeps_native_windows_slots_visible():
         "H:",
         "I:",
     ]
+
+
+def test_first_failed_refresh_keeps_native_windows_identities(tmp_path):
+    def timeout_runner(*_args, **_kwargs):
+        raise PreflightError("MakeMKV info timed out after 300s for disc:9999")
+
+    native = NativeOpticalDevice(
+        device_name="D:",
+        device_key="a" * 64,
+        display_name="External optical drive",
+        connection_type="USB",
+    )
+    watcher = DriveWatcher(
+        timeout_runner,
+        native_discovery=lambda: ("D:",),
+        native_identity_discovery=lambda: (native,),
+        mapping_store=DriveMappingStore(tmp_path / "drive-map.json"),
+    )
+
+    with pytest.raises(PreflightError, match="timed out"):
+        watcher.refresh(Path("makemkvcon64.exe"), timeout_seconds=300)
+
+    drive = watcher.snapshot().drives[0]
+    assert drive.mapping_id == native.mapping_id
+    assert drive.display_name == "External optical drive"
+    assert drive.connection_type == "USB"
+    assert drive.mapping_status == "unmapped"
+    assert drive.mapping_warning == "new_device"
+    assert drive.makemkv_confirmed is False
+    assert watcher.mapping_plan_sha256() is not None
 
 
 def test_partial_refresh_preserves_previously_discovered_empty_slots():
@@ -414,7 +448,7 @@ def test_volume_change_invalidates_disc_identity_even_when_label_is_reused():
     assert drive.current_disc_fingerprint is None
 
 
-@pytest.mark.parametrize("timeout", [0, 4, 121])
+@pytest.mark.parametrize("timeout", [0, 4, 301])
 def test_refresh_rejects_unsafe_timeout(timeout):
     watcher = DriveWatcher(lambda *args, **kwargs: _result(""))
 
