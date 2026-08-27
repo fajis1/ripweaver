@@ -51,6 +51,7 @@ from mkv_episode_matcher.backend.organization_authorization import (
     build_organization_authorization_plan,
 )
 from mkv_episode_matcher.backend.rip_runtime import (
+    AllDriveDiscoveryBlocksDriveError,
     AllDriveDiscoveryDeferredError,
     AllDriveDiscoveryInProgressError,
     OpticalWorkLease,
@@ -212,6 +213,9 @@ _DASHBOARD_ACTIVE_PIPELINE_STATES = frozenset({
     "failed",
 })
 _DASHBOARD_ATTENTION_PIPELINE_STATES = frozenset({"review_required", "failed"})
+_PIPELINE_DISC_TITLE_ID = re.compile(
+    r"-disc-\d+-([0-9a-f]{16})-title-(\d{3})(?:-|$)", re.IGNORECASE
+)
 
 
 def _parse_dashboard_disc_fingerprints(value: str | None) -> tuple[str, ...]:
@@ -271,6 +275,7 @@ def _filter_dashboard_pipeline_items(
 ) -> tuple:
     if scope == "all":
         return items
+    items = _without_superseded_pipeline_attention(items)
     if scope == "active":
         return tuple(
             item for item in items if item.state in _DASHBOARD_ACTIVE_PIPELINE_STATES
@@ -320,6 +325,79 @@ def _pipeline_item_saved_disc_fingerprint(item) -> str | None:
 
     payload = _pipeline_item_saved_rip_payload(item)
     return str(payload["disc_fingerprint"]) if payload is not None else None
+
+
+def _pipeline_item_disc_title_identity(item) -> tuple[str, int] | None:
+    """Return immutable physical title lineage without exposing saved paths."""
+
+    media_id = getattr(item, "media_id", "")
+    if isinstance(media_id, str):
+        match = _PIPELINE_DISC_TITLE_ID.search(media_id)
+        if match is not None:
+            return match.group(1).lower(), int(match.group(2))
+    payload = _pipeline_item_saved_rip_payload(item)
+    if payload is None:
+        return None
+    fingerprint = payload.get("disc_fingerprint")
+    title_index = payload.get("title_index")
+    if (
+        not isinstance(fingerprint, str)
+        or re.fullmatch(r"[0-9a-f]{16}", fingerprint) is None
+        or not isinstance(title_index, int)
+        or isinstance(title_index, bool)
+        or title_index < 0
+    ):
+        return None
+    return fingerprint, title_index
+
+
+def _pipeline_created_at(item) -> datetime | None:
+    value = getattr(item, "created_at", None)
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
+
+
+def _without_superseded_pipeline_attention(items: tuple) -> tuple:
+    """Hide old failures after a newer exact disc/title lineage was organized."""
+
+    completed_at: dict[tuple[str, int], datetime] = {}
+    identities: dict[int, tuple[str, int] | None] = {}
+    for item in items:
+        identity = _pipeline_item_disc_title_identity(item)
+        identities[id(item)] = identity
+        created_at = _pipeline_created_at(item)
+        if (
+            identity is None
+            or created_at is None
+            or getattr(item, "stage", None) != "organize"
+            or getattr(item, "state", None) != "completed"
+        ):
+            continue
+        previous = completed_at.get(identity)
+        if previous is None or created_at > previous:
+            completed_at[identity] = created_at
+
+    visible = []
+    for item in items:
+        if getattr(item, "state", None) not in _DASHBOARD_ATTENTION_PIPELINE_STATES:
+            visible.append(item)
+            continue
+        identity = identities.get(id(item))
+        created_at = _pipeline_created_at(item)
+        later_completion = completed_at.get(identity) if identity is not None else None
+        if (
+            created_at is not None
+            and later_completion is not None
+            and later_completion > created_at
+        ):
+            continue
+        visible.append(item)
+    return tuple(visible)
 
 
 def _payload_has_verified_media_file(payload: dict[str, object]) -> bool:
@@ -723,6 +801,7 @@ class DriveMappingPlanRequest(BaseModel):
 
 class EjectDriveRequest(BaseModel):
     confirm_eject: bool = False
+    automatic_completion: bool = False
     timeout_seconds: int = Field(default=30, ge=5, le=120)
 
 
@@ -1403,7 +1482,11 @@ def eject_drive(  # noqa: C901
     try:
         with registry.claim_drive_preparation(
             drive_index,
-            operation="manual eject check",
+            operation=(
+                "automatic eject check"
+                if request.automatic_completion
+                else "manual eject check"
+            ),
         ):
             device_name = watcher.device_name(drive_index)
             if device_name is None:
@@ -1430,6 +1513,19 @@ def eject_drive(  # noqa: C901
                 device_name = drive.device_name
             eject_optical_drive(device_name)
             watcher.record_successful_eject(drive_index)
+    except AllDriveDiscoveryBlocksDriveError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "all_drive_discovery_active",
+                "message": (
+                    "Read-only all-drive discovery is active; eject verification "
+                    "was deferred"
+                ),
+                "retryable": True,
+                "retry_after_seconds": 5,
+            },
+        ) from exc
     except RipError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (DiscEjectError, PreflightError, OSError) as exc:

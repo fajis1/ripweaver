@@ -296,6 +296,15 @@ const completeDiscAutoEjectKey = (drive: DriveSlot, job: OrchestrationJob): stri
   `${job.job_id}:${drive.current_disc_fingerprint ?? 'unknown-disc'}`
 );
 
+interface EjectAttemptResult {
+  ejected: boolean;
+  retryable: boolean;
+  message: string | null;
+  retryAfterSeconds: number | null;
+}
+
+const AUTO_EJECT_RETRY_DELAYS_MS = [5_000, 15_000, 60_000] as const;
+
 interface DriveDashboard {
   watcher_attached: boolean;
   refresh_mode: 'explicit' | 'startup-and-events';
@@ -969,13 +978,14 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
   const [queuedEjectDrives, setQueuedEjectDrives] = useState<number[]>([]);
   const [ejectFailureByDrive, setEjectFailureByDrive] = useState<Record<number, string>>({});
   const ejectQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const ejectDriveRef = useRef<(drive: DriveSlot, alreadyConfirmed?: boolean, quietFailure?: boolean) => Promise<boolean>>(
-    () => Promise.resolve(false),
+  const ejectDriveRef = useRef<(drive: DriveSlot, alreadyConfirmed?: boolean, quietFailure?: boolean) => Promise<EjectAttemptResult>>(
+    () => Promise.resolve({ ejected: false, retryable: false, message: null, retryAfterSeconds: null }),
   );
   const [completeDiscAutoEjectDeadlines, setCompleteDiscAutoEjectDeadlines] = useState<Record<string, number>>({});
   const [completeDiscAutoEjectHolds, setCompleteDiscAutoEjectHolds] = useState<Record<string, 'kept' | 'failed'>>({});
   const [completeDiscAutoEjectClock, setCompleteDiscAutoEjectClock] = useState(() => Date.now());
   const completeDiscAutoEjectAttemptedRef = useRef<Set<string>>(new Set());
+  const completeDiscAutoEjectRetryCountsRef = useRef<Map<string, number>>(new Map());
   const [renameDrafts, setRenameDrafts] = useState<Record<string, string>>({});
   const [seriesDrafts, setSeriesDrafts] = useState<Record<string, string>>({});
   const [bonusReviewModes, setBonusReviewModes] = useState<Record<string, boolean>>({});
@@ -1345,11 +1355,20 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
     }
   };
 
-  const ejectDrive = async (drive: DriveSlot, alreadyConfirmed = false, quietFailure = false): Promise<boolean> => {
-    if (!alreadyConfirmed && !window.confirm(`${drive.has_disc ? 'Eject the disc from' : 'Open the tray for'} optical drive ${drive.drive_index + 1}${drive.disc_label ? ` — ${drive.disc_label}` : ''}? RipWeaver will refuse if this drive has active or queued rip work.`)) return false;
-    if (queuedEjectDrives.includes(drive.drive_index) || ejectingDrives.includes(drive.drive_index)) return false;
+  const ejectDrive = async (drive: DriveSlot, alreadyConfirmed = false, quietFailure = false): Promise<EjectAttemptResult> => {
+    if (!alreadyConfirmed && !window.confirm(`${drive.has_disc ? 'Eject the disc from' : 'Open the tray for'} optical drive ${drive.drive_index + 1}${drive.disc_label ? ` — ${drive.disc_label}` : ''}? RipWeaver will refuse if this drive has active or queued rip work.`)) {
+      return { ejected: false, retryable: false, message: null, retryAfterSeconds: null };
+    }
+    if (queuedEjectDrives.includes(drive.drive_index) || ejectingDrives.includes(drive.drive_index)) {
+      return {
+        ejected: false,
+        retryable: true,
+        message: 'Another tray operation is still finishing.',
+        retryAfterSeconds: 5,
+      };
+    }
     setQueuedEjectDrives((current) => [...current, drive.drive_index]);
-    const operation = ejectQueueRef.current.catch(() => undefined).then(async () => {
+    const operation: Promise<EjectAttemptResult> = ejectQueueRef.current.catch(() => undefined).then(async () => {
       setQueuedEjectDrives((current) => current.filter((index) => index !== drive.drive_index));
       setEjectingDrives((current) => [...current, drive.drive_index]);
       setError('');
@@ -1360,19 +1379,45 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
         const response = await fetch(`/rip/drives/${drive.drive_index}/eject`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ confirm_eject: true, timeout_seconds: 30 }),
+          body: JSON.stringify({
+            confirm_eject: true,
+            automatic_completion: alreadyConfirmed && quietFailure,
+            timeout_seconds: 30,
+          }),
         });
         const payload = await responsePayload(response);
-        if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : 'The disc could not be ejected safely.');
+        if (!response.ok) {
+          const detail = payload.detail;
+          const structuredDetail = detail !== null && typeof detail === 'object' && !Array.isArray(detail)
+            ? detail as Record<string, unknown>
+            : null;
+          const message = typeof detail === 'string'
+            ? detail
+            : typeof structuredDetail?.message === 'string'
+              ? structuredDetail.message
+              : 'The disc could not be ejected safely.';
+          const retryable = structuredDetail?.retryable === true;
+          const retryAfterSeconds = typeof structuredDetail?.retry_after_seconds === 'number'
+            && Number.isFinite(structuredDetail.retry_after_seconds)
+            && structuredDetail.retry_after_seconds > 0
+            ? structuredDetail.retry_after_seconds
+            : null;
+          if (!quietFailure || !retryable) {
+            setError(`Optical drive ${drive.drive_index + 1} was not ejected: ${message}`);
+            setEjectFailureByDrive((current) => ({ ...current, [drive.drive_index]: message }));
+          }
+          if (!quietFailure) window.alert(`Optical drive ${drive.drive_index + 1} was not ejected. ${message}`);
+          return { ejected: false, retryable, message, retryAfterSeconds };
+        }
         setReviewNotice(`Ejected optical drive ${drive.drive_index + 1}.`);
         window.setTimeout(() => { void refreshDrives(); }, 1000);
-        return true;
+        return { ejected: true, retryable: false, message: null, retryAfterSeconds: null };
       } catch (requestError) {
         const message = requestError instanceof Error ? requestError.message : 'The disc could not be ejected safely.';
         setError(`Optical drive ${drive.drive_index + 1} was not ejected: ${message}`);
         setEjectFailureByDrive((current) => ({ ...current, [drive.drive_index]: message }));
         if (!quietFailure) window.alert(`Optical drive ${drive.drive_index + 1} was not ejected. ${message}`);
-        return false;
+        return { ejected: false, retryable: false, message, retryAfterSeconds: null };
       } finally {
         setEjectingDrives((current) => current.filter((index) => index !== drive.drive_index));
       }
@@ -2828,6 +2873,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
 
   const keepCompletedDiscInserted = (key: string) => {
     completeDiscAutoEjectAttemptedRef.current.add(key);
+    completeDiscAutoEjectRetryCountsRef.current.delete(key);
     setCompleteDiscAutoEjectDeadlines((current) => Object.fromEntries(
       Object.entries(current).filter(([candidate]) => candidate !== key),
     ));
@@ -2883,6 +2929,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
     for (const attempted of completeDiscAutoEjectAttemptedRef.current) {
       if (!candidateKeys.has(attempted)) completeDiscAutoEjectAttemptedRef.current.delete(attempted);
     }
+    for (const retried of completeDiscAutoEjectRetryCountsRef.current.keys()) {
+      if (!candidateKeys.has(retried)) completeDiscAutoEjectRetryCountsRef.current.delete(retried);
+    }
     setCompleteDiscAutoEjectDeadlines((current) => {
       const next: Record<string, number> = {};
       let changed = false;
@@ -2914,13 +2963,38 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
       });
       if (!drive) continue;
       completeDiscAutoEjectAttemptedRef.current.add(key);
-      void ejectDriveRef.current(drive, true, true).then((ejected) => {
+      void ejectDriveRef.current(drive, true, true).then((result) => {
+        if (result.ejected) {
+          completeDiscAutoEjectRetryCountsRef.current.delete(key);
+          setCompleteDiscAutoEjectDeadlines((current) => Object.fromEntries(
+            Object.entries(current).filter(([candidate]) => candidate !== key),
+          ));
+          return;
+        }
+        const retryCount = completeDiscAutoEjectRetryCountsRef.current.get(key) ?? 0;
+        const retryDelay = AUTO_EJECT_RETRY_DELAYS_MS[retryCount];
+        if (result.retryable && retryDelay !== undefined) {
+          const serverDelay = (result.retryAfterSeconds ?? 0) * 1000;
+          const effectiveDelay = Math.max(retryDelay, serverDelay);
+          completeDiscAutoEjectRetryCountsRef.current.set(key, retryCount + 1);
+          completeDiscAutoEjectAttemptedRef.current.delete(key);
+          setCompleteDiscAutoEjectDeadlines((current) => ({
+            ...current,
+            [key]: Date.now() + effectiveDelay,
+          }));
+          setReviewNotice(
+            `Automatic eject verification for optical drive ${drive.drive_index + 1} was deferred. Retrying in ${Math.ceil(effectiveDelay / 1000)} seconds.`,
+          );
+          return;
+        }
+        completeDiscAutoEjectRetryCountsRef.current.delete(key);
+        const message = result.message || 'No additional Windows diagnostic was returned.';
         setCompleteDiscAutoEjectDeadlines((current) => Object.fromEntries(
           Object.entries(current).filter(([candidate]) => candidate !== key),
         ));
-        if (!ejected) {
-          setCompleteDiscAutoEjectHolds((current) => ({ ...current, [key]: 'failed' }));
-        }
+        setError(`Optical drive ${drive.drive_index + 1} was not ejected: ${message}`);
+        setEjectFailureByDrive((current) => ({ ...current, [drive.drive_index]: message }));
+        setCompleteDiscAutoEjectHolds((current) => ({ ...current, [key]: 'failed' }));
       });
     }
   }, [completeDiscAutoEjectClock, completeDiscAutoEjectDeadlines, driveDashboard?.drives, latestJobForDrive]);
@@ -3950,6 +4024,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                 ? null
                 : Math.max(0, Math.ceil((completeAutoEjectDeadline - completeDiscAutoEjectClock) / 1000));
               const completeAutoEjectHold = completeAutoEjectKey ? completeDiscAutoEjectHolds[completeAutoEjectKey] : undefined;
+              const completeAutoEjectRetryCount = completeAutoEjectKey
+                ? completeDiscAutoEjectRetryCountsRef.current.get(completeAutoEjectKey) ?? 0
+                : 0;
               const stagingAttemptCollision = job?.state === 'awaiting_review'
                 && (job.preview?.collision_count ?? 0) > 0
                 && job.preview?.jobs.every((item) => ['clear', 'staging-exists'].includes(item.collision_status));
@@ -4223,7 +4300,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                       </div>
                       {completeAutoEjectSeconds !== null && (
                         <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-green-300/25 bg-black/10 p-2 text-xs">
-                          <span>Automatically ejecting this completed disc in {completeAutoEjectSeconds} second{completeAutoEjectSeconds === 1 ? '' : 's'}.</span>
+                          <span>{completeAutoEjectRetryCount > 0 ? 'Retrying automatic eject verification' : 'Automatically ejecting this completed disc'} in {completeAutoEjectSeconds} second{completeAutoEjectSeconds === 1 ? '' : 's'}.</span>
                           <button type="button" className="btn btn-secondary text-xs" onClick={() => completeAutoEjectKey && keepCompletedDiscInserted(completeAutoEjectKey)}>Keep disc inserted</button>
                         </div>
                       )}
@@ -4312,7 +4389,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                       <div className="mt-1 text-xs text-green-100/80">All {new Set(job.preview.held_titles?.map((item) => item.title_index) ?? []).size} known episode destinations from this disc already exist in Jellyfin. RipWeaver did not start MakeMKV.</div>
                       {completeAutoEjectSeconds !== null && (
                         <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-green-300/25 bg-black/10 p-2 text-xs">
-                          <span>Automatically ejecting this completed disc in {completeAutoEjectSeconds} second{completeAutoEjectSeconds === 1 ? '' : 's'}.</span>
+                          <span>{completeAutoEjectRetryCount > 0 ? 'Retrying automatic eject verification' : 'Automatically ejecting this completed disc'} in {completeAutoEjectSeconds} second{completeAutoEjectSeconds === 1 ? '' : 's'}.</span>
                           <button type="button" className="btn btn-secondary text-xs" onClick={() => completeAutoEjectKey && keepCompletedDiscInserted(completeAutoEjectKey)}>Keep disc inserted</button>
                         </div>
                       )}

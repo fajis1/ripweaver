@@ -231,6 +231,44 @@ def test_eject_endpoint_returns_safe_windows_diagnostics(tmp_path, monkeypatch):
     assert "D:" not in response.value.detail
 
 
+def test_automatic_eject_reports_discovery_conflict_as_retryable(tmp_path, monkeypatch):
+    watcher = DriveWatcher(lambda *_args, **_kwargs: _drive_result("disc:9999"))
+    watcher.refresh(tmp_path / "makemkvcon64.exe")
+    registry = RipExecutionRegistry()
+    discovery = registry.claim_all_drive_discovery()
+    monkeypatch.setattr(
+        rip,
+        "eject_optical_drive",
+        lambda _device_name: pytest.fail("a blocked eject must not touch the tray"),
+    )
+
+    try:
+        with pytest.raises(rip.HTTPException) as response:
+            rip.eject_drive(
+                0,
+                rip.EjectDriveRequest(
+                    confirm_eject=True,
+                    automatic_completion=True,
+                ),
+                OrchestrationStore(tmp_path / "jobs.sqlite3"),
+                lambda *_args, **_kwargs: pytest.fail("a blocked eject must not scan"),
+                watcher,
+                registry,
+            )
+    finally:
+        discovery.release()
+
+    assert response.value.status_code == 409
+    assert response.value.detail == {
+        "code": "all_drive_discovery_active",
+        "message": (
+            "Read-only all-drive discovery is active; eject verification was deferred"
+        ),
+        "retryable": True,
+        "retry_after_seconds": 5,
+    }
+
+
 def test_eject_reconciles_stale_running_job_without_live_executor(
     tmp_path, monkeypatch
 ):
