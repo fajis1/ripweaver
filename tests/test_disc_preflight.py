@@ -49,10 +49,16 @@ def test_build_info_command_allows_info_only():
     assert "backup" not in command
 
 
-def test_all_drive_discovery_retains_media_scan():
+def test_all_drive_discovery_uses_documented_cache_list_command():
     command = build_info_command(Path("makemkvcon64.exe"), "disc:9999")
 
-    assert "--noscan" not in command
+    assert command == (
+        "makemkvcon64.exe",
+        "-r",
+        "--cache=1",
+        "info",
+        "disc:9999",
+    )
 
 
 def test_targeted_inventory_reuses_cached_drive_when_global_row_is_omitted():
