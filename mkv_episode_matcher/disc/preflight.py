@@ -181,14 +181,13 @@ def build_info_command(
         "--progress=-same",
     ]
     if source == "disc:9999":
-        # MakeMKV's documented drive-list command uses a minimal read cache.
-        # Keep discovery from inheriting the much larger media-conversion
-        # default before any title inventory has been requested.
+        # List slots without opening every inserted disc. Windows supplies the
+        # dashboard media state; exact targeted inventory remains a separate
+        # guarded read after a MakeMKV slot has been confirmed.
         command.append("--cache=1")
-    else:
-        # A targeted inventory must not perform MakeMKV's normal media scan
-        # against every other optical drive before opening the selected one.
-        command.append("--noscan")
+    # Avoid MakeMKV's normal media prescan against every optical drive. For an
+    # explicit disc:N source it may still open that selected disc as requested.
+    command.append("--noscan")
     if minimum_length is not None:
         if minimum_length < 0:
             raise PreflightError("Minimum title length cannot be negative")

@@ -699,7 +699,7 @@ class DriveStatusResponse(BaseModel):
 
 class RefreshDrivesRequest(BaseModel):
     confirm_read: bool = False
-    timeout_seconds: int = Field(default=300, ge=5, le=300)
+    timeout_seconds: int = Field(default=30, ge=5, le=120)
 
 
 class DriveMappingRequest(BaseModel):
@@ -946,7 +946,7 @@ def _safe_drive_refresh_error(exc: PreflightError) -> str:
             "MakeMKV drive discovery timed out. The configured CLI starts, but an "
             "optical drive, enclosure, or Windows device query may not be responding. "
             "Close MakeMKV, power-cycle external optical drives, reconnect them one "
-            "at a time, then retry the five-minute refresh."
+            "at a time, then retry the read-only slot refresh."
         )
     if "already in progress" in message:
         return (

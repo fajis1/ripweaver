@@ -210,7 +210,7 @@ def test_first_failed_refresh_keeps_native_windows_slots_visible():
 
 def test_first_failed_refresh_keeps_native_windows_identities(tmp_path):
     def timeout_runner(*_args, **_kwargs):
-        raise PreflightError("MakeMKV info timed out after 300s for disc:9999")
+        raise PreflightError("MakeMKV info timed out after 30s for disc:9999")
 
     native = NativeOpticalDevice(
         device_name="D:",
@@ -221,12 +221,13 @@ def test_first_failed_refresh_keeps_native_windows_identities(tmp_path):
     watcher = DriveWatcher(
         timeout_runner,
         native_discovery=lambda: ("D:",),
+        native_media_discovery=lambda: {"D:": (True, "Inserted disc")},
         native_identity_discovery=lambda: (native,),
         mapping_store=DriveMappingStore(tmp_path / "drive-map.json"),
     )
 
     with pytest.raises(PreflightError, match="timed out"):
-        watcher.refresh(Path("makemkvcon64.exe"), timeout_seconds=300)
+        watcher.refresh(Path("makemkvcon64.exe"), timeout_seconds=30)
 
     drive = watcher.snapshot().drives[0]
     assert drive.mapping_id == native.mapping_id
@@ -234,8 +235,24 @@ def test_first_failed_refresh_keeps_native_windows_identities(tmp_path):
     assert drive.connection_type == "USB"
     assert drive.mapping_status == "unmapped"
     assert drive.mapping_warning == "new_device"
+    assert drive.has_disc is True
+    assert drive.disc_label == "Inserted disc"
     assert drive.makemkv_confirmed is False
     assert watcher.mapping_plan_sha256() is not None
+
+
+def test_native_media_populates_a_confirmed_noscan_slot():
+    watcher = DriveWatcher(
+        lambda *_args, **_kwargs: _result('DRV:0,2,999,0,"hardware","","D:"\n'),
+        native_discovery=lambda: ("D:",),
+        native_media_discovery=lambda: {"D:": (True, "Inserted disc")},
+    )
+
+    drive = watcher.refresh(Path("makemkvcon64.exe")).drives[0]
+
+    assert drive.has_disc is True
+    assert drive.disc_label == "Inserted disc"
+    assert drive.makemkv_confirmed is True
 
 
 def test_partial_refresh_preserves_previously_discovered_empty_slots():
@@ -448,7 +465,7 @@ def test_volume_change_invalidates_disc_identity_even_when_label_is_reused():
     assert drive.current_disc_fingerprint is None
 
 
-@pytest.mark.parametrize("timeout", [0, 4, 301])
+@pytest.mark.parametrize("timeout", [0, 4, 121])
 def test_refresh_rejects_unsafe_timeout(timeout):
     watcher = DriveWatcher(lambda *args, **kwargs: _result(""))
 

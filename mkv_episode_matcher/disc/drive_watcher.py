@@ -335,6 +335,7 @@ class DriveWatcher:
         self,
         native_names: tuple[str, ...],
         native_identities: tuple[NativeOpticalDevice, ...] = (),
+        native_media: dict[str, tuple[bool, str | None]] | None = None,
     ) -> None:
         """Keep Windows-detected trays visible while full discovery is pending."""
 
@@ -344,6 +345,7 @@ class DriveWatcher:
             native.device_name.upper().rstrip("\\/"): native
             for native in native_identities
         }
+        native_media = native_media or {}
         with self._lock:
             drives = {drive.drive_index: drive for drive in self._snapshot.drives}
             index_by_device = {
@@ -358,9 +360,30 @@ class DriveWatcher:
                 existing_index = index_by_device.get(device_name)
                 if existing_index is not None:
                     existing = drives[existing_index]
+                    media_state = native_media.get(device_name)
+                    media_fields: dict[str, object] = {}
+                    if media_state is not None:
+                        has_disc, label = media_state
+                        public_label = (
+                            _public_disc_label(label or "") if has_disc else None
+                        )
+                        same_disc = (
+                            existing.has_disc and existing.disc_label == public_label
+                        )
+                        media_fields = {
+                            "has_disc": has_disc,
+                            "disc_label": public_label,
+                            "current_job_id": (
+                                existing.current_job_id if same_disc else None
+                            ),
+                            "current_disc_fingerprint": (
+                                existing.current_disc_fingerprint if same_disc else None
+                            ),
+                        }
                     updated = replace(
                         existing,
                         available=True,
+                        **media_fields,
                         **self._mapping_fields(native),
                     )
                     if updated != existing:
@@ -372,10 +395,12 @@ class DriveWatcher:
                     drive_index = next(
                         index for index in range(32) if index not in used_indexes
                     )
+                has_disc, label = native_media.get(device_name, (False, None))
                 drives[drive_index] = PublicDriveStatus(
                     drive_index=drive_index,
                     available=True,
-                    has_disc=False,
+                    has_disc=has_disc,
+                    disc_label=_public_disc_label(label or "") if has_disc else None,
                     makemkv_confirmed=False,
                     **self._mapping_fields(native),
                 )
@@ -567,7 +592,7 @@ class DriveWatcher:
         *,
         timeout_seconds: int = 30,
     ) -> DriveStatusSnapshot:
-        if timeout_seconds < 5 or timeout_seconds > 300:
+        if timeout_seconds < 5 or timeout_seconds > 120:
             raise PreflightError("Drive discovery timeout is outside the safe range")
         if not self._refresh_lock.acquire(blocking=False):
             raise PreflightError("MakeMKV drive discovery is already in progress")
@@ -609,18 +634,6 @@ class DriveWatcher:
                     if re.fullmatch(r"[A-Z]:[\\/]?", name.strip().upper())
                 })
             )
-            # Attach safe Windows identities before invoking MakeMKV so a
-            # timeout cannot leave every otherwise healthy drive anonymous.
-            # These placeholders remain unusable until MakeMKV confirms them.
-            self._publish_native_placeholders(native_names, native_identities)
-            result = self._runner(
-                executable,
-                "disc:9999",
-                timeout_seconds=timeout_seconds,
-            )
-            parsed_drives = sorted(
-                parse_drives(result.stdout), key=lambda item: item.index
-            )
             try:
                 native_media = {
                     name.strip().upper().rstrip("\\/"): state
@@ -629,6 +642,23 @@ class DriveWatcher:
                 }
             except OSError:
                 native_media = {}
+            # Attach safe Windows identities before invoking MakeMKV so a
+            # timeout cannot leave every otherwise healthy drive anonymous.
+            # Windows also supplies the inserted/empty state immediately, but
+            # these placeholders remain unusable until MakeMKV confirms them.
+            self._publish_native_placeholders(
+                native_names,
+                native_identities,
+                native_media,
+            )
+            result = self._runner(
+                executable,
+                "disc:9999",
+                timeout_seconds=timeout_seconds,
+            )
+            parsed_drives = sorted(
+                parse_drives(result.stdout), key=lambda item: item.index
+            )
             with self._lock:
                 refreshed: dict[int, PublicDriveStatus] = {}
                 parsed_device_names: dict[int, str] = {}
@@ -662,8 +692,14 @@ class DriveWatcher:
                         ),
                         None,
                     )
+                    native_media_state = native_media.get(device_name, (False, None))
+                    has_disc = drive.has_disc or native_media_state[0]
                     public_label = (
-                        _public_disc_label(drive.disc_name) if drive.has_disc else None
+                        _public_disc_label(drive.disc_name)
+                        if drive.has_disc
+                        else _public_disc_label(native_media_state[1] or "")
+                        if native_media_state[0]
+                        else None
                     )
                     same_disc = bool(
                         previous
@@ -673,7 +709,7 @@ class DriveWatcher:
                     refreshed[drive.index] = PublicDriveStatus(
                         drive_index=drive.index,
                         available=bool(drive.visible and drive.enabled),
-                        has_disc=drive.has_disc,
+                        has_disc=has_disc,
                         disc_label=public_label,
                         current_job_id=(
                             previous.current_job_id if same_disc and previous else None

@@ -49,10 +49,10 @@ def test_build_info_command_allows_info_only():
     assert "backup" not in command
 
 
-def test_all_drive_discovery_retains_media_scan():
+def test_all_drive_discovery_lists_slots_without_media_prescan():
     command = build_info_command(Path("makemkvcon64.exe"), "disc:9999")
 
-    assert "--noscan" not in command
+    assert "--noscan" in command
     assert "--cache=1" in command
 
 

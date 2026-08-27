@@ -1256,7 +1256,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
     }
   };
 
-  const refreshDrives = async (timeoutSeconds = 300) => {
+  const refreshDrives = async (timeoutSeconds = 30) => {
     setRefreshingDrives(true);
     setError('');
     try {
@@ -3592,7 +3592,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
               {driveDashboard?.refresh_deferred
                 ? 'Drive refresh queued safely'
                 : refreshingDrives || driveDashboard?.refresh_in_progress
-                  ? 'Reading drive slots (up to 5 minutes)…'
+                  ? 'Reading drive slots (normally seconds; stops after 30 seconds)…'
                   : driveDashboard?.automatic_discovery_paused
                     ? 'Retry drive refresh (read-only)'
                     : driveDashboard?.busy_drive_indexes?.length
@@ -3629,12 +3629,12 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                   <li>Close the MakeMKV desktop application and wait for any current rip to stop.</li>
                   <li>Power-cycle external optical drives or their USB hub, then reconnect drives one at a time.</li>
                   <li>Confirm each drive appears normally in Windows before reconnecting the next one.</li>
-                  <li>Retry the five-minute read-only refresh. If it fails again, restart Windows to reset the optical driver stack.</li>
+                  <li>Retry the read-only slot refresh. If it fails again, restart Windows to reset the optical driver stack.</li>
                 </ol>
               )}
               {!driveDashboard?.refresh_in_progress && driveDashboard?.status === 'error' && (
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <button type="button" className="btn btn-secondary text-xs" onClick={() => void refreshDrives(300)} disabled={refreshingDrives || driveDashboard?.refresh_in_progress || driveDashboard?.refresh_deferred || Boolean(driveDashboard?.busy_drive_indexes?.length)}>
+                  <button type="button" className="btn btn-secondary text-xs" onClick={() => void refreshDrives(30)} disabled={refreshingDrives || driveDashboard?.refresh_in_progress || driveDashboard?.refresh_deferred || Boolean(driveDashboard?.busy_drive_indexes?.length)}>
                     {driveDashboard.error_code === 'timeout' ? 'Retry after checking drives' : 'Retry drive refresh'}
                   </button>
                   {driveDashboard.error_code !== 'timeout' && (
