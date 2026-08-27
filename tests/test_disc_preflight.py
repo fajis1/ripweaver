@@ -49,11 +49,10 @@ def test_build_info_command_allows_info_only():
     assert "backup" not in command
 
 
-def test_all_drive_discovery_lists_slots_without_media_prescan():
+def test_all_drive_discovery_retains_media_scan():
     command = build_info_command(Path("makemkvcon64.exe"), "disc:9999")
 
-    assert "--noscan" in command
-    assert "--cache=1" in command
+    assert "--noscan" not in command
 
 
 def test_targeted_inventory_reuses_cached_drive_when_global_row_is_omitted():
@@ -168,30 +167,6 @@ def test_info_runner_uses_supervised_makemkv_boundary(monkeypatch):
     )
 
     assert calls == [(result.command, 15)]
-    assert result.stdout == "output"
-
-
-def test_all_drive_runner_stops_when_every_expected_slot_row_arrives(monkeypatch):
-    calls = []
-
-    def run(command, *, timeout_seconds, completion_predicate):
-        calls.append((command, timeout_seconds))
-        assert completion_predicate(
-            'DRV:0,2,999,0,"drive","","D:"\nDRV:1,2,999,0,"drive","","F:"\n'
-        )
-        assert not completion_predicate('DRV:0,2,999,0,"drive","","D:"\n')
-        return preflight.subprocess.CompletedProcess(command, 1, "output", "")
-
-    monkeypatch.setattr(preflight, "run_makemkv_command", run)
-
-    result = preflight.run_info_command(
-        Path("makemkvcon64.exe"),
-        "disc:9999",
-        timeout_seconds=30,
-        expected_device_names=("D:", "F:"),
-    )
-
-    assert calls == [(result.command, 30)]
     assert result.stdout == "output"
 
 

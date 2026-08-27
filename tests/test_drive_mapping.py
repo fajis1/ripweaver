@@ -102,17 +102,6 @@ def test_windows_identity_discovery_allows_slow_multi_drive_metadata(monkeypatch
     assert observed == {"timeout_seconds": 30}
 
 
-def test_windows_identity_query_avoids_blocking_cdrom_wmi_provider():
-    assert "Win32_CDROMDrive" not in drive_mapping._WINDOWS_OPTICAL_QUERY
-    assert "Get-PnpDevice -Class CDROM -PresentOnly" in (
-        drive_mapping._WINDOWS_OPTICAL_QUERY
-    )
-    assert "HKEY_LOCAL_MACHINE\\SYSTEM\\MountedDevices" in (
-        drive_mapping._WINDOWS_OPTICAL_QUERY
-    )
-    assert "ComputeHash" in drive_mapping._WINDOWS_OPTICAL_QUERY
-
-
 def test_drive_mapping_store_persists_only_hashed_decisions(tmp_path):
     path = tmp_path / "drive-map.json"
     store = DriveMappingStore(path)

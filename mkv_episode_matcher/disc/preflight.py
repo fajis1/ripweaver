@@ -11,7 +11,6 @@ import io
 import json
 import re
 import subprocess
-from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -181,14 +180,10 @@ def build_info_command(
         "--messages=-stdout",
         "--progress=-same",
     ]
-    if source == "disc:9999":
-        # List slots without opening every inserted disc. Windows supplies the
-        # dashboard media state; exact targeted inventory remains a separate
-        # guarded read after a MakeMKV slot has been confirmed.
-        command.append("--cache=1")
-    # Avoid MakeMKV's normal media prescan against every optical drive. For an
-    # explicit disc:N source it may still open that selected disc as requested.
-    command.append("--noscan")
+    if source != "disc:9999":
+        # A targeted inventory must not perform MakeMKV's normal media scan
+        # against every other optical drive before opening the selected one.
+        command.append("--noscan")
     if minimum_length is not None:
         if minimum_length < 0:
             raise PreflightError("Minimum title length cannot be negative")
@@ -206,40 +201,16 @@ def run_info_command(
     *,
     minimum_length: int | None = None,
     timeout_seconds: int = 300,
-    expected_device_names: Sequence[str] | None = None,
 ) -> CommandResult:
     """Run one validated MakeMKV info command and capture its robot output."""
 
     command = build_info_command(executable, source, minimum_length)
     started = datetime.now(UTC)
-    expected_names = {
-        name.strip().upper().rstrip("\\/")
-        for name in expected_device_names or ()
-        if re.fullmatch(r"[A-Z]:[\\/]?", name.strip().upper())
-    }
-
-    def drive_rows_complete(stdout: str) -> bool:
-        if source != "disc:9999" or not expected_names:
-            return False
-        reported_names = {
-            drive.device_name.strip().upper().rstrip("\\/")
-            for drive in parse_drives(stdout)
-            if drive.visible and drive.enabled and drive.device_name.strip()
-        }
-        return expected_names <= reported_names
-
     try:
-        if expected_names:
-            completed = run_makemkv_command(
-                command,
-                timeout_seconds=timeout_seconds,
-                completion_predicate=drive_rows_complete,
-            )
-        else:
-            completed = run_makemkv_command(
-                command,
-                timeout_seconds=timeout_seconds,
-            )
+        completed = run_makemkv_command(
+            command,
+            timeout_seconds=timeout_seconds,
+        )
     except subprocess.TimeoutExpired as exc:
         raise PreflightError(
             f"MakeMKV info timed out after {timeout_seconds}s for {source}"
