@@ -177,6 +177,33 @@ def test_failed_refresh_classifies_timeout_for_actionable_recovery():
     assert failed.error_code == "timeout"
 
 
+def test_first_failed_refresh_keeps_native_windows_slots_visible():
+    def timeout_runner(*_args, **_kwargs):
+        raise PreflightError("MakeMKV info timed out after 30s for disc:9999")
+
+    watcher = DriveWatcher(
+        timeout_runner,
+        native_discovery=lambda: ("D:", "F:", "H:", "I:"),
+    )
+
+    with pytest.raises(PreflightError, match="timed out"):
+        watcher.refresh(Path("makemkvcon64.exe"))
+
+    failed = watcher.snapshot()
+    assert failed.status == "error"
+    assert failed.error_code == "timeout"
+    assert [drive.drive_index for drive in failed.drives] == [0, 1, 2, 3]
+    assert all(drive.available for drive in failed.drives)
+    assert all(not drive.has_disc for drive in failed.drives)
+    assert all(not drive.makemkv_confirmed for drive in failed.drives)
+    assert [watcher.device_name(index) for index in range(4)] == [
+        "D:",
+        "F:",
+        "H:",
+        "I:",
+    ]
+
+
 def test_partial_refresh_preserves_previously_discovered_empty_slots():
     results = iter([
         _result(

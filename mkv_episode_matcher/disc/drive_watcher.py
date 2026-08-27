@@ -331,6 +331,45 @@ class DriveWatcher:
             self._refresh_lock.release()
         return not acquired
 
+    def _publish_native_placeholders(self, native_names: tuple[str, ...]) -> None:
+        """Keep Windows-detected trays visible while full discovery is pending."""
+
+        if not native_names:
+            return
+        with self._lock:
+            drives = {drive.drive_index: drive for drive in self._snapshot.drives}
+            index_by_device = {
+                device_name.upper().rstrip("\\/"): drive_index
+                for drive_index, device_name in self._device_names.items()
+            }
+            used_indexes = set(drives)
+            device_names = dict(self._device_names)
+            changed = False
+            for ordinal, device_name in enumerate(native_names):
+                if device_name in index_by_device:
+                    continue
+                drive_index = ordinal
+                if drive_index in used_indexes:
+                    drive_index = next(
+                        index for index in range(32) if index not in used_indexes
+                    )
+                drives[drive_index] = PublicDriveStatus(
+                    drive_index=drive_index,
+                    available=True,
+                    has_disc=False,
+                    makemkv_confirmed=False,
+                    **self._mapping_fields(None),
+                )
+                device_names[drive_index] = device_name
+                used_indexes.add(drive_index)
+                changed = True
+            if changed:
+                self._device_names = device_names
+                self._snapshot = replace(
+                    self._snapshot,
+                    drives=tuple(drives[index] for index in sorted(drives)),
+                )
+
     def mapping_required(self) -> bool:
         """Return whether this watcher enforces the durable device allowlist."""
 
@@ -508,6 +547,20 @@ class DriveWatcher:
         if not self._refresh_lock.acquire(blocking=False):
             raise PreflightError("MakeMKV drive discovery is already in progress")
         try:
+            try:
+                native_names = tuple(
+                    sorted({
+                        name.strip().upper().rstrip("\\/")
+                        for name in self._native_discovery()
+                        if re.fullmatch(r"[A-Z]:[\\/]?", name.strip().upper())
+                    })
+                )
+            except OSError:
+                native_names = ()
+            # A MakeMKV all-drive scan or Windows identity lookup can take up
+            # to its bounded timeout. Publish path-redacted, unusable Windows
+            # placeholders first so a fresh process does not show zero trays.
+            self._publish_native_placeholders(native_names)
             result = self._runner(
                 executable,
                 "disc:9999",
@@ -533,7 +586,7 @@ class DriveWatcher:
                 sorted({
                     name.strip().upper().rstrip("\\/")
                     for name in (
-                        *self._native_discovery(),
+                        *native_names,
                         *(item.device_name for item in native_identities),
                     )
                     if re.fullmatch(r"[A-Z]:[\\/]?", name.strip().upper())

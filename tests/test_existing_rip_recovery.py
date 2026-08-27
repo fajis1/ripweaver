@@ -286,6 +286,66 @@ def test_recovery_accepts_consistently_smaller_completed_batch_prefix(tmp_path):
     assert plan.missing_title_indexes == (8,)
 
 
+def test_recovery_continues_after_inventory_predicted_tiny_batch_output(tmp_path):
+    jobs = tuple(
+        RipJob(**{
+            **_job(index).__dict__,
+            "estimated_bytes": estimated,
+        })
+        for index, estimated in ((1, 2_000_000), (2, 18_432), (3, 2_000_000))
+    )
+    parent = (
+        tmp_path
+        / ".staging"
+        / "disc-01"
+        / "attempt-abc123"
+        / "0123456789abcdef"
+        / "title-001"
+    )
+    parent.mkdir(parents=True)
+    for ordinal, size in enumerate((2_020_000, 97_325, 2_030_000)):
+        path = parent / f"Disc Name_t{ordinal:02d}.mkv"
+        path.write_bytes(b"x")
+        with path.open("r+b") as stream:
+            stream.truncate(size)
+
+    plan = discover_existing_rips(tmp_path, jobs)
+
+    assert [candidate.title_index for candidate in plan.candidates] == [1, 2, 3]
+    assert plan.missing_title_indexes == ()
+
+
+def test_recovery_can_skip_missing_planned_tiny_output_and_map_later_title(
+    tmp_path,
+):
+    jobs = tuple(
+        RipJob(**{
+            **_job(index).__dict__,
+            "estimated_bytes": estimated,
+        })
+        for index, estimated in ((1, 2_000_000), (2, 18_432), (3, 2_000_000))
+    )
+    parent = (
+        tmp_path
+        / ".staging"
+        / "disc-01"
+        / "attempt-abc123"
+        / "0123456789abcdef"
+        / "title-001"
+    )
+    parent.mkdir(parents=True)
+    for ordinal, size in ((0, 2_020_000), (2, 2_030_000)):
+        path = parent / f"Disc Name_t{ordinal:02d}.mkv"
+        path.write_bytes(b"x")
+        with path.open("r+b") as stream:
+            stream.truncate(size)
+
+    plan = discover_existing_rips(tmp_path, jobs)
+
+    assert [candidate.title_index for candidate in plan.candidates] == [1, 3]
+    assert plan.missing_title_indexes == (2,)
+
+
 def test_recovery_rejects_undersized_first_batch_output(tmp_path):
     job = RipJob(**{**_job(1).__dict__, "estimated_bytes": 100_000_000})
     parent = (
