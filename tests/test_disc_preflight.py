@@ -49,13 +49,14 @@ def test_build_info_command_allows_info_only():
     assert "backup" not in command
 
 
-def test_all_drive_discovery_uses_documented_cache_list_command():
+def test_all_drive_discovery_restores_progressive_robot_output():
     command = build_info_command(Path("makemkvcon64.exe"), "disc:9999")
 
     assert command == (
         "makemkvcon64.exe",
         "-r",
-        "--cache=1",
+        "--messages=-stdout",
+        "--progress=-same",
         "info",
         "disc:9999",
     )

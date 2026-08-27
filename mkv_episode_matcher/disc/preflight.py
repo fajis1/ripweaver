@@ -174,14 +174,13 @@ def build_info_command(
     if DISC_SOURCE_PATTERN.fullmatch(source) is None:
         raise PreflightError(f"Unsafe or invalid MakeMKV source: {source!r}")
 
-    command = [str(executable), "-r"]
-    if source == "disc:9999":
-        # MakeMKV documents this exact cache-backed command shape for listing
-        # available drive slots. It avoids turning dashboard discovery into a
-        # full inventory of every inserted disc.
-        command.append("--cache=1")
-    else:
-        command.extend(("--messages=-stdout", "--progress=-same"))
+    command = [
+        str(executable),
+        "-r",
+        "--messages=-stdout",
+        "--progress=-same",
+    ]
+    if source != "disc:9999":
         # A targeted inventory must not perform MakeMKV's normal media scan
         # against every other optical drive before opening the selected one.
         command.append("--noscan")

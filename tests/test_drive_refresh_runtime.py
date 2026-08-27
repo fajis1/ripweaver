@@ -98,3 +98,8 @@ def test_production_drive_events_do_not_poll_idle_optical_drives(monkeypatch):
     assert captured["coordinator_started"] is True
     assert captured["listener_started"] is True
     assert captured["startup_refresh_queued"] is True
+
+
+def test_production_drive_discovery_uses_short_bounded_timeouts():
+    assert dependencies.DRIVE_DISCOVERY_TIMEOUT_SECONDS == 30
+    assert dependencies.DRIVE_IDENTITY_TIMEOUT_SECONDS == 5

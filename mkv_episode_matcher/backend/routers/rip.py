@@ -946,7 +946,7 @@ def _safe_drive_refresh_error(exc: PreflightError) -> str:
             "MakeMKV drive discovery timed out. The configured CLI starts, but an "
             "optical drive, enclosure, or Windows device query may not be responding. "
             "Close MakeMKV, power-cycle external optical drives, reconnect them one "
-            "at a time, then retry the two-minute refresh."
+            "at a time, then retry the 30-second refresh."
         )
     if "already in progress" in message:
         return (

@@ -53,6 +53,8 @@ _drive_watcher: DriveWatcher | None = None
 _handbrake_profile_store: HandBrakeProfileStore | None = None
 _drive_refresh_coordinator: DriveRefreshCoordinator | None = None
 _windows_volume_listener: WindowsVolumeEventListener | None = None
+DRIVE_DISCOVERY_TIMEOUT_SECONDS = 30
+DRIVE_IDENTITY_TIMEOUT_SECONDS = 5
 _library_episode_repair_store: LibraryEpisodeRepairStore | None = None
 _image_acquisition_store: ImageAcquisitionStore | None = None
 _private_acquisition_binding_store: PrivateAcquisitionBindingStore | None = None
@@ -241,7 +243,9 @@ def get_drive_watcher() -> DriveWatcher:
             config = get_config_manager().load()
             mapping_path = config.cache_dir.parent / "orchestration" / "drive-map.json"
             _drive_watcher = DriveWatcher(
-                native_identity_discovery=discover_windows_optical_devices,
+                native_identity_discovery=lambda: discover_windows_optical_devices(
+                    timeout_seconds=DRIVE_IDENTITY_TIMEOUT_SECONDS
+                ),
                 mapping_store=DriveMappingStore(mapping_path),
             )
     return _drive_watcher
@@ -271,7 +275,10 @@ def start_windows_drive_events() -> bool:
         watcher = get_drive_watcher()
         with _rip_execution_registry.claim_all_drive_discovery():
             executable = resolve_makemkv_path(config.makemkv_path)
-            snapshot = watcher.refresh(executable, timeout_seconds=120)
+            snapshot = watcher.refresh(
+                executable,
+                timeout_seconds=DRIVE_DISCOVERY_TIMEOUT_SECONDS,
+            )
         from mkv_episode_matcher.backend.automatic_rip import observe_automatic_drives
 
         observe_automatic_drives(
