@@ -11,6 +11,7 @@ import io
 import json
 import re
 import subprocess
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -205,16 +206,40 @@ def run_info_command(
     *,
     minimum_length: int | None = None,
     timeout_seconds: int = 300,
+    expected_device_names: Sequence[str] | None = None,
 ) -> CommandResult:
     """Run one validated MakeMKV info command and capture its robot output."""
 
     command = build_info_command(executable, source, minimum_length)
     started = datetime.now(UTC)
+    expected_names = {
+        name.strip().upper().rstrip("\\/")
+        for name in expected_device_names or ()
+        if re.fullmatch(r"[A-Z]:[\\/]?", name.strip().upper())
+    }
+
+    def drive_rows_complete(stdout: str) -> bool:
+        if source != "disc:9999" or not expected_names:
+            return False
+        reported_names = {
+            drive.device_name.strip().upper().rstrip("\\/")
+            for drive in parse_drives(stdout)
+            if drive.visible and drive.enabled and drive.device_name.strip()
+        }
+        return expected_names <= reported_names
+
     try:
-        completed = run_makemkv_command(
-            command,
-            timeout_seconds=timeout_seconds,
-        )
+        if expected_names:
+            completed = run_makemkv_command(
+                command,
+                timeout_seconds=timeout_seconds,
+                completion_predicate=drive_rows_complete,
+            )
+        else:
+            completed = run_makemkv_command(
+                command,
+                timeout_seconds=timeout_seconds,
+            )
     except subprocess.TimeoutExpired as exc:
         raise PreflightError(
             f"MakeMKV info timed out after {timeout_seconds}s for {source}"

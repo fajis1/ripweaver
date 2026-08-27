@@ -473,3 +473,46 @@ def test_process_audit_retains_only_counts_and_error_type(monkeypatch):
     ]
     assert "private" not in repr(records)
     assert "42" not in repr(records)
+
+
+def test_read_only_completion_predicate_stops_a_slow_exiting_child(monkeypatch):
+    output = 'DRV:0,2,999,0,"hardware","","D:"\n'
+
+    class SlowExitProcess(_Process):
+        def __init__(self):
+            super().__init__()
+            self.communicate_calls = 0
+
+        def communicate(self, timeout=None):
+            self.communicate_calls += 1
+            if self.returncode is None:
+                raise subprocess.TimeoutExpired(
+                    ("makemkvcon64.exe", "info", "disc:9999"),
+                    timeout,
+                    output=output,
+                    stderr="",
+                )
+            return output, ""
+
+    process = SlowExitProcess()
+    monkeypatch.setattr(
+        makemkv_process_control,
+        "start_makemkv_process",
+        lambda *_args, **_kwargs: process,
+    )
+    monkeypatch.setattr(
+        makemkv_process_control,
+        "audit_makemkv_process_exit",
+        lambda _process: None,
+    )
+
+    completed = makemkv_process_control.run_makemkv_command(
+        ("makemkvcon64.exe", "info", "disc:9999"),
+        timeout_seconds=30,
+        completion_predicate=lambda stdout: '"D:"' in stdout,
+    )
+
+    assert process.killed is True
+    assert process.communicate_calls == 2
+    assert process._ripweaver_completion_reached is True
+    assert completed.stdout == output

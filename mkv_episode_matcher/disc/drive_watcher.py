@@ -84,32 +84,88 @@ def discover_windows_optical_drives() -> tuple[str, ...]:
 
 
 def discover_windows_optical_media() -> dict[str, tuple[bool, str | None]]:
-    """Read Windows volume readiness/labels without invoking MakeMKV."""
+    """Check optical-media presence without mounting or reading its filesystem."""
 
     if sys.platform != "win32":
         return {}
     import ctypes
+    from ctypes import wintypes
 
-    kernel32 = ctypes.windll.kernel32
+    file_read_attributes = 0x0080
+    file_share_read = 0x00000001
+    file_share_write = 0x00000002
+    open_existing = 3
+    ioctl_storage_check_verify2 = 0x002D0800
+    error_not_ready = 21
+    error_no_media_in_drive = 1112
+    invalid_handle_value = ctypes.c_void_p(-1).value
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.DeviceIoControl.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.LPVOID,
+    ]
+    kernel32.DeviceIoControl.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
     media: dict[str, tuple[bool, str | None]] = {}
     for device_name in discover_windows_optical_drives():
-        label = ctypes.create_unicode_buffer(261)
-        ready = bool(
-            kernel32.GetVolumeInformationW(
-                f"{device_name}\\",
-                label,
-                len(label),
-                None,
-                None,
-                None,
-                None,
-                0,
+        ctypes.set_last_error(0)
+        handle = kernel32.CreateFileW(
+            f"\\\\.\\{device_name}",
+            file_read_attributes,
+            file_share_read | file_share_write,
+            None,
+            open_existing,
+            0,
+            None,
+        )
+        if not handle or int(handle) == invalid_handle_value:
+            error_code = ctypes.get_last_error()
+            if error_code in {error_not_ready, error_no_media_in_drive}:
+                media[device_name] = (False, None)
+            continue
+        try:
+            returned = wintypes.DWORD()
+            ctypes.set_last_error(0)
+            ready = bool(
+                kernel32.DeviceIoControl(
+                    handle,
+                    ioctl_storage_check_verify2,
+                    None,
+                    0,
+                    None,
+                    0,
+                    ctypes.byref(returned),
+                    None,
+                )
             )
-        )
-        media[device_name] = (
-            ready,
-            _public_disc_label(label.value) if ready else None,
-        )
+            if ready:
+                media[device_name] = (True, None)
+            elif ctypes.get_last_error() in {
+                error_not_ready,
+                error_no_media_in_drive,
+            }:
+                media[device_name] = (False, None)
+        finally:
+            kernel32.CloseHandle(handle)
     return media
 
 
@@ -693,11 +749,12 @@ class DriveWatcher:
                 native_identities,
                 native_media,
             )
-            result = self._runner(
-                executable,
-                "disc:9999",
-                timeout_seconds=timeout_seconds,
-            )
+            runner_options: dict[str, object] = {
+                "timeout_seconds": timeout_seconds,
+            }
+            if self._runner is run_info_command:
+                runner_options["expected_device_names"] = native_names
+            result = self._runner(executable, "disc:9999", **runner_options)
             parsed_drives = sorted(
                 parse_drives(result.stdout), key=lambda item: item.index
             )

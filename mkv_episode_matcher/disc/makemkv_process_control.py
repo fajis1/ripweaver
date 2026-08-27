@@ -773,9 +773,19 @@ def start_makemkv_process(
 
 
 def run_makemkv_command(
-    command: Sequence[str], *, timeout_seconds: int
+    command: Sequence[str],
+    *,
+    timeout_seconds: int,
+    completion_predicate: Callable[[str], bool] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Capture one supervised MakeMKV command with bounded timeout handling."""
+    """Capture one supervised MakeMKV command with bounded timeout handling.
+
+    A read-only drive-list command can emit every required ``DRV`` row and then
+    remain stuck while MakeMKV settles an optical driver.  When a caller supplies
+    a completion predicate, inspect only the in-memory stdout captured so far and
+    stop that child once the caller proves its result is complete.  Other info and
+    rip commands retain the normal wait-for-process-exit behavior.
+    """
 
     process = start_makemkv_process(
         command,
@@ -786,10 +796,45 @@ def run_makemkv_command(
         errors="replace",
     )
     try:
-        stdout, stderr = process.communicate(timeout=timeout_seconds)
+        if completion_predicate is None:
+            stdout, stderr = process.communicate(timeout=timeout_seconds)
+        else:
+            deadline = time.monotonic() + timeout_seconds
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    process.kill()
+                    stdout, stderr = process.communicate()
+                    raise subprocess.TimeoutExpired(
+                        tuple(command),
+                        timeout_seconds,
+                        output=stdout,
+                        stderr=stderr,
+                    )
+                try:
+                    stdout, stderr = process.communicate(timeout=min(0.25, remaining))
+                    break
+                except subprocess.TimeoutExpired as exc:
+                    partial_stdout = exc.output or ""
+                    if isinstance(partial_stdout, bytes):
+                        partial_stdout = partial_stdout.decode(
+                            "utf-8", errors="replace"
+                        )
+                    try:
+                        complete = completion_predicate(partial_stdout)
+                    except Exception:
+                        process.kill()
+                        process.communicate()
+                        raise
+                    if complete:
+                        process._ripweaver_completion_reached = True
+                        process.kill()
+                        stdout, stderr = process.communicate()
+                        break
     except subprocess.TimeoutExpired:
-        process.kill()
-        process.communicate()
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
         raise
     finally:
         audit_makemkv_process_exit(process)

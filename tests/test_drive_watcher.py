@@ -1,8 +1,10 @@
+import ctypes
 import threading
 from pathlib import Path
 
 import pytest
 
+from mkv_episode_matcher.disc import drive_watcher
 from mkv_episode_matcher.disc.drive_mapping import (
     DriveMappingStore,
     NativeOpticalDevice,
@@ -253,6 +255,55 @@ def test_native_media_populates_a_confirmed_noscan_slot():
     assert drive.has_disc is True
     assert drive.disc_label == "Inserted disc"
     assert drive.makemkv_confirmed is True
+
+
+def test_windows_native_media_uses_storage_verify_without_volume_label(
+    monkeypatch,
+):
+    events = []
+
+    class FakeFunction:
+        def __init__(self, callback):
+            self.callback = callback
+
+        def __call__(self, *args):
+            return self.callback(*args)
+
+    class FakeKernel32:
+        def __init__(self):
+            self.CreateFileW = FakeFunction(self.create_file)
+            self.DeviceIoControl = FakeFunction(self.device_io_control)
+            self.CloseHandle = FakeFunction(self.close_handle)
+
+        @staticmethod
+        def create_file(path, *_args):
+            events.append(("open", path))
+            return 7
+
+        @staticmethod
+        def device_io_control(_handle, code, *_args):
+            events.append(("verify", code))
+            return True
+
+        @staticmethod
+        def close_handle(handle):
+            events.append(("close", handle))
+            return True
+
+    monkeypatch.setattr(drive_watcher.sys, "platform", "win32")
+    monkeypatch.setattr(
+        drive_watcher,
+        "discover_windows_optical_drives",
+        lambda: ("D:",),
+    )
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel32())
+
+    assert drive_watcher.discover_windows_optical_media() == {"D:": (True, None)}
+    assert events == [
+        ("open", r"\\.\D:"),
+        ("verify", 0x002D0800),
+        ("close", 7),
+    ]
 
 
 def test_blocked_native_media_does_not_starve_makemkv_slot_listing(tmp_path):

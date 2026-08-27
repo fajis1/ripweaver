@@ -171,6 +171,30 @@ def test_info_runner_uses_supervised_makemkv_boundary(monkeypatch):
     assert result.stdout == "output"
 
 
+def test_all_drive_runner_stops_when_every_expected_slot_row_arrives(monkeypatch):
+    calls = []
+
+    def run(command, *, timeout_seconds, completion_predicate):
+        calls.append((command, timeout_seconds))
+        assert completion_predicate(
+            'DRV:0,2,999,0,"drive","","D:"\nDRV:1,2,999,0,"drive","","F:"\n'
+        )
+        assert not completion_predicate('DRV:0,2,999,0,"drive","","D:"\n')
+        return preflight.subprocess.CompletedProcess(command, 1, "output", "")
+
+    monkeypatch.setattr(preflight, "run_makemkv_command", run)
+
+    result = preflight.run_info_command(
+        Path("makemkvcon64.exe"),
+        "disc:9999",
+        timeout_seconds=30,
+        expected_device_names=("D:", "F:"),
+    )
+
+    assert calls == [(result.command, 30)]
+    assert result.stdout == "output"
+
+
 def test_info_runner_redacts_containment_start_failure(monkeypatch):
     monkeypatch.setattr(
         preflight,
