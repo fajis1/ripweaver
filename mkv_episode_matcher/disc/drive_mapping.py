@@ -48,15 +48,34 @@ class DriveMappingRecord:
 _WINDOWS_OPTICAL_QUERY = r"""
 $ErrorActionPreference = 'Stop'
 $sha = [System.Security.Cryptography.SHA256]::Create()
-$rows = foreach ($drive in Get-CimInstance Win32_CDROMDrive) {
-    if (-not $drive.Drive -or -not $drive.PNPDeviceID) { continue }
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$drive.PNPDeviceID)
+$mounted = Get-ItemProperty -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\SYSTEM\MountedDevices'
+$devices = @(Get-PnpDevice -Class CDROM -PresentOnly)
+$rows = foreach ($drive in [System.IO.DriveInfo]::GetDrives()) {
+    if ($drive.DriveType -ne [System.IO.DriveType]::CDRom) { continue }
+    $deviceName = $drive.Name.Substring(0, 2).ToUpperInvariant()
+    $property = $mounted.PSObject.Properties["\DosDevices\$deviceName"]
+    if ($null -eq $property -or $property.Value -isnot [byte[]]) { continue }
+    $mountedBytes = [byte[]]$property.Value
+    $representations = @(
+        [System.Text.Encoding]::Unicode.GetString($mountedBytes).Trim([char]0).ToUpperInvariant().Replace('#', '\'),
+        [System.Text.Encoding]::ASCII.GetString($mountedBytes).Trim([char]0).ToUpperInvariant().Replace('#', '\')
+    )
+    $matches = @()
+    foreach ($candidate in $devices) {
+        $instanceId = ([string]$candidate.InstanceId).ToUpperInvariant()
+        if ($representations[0].Contains($instanceId) -or $representations[1].Contains($instanceId)) {
+            $matches += $candidate
+        }
+    }
+    if ($matches.Count -ne 1) { continue }
+    $identity = $matches[0]
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$identity.InstanceId)
     $key = [System.BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '').ToLowerInvariant()
-    $enumerator = ([string]$drive.PNPDeviceID -split '\\', 2)[0].ToLowerInvariant()
+    $enumerator = ([string]$identity.InstanceId -split '\\', 2)[0].ToLowerInvariant()
     [pscustomobject]@{
-        device_name = ([string]$drive.Drive).ToUpperInvariant()
+        device_name = $deviceName
         device_key = $key
-        display_name = [string]$drive.Name
+        display_name = [string]$identity.FriendlyName
         connection_type = if ($enumerator -eq 'usbstor') { 'usb' } elseif ($enumerator -eq 'scsi') { 'sata' } else { 'unknown' }
     }
 }
