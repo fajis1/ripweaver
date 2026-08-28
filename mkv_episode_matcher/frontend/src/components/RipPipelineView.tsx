@@ -973,6 +973,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
   const [collisionComparisons, setCollisionComparisons] = useState<Record<string, LibraryCollisionComparison>>({});
   const [collisionComparisonErrors, setCollisionComparisonErrors] = useState<Record<string, string>>({});
   const [inspectingCollisionId, setInspectingCollisionId] = useState<string | null>(null);
+  const [queuedCollisionInspectionIds, setQueuedCollisionInspectionIds] = useState<string[]>([]);
+  const collisionInspectionQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const pendingCollisionInspectionIdsRef = useRef<Set<string>>(new Set());
   const [showLikelyRemovableOnly, setShowLikelyRemovableOnly] = useState(false);
   const [ejectingDrives, setEjectingDrives] = useState<number[]>([]);
   const [queuedEjectDrives, setQueuedEjectDrives] = useState<number[]>([]);
@@ -1904,25 +1907,37 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
     finally { setControlling(false); }
   };
 
-  const inspectLibraryCollision = async (item: PipelineQueueItem) => {
+  const inspectLibraryCollision = (item: PipelineQueueItem) => {
+    if (pendingCollisionInspectionIdsRef.current.has(item.media_id)) return;
     if (!window.confirm(`Read container metadata from the exact new encode and conflicting Jellyfin file for “${item.display_name || item.media_id}”? This uses local FFprobe and does not modify either file.`)) return;
-    setInspectingCollisionId(item.media_id);
+    pendingCollisionInspectionIdsRef.current.add(item.media_id);
+    setQueuedCollisionInspectionIds((current) => [...current, item.media_id]);
     setCollisionComparisonErrors((current) => ({ ...current, [item.media_id]: '' }));
-    try {
-      const response = await fetch(`/rip/pipeline/items/${encodeURIComponent(item.media_id)}/library-collision-comparison`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ expected_artifact_sha256: item.artifact_sha256, confirm_media_read: true }),
-      });
-      const payload = await responsePayload(response);
-      if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : 'The file comparison could not be completed safely.');
-      setCollisionComparisons((current) => ({ ...current, [item.media_id]: payload as unknown as LibraryCollisionComparison }));
-    } catch (requestError) {
-      const message = requestError instanceof Error ? requestError.message : 'The file comparison could not be completed safely.';
-      setCollisionComparisonErrors((current) => ({ ...current, [item.media_id]: message }));
-    } finally {
-      setInspectingCollisionId(null);
-    }
+    setReviewNotice(`Queued file-difference inspection for ${item.display_name || 'the selected collision'}.`);
+    const operation = collisionInspectionQueueRef.current.catch(() => undefined).then(async () => {
+      setQueuedCollisionInspectionIds((current) => current.filter((mediaId) => mediaId !== item.media_id));
+      setInspectingCollisionId(item.media_id);
+      setReviewNotice(`Inspecting file differences for ${item.display_name || 'the selected collision'}…`);
+      try {
+        const response = await fetch(`/rip/pipeline/items/${encodeURIComponent(item.media_id)}/library-collision-comparison`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ expected_artifact_sha256: item.artifact_sha256, confirm_media_read: true }),
+        });
+        const payload = await responsePayload(response);
+        if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : 'The file comparison could not be completed safely.');
+        setCollisionComparisons((current) => ({ ...current, [item.media_id]: payload as unknown as LibraryCollisionComparison }));
+        setReviewNotice(`File-difference inspection is ready for ${item.display_name || 'the selected collision'}.`);
+      } catch (requestError) {
+        const message = requestError instanceof Error ? requestError.message : 'The file comparison could not be completed safely.';
+        setCollisionComparisonErrors((current) => ({ ...current, [item.media_id]: message }));
+        setError(`File-difference inspection failed safely: ${message}`);
+      } finally {
+        pendingCollisionInspectionIdsRef.current.delete(item.media_id);
+        setInspectingCollisionId((current) => current === item.media_id ? null : current);
+      }
+    });
+    collisionInspectionQueueRef.current = operation.then(() => undefined, () => undefined);
   };
 
   const playLibraryCollision = async (item: PipelineQueueItem, target: 'new-encode' | 'existing-jellyfin') => {
@@ -5027,8 +5042,15 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                         <div>An existing Jellyfin episode conflicts with this matched title. Choose exactly what happens to the new pipeline media.</div>
                         {item.stage === 'organize' && (
                           <div className="mt-3 flex flex-wrap gap-2">
-                            <button type="button" className="btn btn-secondary text-xs" disabled={inspectingCollisionId === item.media_id} onClick={() => inspectLibraryCollision(item)}>
-                              {inspectingCollisionId === item.media_id ? 'Inspecting file differences…' : 'Inspect file differences'}
+                            <button type="button" className="btn btn-secondary text-xs" disabled={inspectingCollisionId === item.media_id || queuedCollisionInspectionIds.includes(item.media_id)} onClick={() => inspectLibraryCollision(item)}>
+                              <span className="inline-flex items-center gap-2">
+                                {inspectingCollisionId === item.media_id && <span className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent" aria-hidden="true" />}
+                                {inspectingCollisionId === item.media_id
+                                  ? 'Inspecting file differences…'
+                                  : queuedCollisionInspectionIds.includes(item.media_id)
+                                    ? 'Queued for comparison'
+                                    : 'Inspect file differences'}
+                              </span>
                             </button>
                             <button type="button" className="btn btn-secondary text-xs" disabled={openingReviewId === `${item.media_id}:new-encode`} onClick={() => playLibraryCollision(item, 'new-encode')}>
                               {openingReviewId === `${item.media_id}:new-encode` ? 'Opening new encode…' : 'Play new encode'}

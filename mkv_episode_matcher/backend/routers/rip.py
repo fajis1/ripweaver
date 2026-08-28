@@ -7344,6 +7344,8 @@ def inspect_pipeline_library_collision(
             status_code=400,
             detail="Exact collision media-read confirmation is required",
         )
+    started_at = time.perf_counter()
+    logger.info("Library collision comparison started")
     try:
         encoded, existing, config = _held_library_collision_paths(
             store, media_id, request.expected_artifact_sha256
@@ -7364,6 +7366,10 @@ def inspect_pipeline_library_collision(
             raise PipelineQueueError("A compared file changed during inspection")
         new_details = _collision_file_details(encoded, new_inspection)
         old_details = _collision_file_details(existing, old_inspection)
+        logger.info(
+            "Library collision comparison completed: elapsed_ms={}",
+            round((time.perf_counter() - started_at) * 1000),
+        )
         return LibraryCollisionComparisonResponse(
             media_id=media_id,
             new_pipeline_file=new_details,
@@ -7378,6 +7384,11 @@ def inspect_pipeline_library_collision(
         FFprobeError,
         PipelineQueueError,
     ) as exc:
+        logger.warning(
+            "Library collision comparison failed: error_type={} elapsed_ms={}",
+            type(exc).__name__,
+            round((time.perf_counter() - started_at) * 1000),
+        )
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
