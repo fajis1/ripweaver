@@ -919,6 +919,14 @@ const pipelineStatusLabel = (item: PipelineQueueItem) => {
 };
 
 const pipelineErrorHelp: Record<string, string> = {
+  PipelineQueueError: 'This older failure did not retain its specific pipeline preflight reason. After updating RipWeaver, retry once to recover an exact completed encode or record an actionable category.',
+  PipelinePreflightFailed: 'The pipeline stopped before starting media work because a required contract or staging condition was not satisfied.',
+  PipelineContractInvalid: 'The immutable handoff contract is unavailable or changed. Keep the staged media and review the saved pipeline record.',
+  PipelineContractCollision: 'A corrected match reached an older immutable contract. The media was preserved; updated RipWeaver writes a revision-safe contract.',
+  PipelineSourceChanged: 'The staged source is missing or no longer matches its verified size.',
+  TranscodeStagingUnavailable: 'The configured encoded staging or HandBrake run-log folder is unavailable.',
+  TranscodeDestinationExists: 'An encoded staging destination already exists and was preserved. Updated RipWeaver verifies an exact completed run before adopting it.',
+  TranscodeOutputVerificationFailed: 'The completed transcode output no longer matches its verified result.',
   HandBrakeError: 'This older failure did not retain a specific diagnostic. Retry once to generate an actionable category.',
   HandBrakePreflightFailed: 'HandBrake did not start because a preflight requirement failed. Review the current profile and tool configuration.',
   HandBrakePartialExists: 'A previous partial output was preserved. Retry verifies it first and uses a new collision-safe attempt when needed.',
@@ -5034,6 +5042,13 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                         <div className="mt-3 flex flex-wrap gap-2">
                           <button type="button" className="btn btn-primary text-xs" disabled={controlling} onClick={() => controlPipeline('resume', item.media_id)}>Retry Jellyfin placement</button>
                           <button type="button" className="btn btn-secondary text-xs" disabled={controlling} onClick={() => dismissPipelineItems([item.media_id])}>Clear from queue and keep encode</button>
+                        </div>
+                      </div>
+                    ) : item.review_code === 'transcode_destination_verification_required' ? (
+                      <div className="max-w-md rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-100">
+                        <div>An encoded staging file already uses this matched destination, but RipWeaver could not prove that it came from the exact completed HandBrake attempt. The file was preserved and no transcode was started.</div>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button type="button" className="btn btn-secondary text-xs" disabled={controlling} onClick={() => dismissPipelineItems([item.media_id])}>Keep files and clear from queue</button>
                         </div>
                       </div>
                     ) : item.review_code === 'corrected_identification_ready' ? (
