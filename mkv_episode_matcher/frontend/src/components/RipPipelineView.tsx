@@ -2894,9 +2894,19 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
         ?? job.preview.jobs
           .map((item) => item.staging_destination.match(/(?:^|\/)([0-9a-f]{16})(?:\/|$)/)?.[1])
           .find((value): value is string => Boolean(value));
-      const expectedTitleIndexes = new Set(job.preview.jobs
-        .filter((item) => item.drive_index === drive.drive_index)
-        .map((item) => item.title_index));
+      const preparedRecoveryScope = pipelineQueue?.disc_recovery_scopes?.find((scope) => (
+        discFingerprint && scope.disc_fingerprint === discFingerprint
+      ));
+      const preparedMatchingScope = pipelineQueue?.disc_matching_scopes?.find((scope) => (
+        discFingerprint && scope.disc_fingerprint === discFingerprint
+      ));
+      const expectedTitleIndexes = new Set(
+        preparedRecoveryScope?.required_title_indexes
+        ?? preparedMatchingScope?.relevant_title_indexes
+        ?? job.preview.jobs
+          .filter((item) => item.drive_index === drive.drive_index)
+          .map((item) => item.title_index),
+      );
       const safelyPresentTitleIndexes = new Set([
         ...job.preview.jobs
           .filter((item) => item.drive_index === drive.drive_index && item.prior_library_status === 'present')
@@ -2905,8 +2915,12 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
           .filter((item) => (
             discFingerprint
             && item.disc_fingerprint === discFingerprint
-            && item.staged_source_available
             && typeof item.title_index === 'number'
+            && (
+              item.staged_source_available
+              || item.pipeline_media_available
+              || (item.stage === 'organize' && item.state === 'completed')
+            )
           ))
           .map((item) => item.title_index as number),
       ]);
@@ -2943,7 +2957,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
       if (Object.keys(current).some((key) => !(key in next))) changed = true;
       return changed ? next : current;
     });
-  }, [automaticEjectAfterCompletion, completeDiscAutoEjectHolds, driveDashboard?.drives, jobDashboard?.jobs, latestJobForDrive, pipelineQueue?.items, pipelineQueue?.title_dispositions]);
+  }, [automaticEjectAfterCompletion, completeDiscAutoEjectHolds, driveDashboard?.drives, jobDashboard?.jobs, latestJobForDrive, pipelineQueue?.disc_matching_scopes, pipelineQueue?.disc_recovery_scopes, pipelineQueue?.items, pipelineQueue?.title_dispositions]);
 
   useEffect(() => {
     if (Object.keys(completeDiscAutoEjectDeadlines).length === 0) return;
