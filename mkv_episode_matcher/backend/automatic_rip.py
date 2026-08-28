@@ -33,6 +33,10 @@ _AUTOMATIC_UNMATCHED_CODES = frozenset({
     "independent_episode_evidence_required",
 })
 _AUTOMATIC_DISC_RETRY_CODES = AUTOMATIC_TV_DISC_RETRY_CODES
+_AUTOMATIC_EXECUTION_RETRY_DELAYS_SECONDS = (5, 15, 60, 300)
+_AUTOMATIC_EXECUTION_RETRY_DETAILS = frozenset({
+    "Execution-time disc inventory failed safely: PreflightError",
+})
 
 
 def set_automatic_rip_startup_hold(enabled: bool) -> None:
@@ -177,6 +181,91 @@ def _automatic_failure_is_retryable(exc: Exception) -> bool:
     """
 
     return isinstance(exc, OSError) and not isinstance(exc, HTTPException)
+
+
+def _automatic_execution_failure_is_retryable(exc: Exception) -> bool:
+    """Recognize a transient failure before a queued job claims its executor."""
+
+    return bool(
+        isinstance(exc, HTTPException)
+        and exc.status_code == 409
+        and isinstance(exc.detail, str)
+        and exc.detail in _AUTOMATIC_EXECUTION_RETRY_DETAILS
+    )
+
+
+def _automatic_execution_retry_is_still_safe(
+    drive_index: int,
+    job_id: str,
+    watcher,
+    public_store,
+    pipeline_store,
+) -> bool:
+    """Stop a delayed retry if its exact queued disc or authorization changed."""
+
+    if pipeline_store.is_paused():
+        return False
+    current = public_store.get_job(job_id)
+    if current.state != "queued" or current.executor_attached:
+        return False
+    drive = next(
+        (item for item in watcher.snapshot().drives if item.drive_index == drive_index),
+        None,
+    )
+    return bool(
+        drive is not None
+        and drive.available
+        and drive.has_disc
+        and drive.current_job_id == job_id
+    )
+
+
+def _execute_automatic_job_with_retry(
+    execute: Callable[[], dict[str, object]],
+    retry_is_still_safe: Callable[[], bool],
+) -> dict[str, object] | None:
+    """Retry only transient execution inventories that never claimed a rip."""
+
+    retry_number = 0
+    while True:
+        try:
+            return execute()
+        except HTTPException as exc:
+            if not _automatic_execution_failure_is_retryable(
+                exc
+            ) or retry_number >= len(_AUTOMATIC_EXECUTION_RETRY_DELAYS_SECONDS):
+                raise
+            delay_seconds = _AUTOMATIC_EXECUTION_RETRY_DELAYS_SECONDS[retry_number]
+            retry_number += 1
+            logger.warning(
+                "Automatic rip execution inventory retry scheduled; "
+                "retry_number={} delay_seconds={}",
+                retry_number,
+                delay_seconds,
+            )
+            time.sleep(delay_seconds)
+            if not retry_is_still_safe():
+                logger.info(
+                    "Automatic rip execution inventory retry was cancelled safely"
+                )
+                return None
+
+
+def _continue_completed_automatic_rip(completed, job, public_store) -> None:
+    """Start downstream work only after the exact physical batch completed."""
+
+    if completed.get("state") != "completed":
+        return
+    media_ids = tuple(
+        str(item["job_id"])
+        for item in job.preview.get("jobs", [])
+        if isinstance(item, dict) and isinstance(item.get("job_id"), str)
+    )
+    settings = public_store.get_pipeline_settings(job.job_id)
+    _continue_automatic_downstream(
+        media_ids,
+        profile_id=settings["handbrake_profile_id"],
+    )
 
 
 class AutomaticRipCoordinator:
@@ -325,36 +414,38 @@ def run_automatic_drive(drive_index: int) -> bool:
         if job.state != "queued":
             return job.state in {"running", "completed"}
         stage = "execution"
-        completed = execute_rip_job(
-            job_id,
-            ExecuteJobRequest(
-                expected_plan_sha256=job.plan_sha256,
-                authorized_job_count=len(job.preview.get("jobs", [])),
-                max_drives=1,
-                confirm_execute=True,
-                preserve_failed_partials=True,
-            ),
-            f"automatic-execute-{token}",
-            public_store,
-            private_store,
-            get_rip_execution_registry(),
-            get_rip_queue_runner(),
-            pipeline_store,
-            get_pipeline_contract_root(),
-            get_disc_inventory_runner(),
-            watcher,
+        execute_request = ExecuteJobRequest(
+            expected_plan_sha256=job.plan_sha256,
+            authorized_job_count=len(job.preview.get("jobs", [])),
+            max_drives=1,
+            confirm_execute=True,
+            preserve_failed_partials=True,
         )
-        if completed.get("state") == "completed":
-            media_ids = tuple(
-                str(item["job_id"])
-                for item in job.preview.get("jobs", [])
-                if isinstance(item, dict) and isinstance(item.get("job_id"), str)
-            )
-            settings = public_store.get_pipeline_settings(job_id)
-            _continue_automatic_downstream(
-                media_ids,
-                profile_id=settings["handbrake_profile_id"],
-            )
+        completed = _execute_automatic_job_with_retry(
+            lambda: execute_rip_job(
+                job_id,
+                execute_request,
+                f"automatic-execute-{token}",
+                public_store,
+                private_store,
+                get_rip_execution_registry(),
+                get_rip_queue_runner(),
+                pipeline_store,
+                get_pipeline_contract_root(),
+                get_disc_inventory_runner(),
+                watcher,
+            ),
+            lambda: _automatic_execution_retry_is_still_safe(
+                drive_index,
+                job_id,
+                watcher,
+                public_store,
+                pipeline_store,
+            ),
+        )
+        if completed is None:
+            return True
+        _continue_completed_automatic_rip(completed, job, public_store)
         return True
     except (HTTPException, RipError, OSError, ValueError) as exc:
         retry = _automatic_failure_is_retryable(exc)

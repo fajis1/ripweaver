@@ -4042,7 +4042,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                         ? `rip complete · ${organizedExpectedTitleCount} of ${expectedPipelineTitleIndexes.size} organized`
                         : 'rip complete · downstream processing continues'
                       : queuedWithoutExecutor
-                        ? 'queued · waiting for rip worker'
+                        ? drivePreparing
+                          ? 'queued · retrying drive check'
+                          : 'queued · waiting for rip worker'
                       : driveRipping
                         ? 'ripping'
                         : job?.state.replaceAll('_', ' ') ?? physicalDriveOperation ?? (drivePreparing ? 'MakeMKV is reading disc' : 'disc inserted');
@@ -4489,8 +4491,10 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                   )}
                   {drive.has_disc && queuedWithoutExecutor && !interruptedQueued && !reripJob && job && (
                     <div className="rounded-lg border border-amber-400/40 bg-amber-500/15 p-3 space-y-1">
-                      <div className="font-semibold text-amber-100">Queued and waiting for a rip worker</div>
-                      <div className="text-xs text-amber-100/80">No MakeMKV process has claimed this saved request yet. Automatic restart recovery checks it after the startup safety pause. If it remains here, use “Review queued rip” to inspect the exact title list and start it with the required confirmation.</div>
+                      <div className="font-semibold text-amber-100">{drivePreparing ? 'Queued while the drive check retries' : 'Queued and waiting for a rip worker'}</div>
+                      <div className="text-xs text-amber-100/80">{drivePreparing
+                        ? 'The automatic worker is retrying the execution-time read-only inventory with bounded delays. No MakeMKV rip has claimed this drive yet.'
+                        : 'No MakeMKV process has claimed this saved request yet. Automatic restart recovery checks it after the startup safety pause. If it remains here, use “Review queued rip” to inspect the exact title list and start it with the required confirmation.'}</div>
                     </div>
                   )}
                   {drive.has_disc && drive.current_disc_fingerprint && job && !['authorized', 'queued', 'running', 'pause_requested', 'paused'].includes(job.state) && (
