@@ -278,6 +278,7 @@ interface CatalogueSupportStatus {
 
 interface DriveSlot {
   drive_index: number;
+  display_number?: number;
   available: boolean;
   has_disc: boolean;
   disc_label: string | null;
@@ -325,6 +326,18 @@ interface DriveDashboard {
   automatic_processing_requested?: boolean;
   drives: DriveSlot[];
 }
+
+const opticalDriveNumber = (drive: DriveSlot): number => (
+  drive.display_number ?? drive.drive_index + 1
+);
+
+const opticalDriveNumberForIndex = (
+  dashboard: DriveDashboard | null,
+  driveIndex: number,
+): number => {
+  const drive = dashboard?.drives.find((item) => item.drive_index === driveIndex);
+  return drive ? opticalDriveNumber(drive) : driveIndex + 1;
+};
 
 type DiscContentType = '' | 'tv' | 'movie' | 'extras' | 'mixed';
 
@@ -1359,7 +1372,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
   };
 
   const ejectDrive = async (drive: DriveSlot, alreadyConfirmed = false, quietFailure = false): Promise<EjectAttemptResult> => {
-    if (!alreadyConfirmed && !window.confirm(`${drive.has_disc ? 'Eject the disc from' : 'Open the tray for'} optical drive ${drive.drive_index + 1}${drive.disc_label ? ` — ${drive.disc_label}` : ''}? RipWeaver will refuse if this drive has active or queued rip work.`)) {
+    if (!alreadyConfirmed && !window.confirm(`${drive.has_disc ? 'Eject the disc from' : 'Open the tray for'} optical drive ${opticalDriveNumber(drive)}${drive.disc_label ? ` — ${drive.disc_label}` : ''}? RipWeaver will refuse if this drive has active or queued rip work.`)) {
       return { ejected: false, retryable: false, message: null, retryAfterSeconds: null };
     }
     if (queuedEjectDrives.includes(drive.drive_index) || ejectingDrives.includes(drive.drive_index)) {
@@ -1406,20 +1419,20 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
             ? structuredDetail.retry_after_seconds
             : null;
           if (!quietFailure || !retryable) {
-            setError(`Optical drive ${drive.drive_index + 1} was not ejected: ${message}`);
+            setError(`Optical drive ${opticalDriveNumber(drive)} was not ejected: ${message}`);
             setEjectFailureByDrive((current) => ({ ...current, [drive.drive_index]: message }));
           }
-          if (!quietFailure) window.alert(`Optical drive ${drive.drive_index + 1} was not ejected. ${message}`);
+          if (!quietFailure) window.alert(`Optical drive ${opticalDriveNumber(drive)} was not ejected. ${message}`);
           return { ejected: false, retryable, message, retryAfterSeconds };
         }
-        setReviewNotice(`Ejected optical drive ${drive.drive_index + 1}.`);
+        setReviewNotice(`Ejected optical drive ${opticalDriveNumber(drive)}.`);
         window.setTimeout(() => { void refreshDrives(); }, 1000);
         return { ejected: true, retryable: false, message: null, retryAfterSeconds: null };
       } catch (requestError) {
         const message = requestError instanceof Error ? requestError.message : 'The disc could not be ejected safely.';
-        setError(`Optical drive ${drive.drive_index + 1} was not ejected: ${message}`);
+        setError(`Optical drive ${opticalDriveNumber(drive)} was not ejected: ${message}`);
         setEjectFailureByDrive((current) => ({ ...current, [drive.drive_index]: message }));
-        if (!quietFailure) window.alert(`Optical drive ${drive.drive_index + 1} was not ejected. ${message}`);
+        if (!quietFailure) window.alert(`Optical drive ${opticalDriveNumber(drive)} was not ejected. ${message}`);
         return { ejected: false, retryable: false, message, retryAfterSeconds: null };
       } finally {
         setEjectingDrives((current) => current.filter((index) => index !== drive.drive_index));
@@ -1432,7 +1445,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
 
   const forgetDiscIdentity = async (drive: DriveSlot, deleteStagedMedia = false) => {
     if (!drive.current_disc_fingerprint) return;
-    const label = drive.disc_label || `optical drive ${drive.drive_index + 1}`;
+    const label = drive.disc_label || `optical drive ${opticalDriveNumber(drive)}`;
     setControlling(true);
     setError('');
     try {
@@ -1500,7 +1513,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
       setError('The reviewed optical drive is no longer available.');
       return;
     }
-    if (!window.confirm(`Cancel this uncompleted rip plan and eject optical drive ${drive.drive_index + 1}? Existing MKVs and partial attempts will be preserved. This is refused if MakeMKV is active for this disc.`)) return;
+    if (!window.confirm(`Cancel this uncompleted rip plan and eject optical drive ${opticalDriveNumber(drive)}? Existing MKVs and partial attempts will be preserved. This is refused if MakeMKV is active for this disc.`)) return;
     setControlling(true);
     setError('');
     try {
@@ -1523,7 +1536,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
       }
       if (selectedPayload) setSavedJob(selectedPayload);
       const ejected = await ejectDrive(drive, true);
-      if (!ejected) throw new Error(`The rip plan was cancelled, but optical drive ${drive.drive_index + 1} could not be ejected. Use its Eject disc button to retry.`);
+      if (!ejected) throw new Error(`The rip plan was cancelled, but optical drive ${opticalDriveNumber(drive)} could not be ejected. Use its Eject disc button to retry.`);
       const jobsResponse = await fetch('/rip/jobs');
       if (jobsResponse.ok) setJobDashboard(await jobsResponse.json());
     } catch (requestError) {
@@ -2336,8 +2349,8 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
   };
 
   const refreshFailedDiscRecovery = async (drive: DriveSlot) => {
-    if (!window.confirm(`Read optical drive ${drive.drive_index + 1} again and replace the stale failed-disc recovery plan with the exact currently verifiable relevant title scope? This is a read-only MakeMKV inventory and will not start ripping or modify media.`)) return;
-    setReviewNotice(`Reading optical drive ${drive.drive_index + 1} and rebuilding the failed-disc recovery scope…`);
+    if (!window.confirm(`Read optical drive ${opticalDriveNumber(drive)} again and replace the stale failed-disc recovery plan with the exact currently verifiable relevant title scope? This is a read-only MakeMKV inventory and will not start ripping or modify media.`)) return;
+    setReviewNotice(`Reading optical drive ${opticalDriveNumber(drive)} and rebuilding the failed-disc recovery scope…`);
     const refreshed = await runPreparedDrive(drive, getDiscSetup(driveSetupKey(drive)));
     if (!refreshed?.preview) {
       window.alert('The failed-disc recovery refresh did not complete. Review the error shown in RipWeaver, then try again. No rip was started.');
@@ -2532,9 +2545,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
       const plannedDriveIndex = savedJob.preview?.drives[0]?.drive_index;
       if (currentDrive && typeof plannedDriveIndex === 'number' && currentDrive.drive_index !== plannedDriveIndex) {
         if (!window.confirm(
-          `This continuation was saved for optical drive ${plannedDriveIndex + 1}, but the same disc is now in optical drive ${currentDrive.drive_index + 1}. Read the disc now, verify its fingerprint and title inventory, then bind and queue these same ${savedJob.preview?.jobs.length ?? 0} missing titles? This read-only preparation does not start MakeMKV ripping or change media.`,
+          `This continuation was saved for optical drive ${opticalDriveNumberForIndex(driveDashboard, plannedDriveIndex)}, but the same disc is now in optical drive ${opticalDriveNumber(currentDrive)}. Read the disc now, verify its fingerprint and title inventory, then bind and queue these same ${savedJob.preview?.jobs.length ?? 0} missing titles? This read-only preparation does not start MakeMKV ripping or change media.`,
         )) return;
-        setReviewNotice(`Reading optical drive ${currentDrive.drive_index + 1} and safely rebinding the missing-title continuation…`);
+        setReviewNotice(`Reading optical drive ${opticalDriveNumber(currentDrive)} and safely rebinding the missing-title continuation…`);
         const setup = getDiscSetup(driveSetupKey(currentDrive));
         const prepareResponse = await fetch('/rip/drives/prepare-pipeline', {
           method: 'POST',
@@ -2765,7 +2778,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
           ? ` ${payload.rejected_title_indexes.length} candidate(s) did not pass FFprobe and were returned to the rip continuation.`
           : '';
         if (driveBindingChanged) {
-          setReviewNotice(`Verified ${payload.verified_count} existing MKV(s).${rejectedNotice} The missing-title continuation still names optical drive ${plannedDriveIndex + 1}, but this disc is now in optical drive ${currentDrive.drive_index + 1}. Read the disc again to create a fresh, safely bound continuation; RipWeaver will not queue the stale drive binding.`);
+          setReviewNotice(`Verified ${payload.verified_count} existing MKV(s).${rejectedNotice} The missing-title continuation still names optical drive ${opticalDriveNumberForIndex(driveDashboard, plannedDriveIndex)}, but this disc is now in optical drive ${opticalDriveNumber(currentDrive)}. Read the disc again to create a fresh, safely bound continuation; RipWeaver will not queue the stale drive binding.`);
         } else {
           setReviewNotice(`Verified ${payload.verified_count} existing MKV(s).${rejectedNotice} Prepared and queued the exact continuation for ${continuationTitleIndexes.length} missing title(s). Complete the final physical-rip confirmation below to start MakeMKV.`);
           window.requestAnimationFrame(() => document.getElementById('rip-execution-confirmation')?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
@@ -3012,7 +3025,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
             [key]: Date.now() + effectiveDelay,
           }));
           setReviewNotice(
-            `Automatic eject verification for optical drive ${drive.drive_index + 1} was deferred. Retrying in ${Math.ceil(effectiveDelay / 1000)} seconds.`,
+            `Automatic eject verification for optical drive ${opticalDriveNumber(drive)} was deferred. Retrying in ${Math.ceil(effectiveDelay / 1000)} seconds.`,
           );
           return;
         }
@@ -3021,7 +3034,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
         setCompleteDiscAutoEjectDeadlines((current) => Object.fromEntries(
           Object.entries(current).filter(([candidate]) => candidate !== key),
         ));
-        setError(`Optical drive ${drive.drive_index + 1} was not ejected: ${message}`);
+        setError(`Optical drive ${opticalDriveNumber(drive)} was not ejected: ${message}`);
         setEjectFailureByDrive((current) => ({ ...current, [drive.drive_index]: message }));
         setCompleteDiscAutoEjectHolds((current) => ({ ...current, [key]: 'failed' }));
       });
@@ -3816,7 +3829,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                     <div className="flex items-center justify-between gap-3">
                       <span className={`text-4xl ${drive.has_disc ? 'text-amber-300' : 'text-slate-600'}`} aria-label={drive.has_disc ? 'Disc inserted' : 'Empty tray'}>{drive.has_disc ? '●' : '▱'}</span>
                       <div className="min-w-0 flex-1">
-                        <div className="font-semibold text-white">Optical drive {drive.drive_index + 1}{drive.display_name ? ` · ${drive.display_name}` : ''}{drive.disc_label ? ` — ${drive.disc_label}` : ''}</div>
+                        <div className="font-semibold text-white">Optical drive {opticalDriveNumber(drive)}{drive.display_name ? ` · ${drive.display_name}` : ''}{drive.disc_label ? ` — ${drive.disc_label}` : ''}</div>
                         <div className={`text-xs font-bold uppercase ${ignored ? 'text-slate-300' : 'text-amber-200'}`}>
                           {drive.has_disc ? `disc inserted · ${lockedStatus}` : `empty tray · ${lockedStatus}`}
                         </div>
@@ -4089,7 +4102,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                     <span className={`text-4xl ${driveIndicatorClass}`} aria-label={drive.has_disc ? 'Disc inserted' : 'Empty tray'}>{drive.has_disc ? '●' : '▱'}</span>
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2 font-semibold text-white">
-                        <span>Optical drive {drive.drive_index + 1}{drive.display_name ? ` · ${drive.display_name}` : ''}{drive.disc_label ? ` — ${drive.disc_label}` : ''}</span>
+                        <span>Optical drive {opticalDriveNumber(drive)}{drive.display_name ? ` · ${drive.display_name}` : ''}{drive.disc_label ? ` — ${drive.disc_label}` : ''}</span>
                         {skippedDiscTitles.length > 0 && <span className="rounded-full border border-amber-300/50 bg-amber-400/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-200">⚠ {skippedDiscTitles.length} force-ignored {skippedDiscTitles.length === 1 ? 'title' : 'titles'}</span>}
                       </div>
                       <div className={`text-xs font-bold uppercase ${driveNeedsAction || driveFailed ? 'text-red-300' : driveRipping ? 'text-blue-200' : drivePreparing || discIdentityNeedsVerification || identificationNeedsAttention || outstandingDiscDownstreamItems.length > 0 || skippedDiscTitles.length > 0 ? 'text-amber-300' : driveRipComplete ? 'text-green-300' : drive.has_disc ? 'text-blue-300' : 'text-slate-400'}`}>{drive.has_disc ? driveStatus : 'empty tray'}</div>
@@ -4237,8 +4250,8 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                             <details className="rounded border border-current/20 bg-black/15 p-2 text-xs">
                               <summary className="cursor-pointer font-semibold">Technical history from the failed attempt</summary>
                               <div className="mt-2">That attempt recorded {reripJob.rip_title_summary.verified_titles.length} of its {reripJob.rip_title_summary.total_titles} selected titles as newly verified before MakeMKV failed. This does not mean zero titles are currently available.</div>
-                              <div className="mt-1">Newly verified by that attempt: {reripJob.rip_title_summary.verified_titles.length ? reripJob.rip_title_summary.verified_titles.map((title) => `title index ${title.title_index} (drive ${title.drive_index + 1})`).join(', ') : 'none'}</div>
-                              <div className="mt-1">Not verified by that attempt: {reripJob.rip_title_summary.unfinished_titles.length ? reripJob.rip_title_summary.unfinished_titles.map((title) => `title index ${title.title_index} (drive ${title.drive_index + 1})`).join(', ') : 'none'}</div>
+                              <div className="mt-1">Newly verified by that attempt: {reripJob.rip_title_summary.verified_titles.length ? reripJob.rip_title_summary.verified_titles.map((title) => `title index ${title.title_index} (drive ${opticalDriveNumberForIndex(driveDashboard, title.drive_index)})`).join(', ') : 'none'}</div>
+                              <div className="mt-1">Not verified by that attempt: {reripJob.rip_title_summary.unfinished_titles.length ? reripJob.rip_title_summary.unfinished_titles.map((title) => `title index ${title.title_index} (drive ${opticalDriveNumberForIndex(driveDashboard, title.drive_index)})`).join(', ') : 'none'}</div>
                             </details>
                           )}
                           {(reripJob.recommendations ?? []).map((recommendation) => <div key={recommendation} className="text-xs">• {recommendation}</div>)}

@@ -991,6 +991,14 @@ def _drive_status_response(
         for status in ("trusted", "ignored", "unmapped")
     }
     automatic_discovery = windows_drive_automatic_discovery_status()
+    public_drives = []
+    for display_number, drive in enumerate(snapshot.drives, start=1):
+        public_drive = asdict(drive)
+        # ``drive_index`` is MakeMKV's current command binding and may be
+        # sparse while active work causes other slots to be omitted.  Never
+        # present that internal ordinal as the number of connected hardware.
+        public_drive["display_number"] = display_number
+        public_drives.append(public_drive)
     return {
         "watcher_attached": True,
         "refresh_mode": "startup-and-events",
@@ -1009,7 +1017,7 @@ def _drive_status_response(
         "physical_drive_operations": registry.physical_drive_operations(),
         "mapping_plan_sha256": watcher.mapping_plan_sha256(),
         "mapping_summary": summary,
-        "drives": [asdict(drive) for drive in snapshot.drives],
+        "drives": public_drives,
     }
 
 
