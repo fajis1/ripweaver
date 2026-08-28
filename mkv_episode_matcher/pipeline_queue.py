@@ -3458,7 +3458,7 @@ def _safe_adapter_failure_code(exc: Exception) -> str:
         )
         return next(
             (code for fragment, code in categories if fragment in message),
-            "PipelinePreflightFailed",
+            "PipelineQueueError",
         )
     if type(exc).__name__ != "HandBrakeError":
         return type(exc).__name__

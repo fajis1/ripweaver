@@ -56,7 +56,7 @@ def test_handbrake_failures_are_reduced_to_safe_actionable_codes(message, expect
         ("Transcode destination already exists", "TranscodeDestinationExists"),
         ("Pipeline output contract collision", "PipelineContractCollision"),
         ("Pipeline source is missing or changed", "PipelineSourceChanged"),
-        ("unclassified pipeline refusal", "PipelinePreflightFailed"),
+        ("unclassified pipeline refusal", "PipelineQueueError"),
     ],
 )
 def test_pipeline_failures_are_reduced_to_safe_actionable_codes(message, expected):
