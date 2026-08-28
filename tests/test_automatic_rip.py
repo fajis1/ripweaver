@@ -8,8 +8,10 @@ from mkv_episode_matcher.backend.automatic_rip import (
     _AUTOMATIC_DISC_RETRY_CODES,
     _AUTOMATIC_UNMATCHED_CODES,
     AutomaticRipCoordinator,
+    _automatic_execution_failure_is_retryable,
     _automatic_failure_is_retryable,
     _automatic_series_name,
+    _execute_automatic_job_with_retry,
     _has_prior_disc_work,
     _recover_bound_automatic_job,
     _resolve_automatic_unmatched_disc,
@@ -568,6 +570,49 @@ def test_only_low_level_automatic_failures_retry_unchanged_disc():
     )
     assert _automatic_failure_is_retryable(RipError("durable conflict")) is False
     assert _automatic_failure_is_retryable(ValueError("invalid result")) is False
+
+
+def test_execution_inventory_preclaim_failure_is_retryable():
+    assert (
+        _automatic_execution_failure_is_retryable(
+            HTTPException(
+                status_code=409,
+                detail="Execution-time disc inventory failed safely: PreflightError",
+            )
+        )
+        is True
+    )
+
+
+def test_automatic_execution_inventory_retries_with_bounded_delay(monkeypatch):
+    attempts = 0
+    delays = []
+
+    def execute():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise HTTPException(
+                status_code=409,
+                detail="Execution-time disc inventory failed safely: PreflightError",
+            )
+        return {"state": "running"}
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.automatic_rip.time.sleep", delays.append
+    )
+
+    assert _execute_automatic_job_with_retry(execute, lambda: True) == {
+        "state": "running"
+    }
+    assert attempts == 2
+    assert delays == [5]
+    assert (
+        _automatic_execution_failure_is_retryable(
+            HTTPException(status_code=409, detail="review required")
+        )
+        is False
+    )
 
 
 @dataclass

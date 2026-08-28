@@ -50,6 +50,19 @@ def test_handbrake_failures_are_reduced_to_safe_actionable_codes(message, expect
     assert _safe_adapter_failure_code(HandBrakeError(message)) == expected
 
 
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("Transcode destination already exists", "TranscodeDestinationExists"),
+        ("Pipeline output contract collision", "PipelineContractCollision"),
+        ("Pipeline source is missing or changed", "PipelineSourceChanged"),
+        ("unclassified pipeline refusal", "PipelineQueueError"),
+    ],
+)
+def test_pipeline_failures_are_reduced_to_safe_actionable_codes(message, expected):
+    assert _safe_adapter_failure_code(PipelineQueueError(message)) == expected
+
+
 def _artifact(tmp_path, media_id, stage):
     path = tmp_path / f"{media_id}-{stage}.json"
     path.write_text(

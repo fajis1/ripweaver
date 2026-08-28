@@ -11,6 +11,8 @@ interface SidebarProps {
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, systemStatus }) => {
+    const [shutdownPending, setShutdownPending] = React.useState(false);
+
     const menuItems = [
         { id: 'pipeline-errors', label: 'Needs Attention', icon: '!' },
         { id: 'recent-activity', label: 'Recently Finished', icon: '✓' },
@@ -34,6 +36,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, systemStatus
     const statusColor = getStatusColor();
 
     const handleShutdown = async () => {
+        if (shutdownPending) return;
         try {
             const statusResponse = await fetch('/system/shutdown/status');
             if (!statusResponse.ok) throw new Error('Unable to check active work');
@@ -42,6 +45,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, systemStatus
                 ? 'No active media work was detected. Shut down RipWeaver?'
                 : `${activity.active_count} operation(s) are still active. Shutting down now will interrupt them. Downstream work will be requeued after restart; an interrupted physical rip will return paused for review.\n\nInterrupt active work and shut down?`;
             if (!confirm(warning)) return;
+            setShutdownPending(true);
             try {
                 const response = await fetch('/system/shutdown', {
                     method: 'POST',
@@ -49,7 +53,22 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, systemStatus
                     body: JSON.stringify({ confirm_interrupt: !activity.safe_to_shutdown }),
                 });
                 if (!response.ok) throw new Error('Shutdown was refused');
-                // Force reload/close window or show disconnected state
+
+                let disconnected = false;
+                for (let attempt = 0; attempt < 40; attempt += 1) {
+                    await new Promise((resolve) => window.setTimeout(resolve, 250));
+                    try {
+                        await fetch('/health', { cache: 'no-store' });
+                    } catch {
+                        disconnected = true;
+                        break;
+                    }
+                }
+                if (!disconnected) {
+                    throw new Error('Server accepted shutdown but remained reachable');
+                }
+
+                // Show success only after the browser verifies that the server stopped.
                 document.body.innerHTML = `
                     <div style="height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #0f172a; color: white; font-family: system-ui, sans-serif;">
                         <div style="font-size: 4rem; margin-bottom: 1rem;">😴</div>
@@ -59,7 +78,8 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, systemStatus
                 `;
             } catch (err) {
                 console.error('Shutdown failed:', err);
-                alert('Failed to shut down server');
+                setShutdownPending(false);
+                alert('RipWeaver did not finish shutting down. The server is still running.');
             }
         } catch (err) {
             console.error('Shutdown status check failed:', err);
@@ -119,10 +139,11 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, systemStatus
             <div className="p-4 pt-0">
                 <button
                     onClick={handleShutdown}
+                    disabled={shutdownPending}
                     className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 transition-all text-sm font-medium"
                 >
                     <span>🔴</span>
-                    <span>Shut Down Server</span>
+                    <span>{shutdownPending ? 'Shutting Down...' : 'Shut Down Server'}</span>
                 </button>
             </div>
         </aside >

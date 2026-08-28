@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from mkv_episode_matcher.backend.rip_runtime import (
+    AllDriveDiscoveryBlocksDriveError,
     AllDriveDiscoveryDeferredError,
     AllDriveDiscoveryInProgressError,
     RipExecutionRegistry,
@@ -140,7 +141,10 @@ def test_all_drive_discovery_atomically_blocks_new_physical_work(tmp_path: Path)
     try:
         with pytest.raises(AllDriveDiscoveryInProgressError, match="already active"):
             registry.claim_all_drive_discovery()
-        with pytest.raises(RipError, match="all-drive discovery is active"):
+        with pytest.raises(
+            AllDriveDiscoveryBlocksDriveError,
+            match="all-drive discovery is active",
+        ):
             registry.claim_drive_preparation(2)
         with pytest.raises(RipError, match="all-drive discovery is active"):
             registry.attach("rip-one", tmp_path / "one", frozenset({2}))

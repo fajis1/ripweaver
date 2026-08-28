@@ -3446,6 +3446,20 @@ def _safe_adapter_failure_code(exc: Exception) -> str:
 
     if type(exc).__name__ == "HandBrakeProcessError":
         return "HandBrakeProcessFailed"
+    if type(exc).__name__ == "PipelineQueueError":
+        message = str(exc).casefold()
+        categories = (
+            ("destination already exists", "TranscodeDestinationExists"),
+            ("output contract collision", "PipelineContractCollision"),
+            ("input contract", "PipelineContractInvalid"),
+            ("source is missing or changed", "PipelineSourceChanged"),
+            ("staging or run root is unavailable", "TranscodeStagingUnavailable"),
+            ("verified transcode output", "TranscodeOutputVerificationFailed"),
+        )
+        return next(
+            (code for fragment, code in categories if fragment in message),
+            "PipelineQueueError",
+        )
     if type(exc).__name__ != "HandBrakeError":
         return type(exc).__name__
     message = str(exc).casefold()
