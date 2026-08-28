@@ -11911,17 +11911,7 @@ mkv-match serve --port 9000 --no-browser
 <span class="normal"><a href="#__codelineno-0-3820">3820</a></span>
 <span class="normal"><a href="#__codelineno-0-3821">3821</a></span>
 <span class="normal"><a href="#__codelineno-0-3822">3822</a></span>
-<span class="normal"><a href="#__codelineno-0-3823">3823</a></span>
-<span class="normal"><a href="#__codelineno-0-3824">3824</a></span>
-<span class="normal"><a href="#__codelineno-0-3825">3825</a></span>
-<span class="normal"><a href="#__codelineno-0-3826">3826</a></span>
-<span class="normal"><a href="#__codelineno-0-3827">3827</a></span>
-<span class="normal"><a href="#__codelineno-0-3828">3828</a></span>
-<span class="normal"><a href="#__codelineno-0-3829">3829</a></span>
-<span class="normal"><a href="#__codelineno-0-3830">3830</a></span>
-<span class="normal"><a href="#__codelineno-0-3831">3831</a></span>
-<span class="normal"><a href="#__codelineno-0-3832">3832</a></span>
-<span class="normal"><a href="#__codelineno-0-3833">3833</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-3765" name="__codelineno-0-3765"></a><span class="nd">@app</span><span class="o">.</span><span class="n">command</span><span class="p">()</span>
+<span class="normal"><a href="#__codelineno-0-3823">3823</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-3765" name="__codelineno-0-3765"></a><span class="nd">@app</span><span class="o">.</span><span class="n">command</span><span class="p">()</span>
 <a id="__codelineno-0-3766" name="__codelineno-0-3766"></a><span class="k">def</span><span class="w"> </span><span class="nf">serve</span><span class="p">(</span>
 <a id="__codelineno-0-3767" name="__codelineno-0-3767"></a>    <span class="n">port</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">typer</span><span class="o">.</span><span class="n">Option</span><span class="p">(</span><span class="mi">8001</span><span class="p">,</span> <span class="s2">&quot;--port&quot;</span><span class="p">,</span> <span class="s2">&quot;-p&quot;</span><span class="p">,</span> <span class="n">help</span><span class="o">=</span><span class="s2">&quot;Port to run the server on&quot;</span><span class="p">),</span>
 <a id="__codelineno-0-3768" name="__codelineno-0-3768"></a>    <span class="n">host</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">typer</span><span class="o">.</span><span class="n">Option</span><span class="p">(</span><span class="s2">&quot;0.0.0.0&quot;</span><span class="p">,</span> <span class="s2">&quot;--host&quot;</span><span class="p">,</span> <span class="n">help</span><span class="o">=</span><span class="s2">&quot;Host to bind to&quot;</span><span class="p">),</span>
@@ -11955,41 +11945,31 @@ mkv-match serve --port 9000 --no-browser
 <a id="__codelineno-0-3796" name="__codelineno-0-3796"></a>    <span class="kn">import</span><span class="w"> </span><span class="nn">time</span>
 <a id="__codelineno-0-3797" name="__codelineno-0-3797"></a>    <span class="kn">import</span><span class="w"> </span><span class="nn">webbrowser</span>
 <a id="__codelineno-0-3798" name="__codelineno-0-3798"></a>
-<a id="__codelineno-0-3799" name="__codelineno-0-3799"></a>    <span class="kn">import</span><span class="w"> </span><span class="nn">uvicorn</span>
-<a id="__codelineno-0-3800" name="__codelineno-0-3800"></a>
-<a id="__codelineno-0-3801" name="__codelineno-0-3801"></a>    <span class="kn">from</span><span class="w"> </span><span class="nn">mkv_episode_matcher.backend.automatic_rip</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
-<a id="__codelineno-0-3802" name="__codelineno-0-3802"></a>        <span class="n">set_automatic_rip_startup_hold</span><span class="p">,</span>
-<a id="__codelineno-0-3803" name="__codelineno-0-3803"></a>    <span class="p">)</span>
-<a id="__codelineno-0-3804" name="__codelineno-0-3804"></a>
-<a id="__codelineno-0-3805" name="__codelineno-0-3805"></a>    <span class="n">set_automatic_rip_startup_hold</span><span class="p">(</span><span class="n">hold_automatic_rips</span><span class="p">)</span>
-<a id="__codelineno-0-3806" name="__codelineno-0-3806"></a>    <span class="kn">from</span><span class="w"> </span><span class="nn">mkv_episode_matcher.backend.main</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
-<a id="__codelineno-0-3807" name="__codelineno-0-3807"></a>        <span class="n">UVICORN_GRACEFUL_SHUTDOWN_SECONDS</span><span class="p">,</span>
-<a id="__codelineno-0-3808" name="__codelineno-0-3808"></a>    <span class="p">)</span>
-<a id="__codelineno-0-3809" name="__codelineno-0-3809"></a>    <span class="kn">from</span><span class="w"> </span><span class="nn">mkv_episode_matcher.backend.main</span><span class="w"> </span><span class="kn">import</span> <span class="n">app</span> <span class="k">as</span> <span class="n">fastapi_app</span>
-<a id="__codelineno-0-3810" name="__codelineno-0-3810"></a>
-<a id="__codelineno-0-3811" name="__codelineno-0-3811"></a>    <span class="n">print_banner</span><span class="p">()</span>
-<a id="__codelineno-0-3812" name="__codelineno-0-3812"></a>    <span class="n">console</span><span class="o">.</span><span class="n">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;[blue]Starting Web UI server on http://</span><span class="si">{</span><span class="n">host</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="n">port</span><span class="si">}</span><span class="s2">[/blue]&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-3813" name="__codelineno-0-3813"></a>    <span class="k">if</span> <span class="n">hold_automatic_rips</span><span class="p">:</span>
-<a id="__codelineno-0-3814" name="__codelineno-0-3814"></a>        <span class="n">console</span><span class="o">.</span><span class="n">print</span><span class="p">(</span>
-<a id="__codelineno-0-3815" name="__codelineno-0-3815"></a>            <span class="s2">&quot;[yellow]Automatic disc ripping and downstream processing are held for &quot;</span>
-<a id="__codelineno-0-3816" name="__codelineno-0-3816"></a>            <span class="s2">&quot;this server lifetime.[/yellow]&quot;</span>
-<a id="__codelineno-0-3817" name="__codelineno-0-3817"></a>        <span class="p">)</span>
-<a id="__codelineno-0-3818" name="__codelineno-0-3818"></a>    <span class="n">console</span><span class="o">.</span><span class="n">print</span><span class="p">(</span><span class="s2">&quot;[dim]Press Ctrl+C to stop the server[/dim]</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-3819" name="__codelineno-0-3819"></a>
-<a id="__codelineno-0-3820" name="__codelineno-0-3820"></a>    <span class="k">if</span> <span class="ow">not</span> <span class="n">no_browser</span><span class="p">:</span>
-<a id="__codelineno-0-3821" name="__codelineno-0-3821"></a>
-<a id="__codelineno-0-3822" name="__codelineno-0-3822"></a>        <span class="k">def</span><span class="w"> </span><span class="nf">open_browser</span><span class="p">():</span>
-<a id="__codelineno-0-3823" name="__codelineno-0-3823"></a>            <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mf">1.5</span><span class="p">)</span>
-<a id="__codelineno-0-3824" name="__codelineno-0-3824"></a>            <span class="n">webbrowser</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;http://localhost:</span><span class="si">{</span><span class="n">port</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-3825" name="__codelineno-0-3825"></a>
-<a id="__codelineno-0-3826" name="__codelineno-0-3826"></a>        <span class="n">threading</span><span class="o">.</span><span class="n">Thread</span><span class="p">(</span><span class="n">target</span><span class="o">=</span><span class="n">open_browser</span><span class="p">,</span> <span class="n">daemon</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
-<a id="__codelineno-0-3827" name="__codelineno-0-3827"></a>
-<a id="__codelineno-0-3828" name="__codelineno-0-3828"></a>    <span class="n">uvicorn</span><span class="o">.</span><span class="n">run</span><span class="p">(</span>
-<a id="__codelineno-0-3829" name="__codelineno-0-3829"></a>        <span class="n">fastapi_app</span><span class="p">,</span>
-<a id="__codelineno-0-3830" name="__codelineno-0-3830"></a>        <span class="n">host</span><span class="o">=</span><span class="n">host</span><span class="p">,</span>
-<a id="__codelineno-0-3831" name="__codelineno-0-3831"></a>        <span class="n">port</span><span class="o">=</span><span class="n">port</span><span class="p">,</span>
-<a id="__codelineno-0-3832" name="__codelineno-0-3832"></a>        <span class="n">timeout_graceful_shutdown</span><span class="o">=</span><span class="n">UVICORN_GRACEFUL_SHUTDOWN_SECONDS</span><span class="p">,</span>
-<a id="__codelineno-0-3833" name="__codelineno-0-3833"></a>    <span class="p">)</span>
+<a id="__codelineno-0-3799" name="__codelineno-0-3799"></a>    <span class="kn">from</span><span class="w"> </span><span class="nn">mkv_episode_matcher.backend.automatic_rip</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+<a id="__codelineno-0-3800" name="__codelineno-0-3800"></a>        <span class="n">set_automatic_rip_startup_hold</span><span class="p">,</span>
+<a id="__codelineno-0-3801" name="__codelineno-0-3801"></a>    <span class="p">)</span>
+<a id="__codelineno-0-3802" name="__codelineno-0-3802"></a>
+<a id="__codelineno-0-3803" name="__codelineno-0-3803"></a>    <span class="n">set_automatic_rip_startup_hold</span><span class="p">(</span><span class="n">hold_automatic_rips</span><span class="p">)</span>
+<a id="__codelineno-0-3804" name="__codelineno-0-3804"></a>    <span class="kn">from</span><span class="w"> </span><span class="nn">mkv_episode_matcher.backend.main</span><span class="w"> </span><span class="kn">import</span> <span class="n">run_uvicorn_server</span>
+<a id="__codelineno-0-3805" name="__codelineno-0-3805"></a>
+<a id="__codelineno-0-3806" name="__codelineno-0-3806"></a>    <span class="n">print_banner</span><span class="p">()</span>
+<a id="__codelineno-0-3807" name="__codelineno-0-3807"></a>    <span class="n">console</span><span class="o">.</span><span class="n">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;[blue]Starting Web UI server on http://</span><span class="si">{</span><span class="n">host</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="n">port</span><span class="si">}</span><span class="s2">[/blue]&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-3808" name="__codelineno-0-3808"></a>    <span class="k">if</span> <span class="n">hold_automatic_rips</span><span class="p">:</span>
+<a id="__codelineno-0-3809" name="__codelineno-0-3809"></a>        <span class="n">console</span><span class="o">.</span><span class="n">print</span><span class="p">(</span>
+<a id="__codelineno-0-3810" name="__codelineno-0-3810"></a>            <span class="s2">&quot;[yellow]Automatic disc ripping and downstream processing are held for &quot;</span>
+<a id="__codelineno-0-3811" name="__codelineno-0-3811"></a>            <span class="s2">&quot;this server lifetime.[/yellow]&quot;</span>
+<a id="__codelineno-0-3812" name="__codelineno-0-3812"></a>        <span class="p">)</span>
+<a id="__codelineno-0-3813" name="__codelineno-0-3813"></a>    <span class="n">console</span><span class="o">.</span><span class="n">print</span><span class="p">(</span><span class="s2">&quot;[dim]Press Ctrl+C to stop the server[/dim]</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-3814" name="__codelineno-0-3814"></a>
+<a id="__codelineno-0-3815" name="__codelineno-0-3815"></a>    <span class="k">if</span> <span class="ow">not</span> <span class="n">no_browser</span><span class="p">:</span>
+<a id="__codelineno-0-3816" name="__codelineno-0-3816"></a>
+<a id="__codelineno-0-3817" name="__codelineno-0-3817"></a>        <span class="k">def</span><span class="w"> </span><span class="nf">open_browser</span><span class="p">():</span>
+<a id="__codelineno-0-3818" name="__codelineno-0-3818"></a>            <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mf">1.5</span><span class="p">)</span>
+<a id="__codelineno-0-3819" name="__codelineno-0-3819"></a>            <span class="n">webbrowser</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;http://localhost:</span><span class="si">{</span><span class="n">port</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-3820" name="__codelineno-0-3820"></a>
+<a id="__codelineno-0-3821" name="__codelineno-0-3821"></a>        <span class="n">threading</span><span class="o">.</span><span class="n">Thread</span><span class="p">(</span><span class="n">target</span><span class="o">=</span><span class="n">open_browser</span><span class="p">,</span> <span class="n">daemon</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+<a id="__codelineno-0-3822" name="__codelineno-0-3822"></a>
+<a id="__codelineno-0-3823" name="__codelineno-0-3823"></a>    <span class="n">run_uvicorn_server</span><span class="p">(</span><span class="n">host</span><span class="o">=</span><span class="n">host</span><span class="p">,</span> <span class="n">port</span><span class="o">=</span><span class="n">port</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -12026,33 +12006,33 @@ mkv-match serve --port 9000 --no-browser
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>mkv_episode_matcher/cli.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-3836">3836</a></span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-3826">3826</a></span>
+<span class="normal"><a href="#__codelineno-0-3827">3827</a></span>
+<span class="normal"><a href="#__codelineno-0-3828">3828</a></span>
+<span class="normal"><a href="#__codelineno-0-3829">3829</a></span>
+<span class="normal"><a href="#__codelineno-0-3830">3830</a></span>
+<span class="normal"><a href="#__codelineno-0-3831">3831</a></span>
+<span class="normal"><a href="#__codelineno-0-3832">3832</a></span>
+<span class="normal"><a href="#__codelineno-0-3833">3833</a></span>
+<span class="normal"><a href="#__codelineno-0-3834">3834</a></span>
+<span class="normal"><a href="#__codelineno-0-3835">3835</a></span>
+<span class="normal"><a href="#__codelineno-0-3836">3836</a></span>
 <span class="normal"><a href="#__codelineno-0-3837">3837</a></span>
 <span class="normal"><a href="#__codelineno-0-3838">3838</a></span>
-<span class="normal"><a href="#__codelineno-0-3839">3839</a></span>
-<span class="normal"><a href="#__codelineno-0-3840">3840</a></span>
-<span class="normal"><a href="#__codelineno-0-3841">3841</a></span>
-<span class="normal"><a href="#__codelineno-0-3842">3842</a></span>
-<span class="normal"><a href="#__codelineno-0-3843">3843</a></span>
-<span class="normal"><a href="#__codelineno-0-3844">3844</a></span>
-<span class="normal"><a href="#__codelineno-0-3845">3845</a></span>
-<span class="normal"><a href="#__codelineno-0-3846">3846</a></span>
-<span class="normal"><a href="#__codelineno-0-3847">3847</a></span>
-<span class="normal"><a href="#__codelineno-0-3848">3848</a></span>
-<span class="normal"><a href="#__codelineno-0-3849">3849</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-3836" name="__codelineno-0-3836"></a><span class="nd">@app</span><span class="o">.</span><span class="n">command</span><span class="p">()</span>
-<a id="__codelineno-0-3837" name="__codelineno-0-3837"></a><span class="k">def</span><span class="w"> </span><span class="nf">gui</span><span class="p">(</span>
-<a id="__codelineno-0-3838" name="__codelineno-0-3838"></a>    <span class="n">port</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">typer</span><span class="o">.</span><span class="n">Option</span><span class="p">(</span><span class="mi">8001</span><span class="p">,</span> <span class="s2">&quot;--port&quot;</span><span class="p">,</span> <span class="s2">&quot;-p&quot;</span><span class="p">,</span> <span class="n">help</span><span class="o">=</span><span class="s2">&quot;Port to run the server on&quot;</span><span class="p">),</span>
-<a id="__codelineno-0-3839" name="__codelineno-0-3839"></a>    <span class="n">no_browser</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="n">typer</span><span class="o">.</span><span class="n">Option</span><span class="p">(</span>
-<a id="__codelineno-0-3840" name="__codelineno-0-3840"></a>        <span class="kc">False</span><span class="p">,</span> <span class="s2">&quot;--no-browser&quot;</span><span class="p">,</span> <span class="n">help</span><span class="o">=</span><span class="s2">&quot;Don&#39;t open browser automatically&quot;</span>
-<a id="__codelineno-0-3841" name="__codelineno-0-3841"></a>    <span class="p">),</span>
-<a id="__codelineno-0-3842" name="__codelineno-0-3842"></a><span class="p">):</span>
-<a id="__codelineno-0-3843" name="__codelineno-0-3843"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Launch the Web UI (alias for &#39;serve&#39;).&quot;&quot;&quot;</span>
-<a id="__codelineno-0-3844" name="__codelineno-0-3844"></a>    <span class="n">serve</span><span class="p">(</span>
-<a id="__codelineno-0-3845" name="__codelineno-0-3845"></a>        <span class="n">port</span><span class="o">=</span><span class="n">port</span><span class="p">,</span>
-<a id="__codelineno-0-3846" name="__codelineno-0-3846"></a>        <span class="n">host</span><span class="o">=</span><span class="s2">&quot;0.0.0.0&quot;</span><span class="p">,</span>
-<a id="__codelineno-0-3847" name="__codelineno-0-3847"></a>        <span class="n">no_browser</span><span class="o">=</span><span class="n">no_browser</span><span class="p">,</span>
-<a id="__codelineno-0-3848" name="__codelineno-0-3848"></a>        <span class="n">hold_automatic_rips</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-<a id="__codelineno-0-3849" name="__codelineno-0-3849"></a>    <span class="p">)</span>
+<span class="normal"><a href="#__codelineno-0-3839">3839</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-3826" name="__codelineno-0-3826"></a><span class="nd">@app</span><span class="o">.</span><span class="n">command</span><span class="p">()</span>
+<a id="__codelineno-0-3827" name="__codelineno-0-3827"></a><span class="k">def</span><span class="w"> </span><span class="nf">gui</span><span class="p">(</span>
+<a id="__codelineno-0-3828" name="__codelineno-0-3828"></a>    <span class="n">port</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">typer</span><span class="o">.</span><span class="n">Option</span><span class="p">(</span><span class="mi">8001</span><span class="p">,</span> <span class="s2">&quot;--port&quot;</span><span class="p">,</span> <span class="s2">&quot;-p&quot;</span><span class="p">,</span> <span class="n">help</span><span class="o">=</span><span class="s2">&quot;Port to run the server on&quot;</span><span class="p">),</span>
+<a id="__codelineno-0-3829" name="__codelineno-0-3829"></a>    <span class="n">no_browser</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="n">typer</span><span class="o">.</span><span class="n">Option</span><span class="p">(</span>
+<a id="__codelineno-0-3830" name="__codelineno-0-3830"></a>        <span class="kc">False</span><span class="p">,</span> <span class="s2">&quot;--no-browser&quot;</span><span class="p">,</span> <span class="n">help</span><span class="o">=</span><span class="s2">&quot;Don&#39;t open browser automatically&quot;</span>
+<a id="__codelineno-0-3831" name="__codelineno-0-3831"></a>    <span class="p">),</span>
+<a id="__codelineno-0-3832" name="__codelineno-0-3832"></a><span class="p">):</span>
+<a id="__codelineno-0-3833" name="__codelineno-0-3833"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Launch the Web UI (alias for &#39;serve&#39;).&quot;&quot;&quot;</span>
+<a id="__codelineno-0-3834" name="__codelineno-0-3834"></a>    <span class="n">serve</span><span class="p">(</span>
+<a id="__codelineno-0-3835" name="__codelineno-0-3835"></a>        <span class="n">port</span><span class="o">=</span><span class="n">port</span><span class="p">,</span>
+<a id="__codelineno-0-3836" name="__codelineno-0-3836"></a>        <span class="n">host</span><span class="o">=</span><span class="s2">&quot;0.0.0.0&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-3837" name="__codelineno-0-3837"></a>        <span class="n">no_browser</span><span class="o">=</span><span class="n">no_browser</span><span class="p">,</span>
+<a id="__codelineno-0-3838" name="__codelineno-0-3838"></a>        <span class="n">hold_automatic_rips</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+<a id="__codelineno-0-3839" name="__codelineno-0-3839"></a>    <span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
