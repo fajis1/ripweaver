@@ -2114,6 +2114,154 @@ closing words
     assert average == pytest.approx(0.96)
 
 
+def test_focused_alignment_confirms_nonlinear_shifted_dialogue_anchors():
+    def anchor(label):
+        return " ".join([label, *(f"{label}word{index}" for index in range(30))])
+
+    alpha = anchor("alpha")
+    beta = anchor("beta")
+    omega = anchor("omega")
+    content = (
+        f"1\n00:01:40,000 --> 00:02:00,000\n{alpha}\n\n"
+        f"2\n00:08:20,000 --> 00:08:40,000\n{beta}\n\n"
+        f"3\n00:15:00,000 --> 00:15:20,000\n{omega}\n"
+    )
+
+    class ASR:
+        @staticmethod
+        def calculate_match_score(transcript, reference):
+            return 0.96 if transcript in reference else 0.1
+
+    result = analysis._focused_subtitle_alignment(
+        ASR(),
+        (alpha, beta, omega),
+        content,
+        1320,
+        min_confidence=0.7,
+        sample_start_seconds=(120.0, 660.0, 1200.0),
+    )
+
+    assert result.qualifying_anchor_count == 3
+    assert result.coherent_anchor_count == 3
+    assert result.source_coverage_seconds == 1080.0
+    assert result.reference_coverage_seconds == 800.0
+    assert result.spread_confirmed is True
+    assert result.score == pytest.approx(0.96)
+
+
+def test_focused_alignment_rejects_time_reversed_false_confirmation():
+    def anchor(label):
+        return " ".join([label, *(f"{label}word{index}" for index in range(30))])
+
+    first = anchor("first")
+    second = anchor("second")
+    content = (
+        f"1\n00:01:40,000 --> 00:02:00,000\n{second}\n\n"
+        f"2\n00:15:00,000 --> 00:15:20,000\n{first}\n"
+    )
+
+    class ASR:
+        @staticmethod
+        def calculate_match_score(transcript, reference):
+            return 0.96 if transcript in reference else 0.1
+
+    result = analysis._focused_subtitle_alignment(
+        ASR(),
+        (first, second),
+        content,
+        1320,
+        min_confidence=0.7,
+        sample_start_seconds=(120.0, 1200.0),
+    )
+
+    assert result.qualifying_anchor_count == 1
+    assert result.spread_confirmed is False
+
+
+def test_seeded_candidate_uses_deeper_focused_alignment_before_review(
+    tmp_path, monkeypatch
+):
+    def anchor(label):
+        return " ".join([label, *(f"{label}word{index}" for index in range(30))])
+
+    alpha = anchor("alpha")
+    beta = anchor("beta")
+    omega = anchor("omega")
+    matching_content = (
+        f"1\n00:01:40,000 --> 00:02:00,000\n{alpha}\n\n"
+        f"2\n00:08:20,000 --> 00:08:40,000\n{beta}\n\n"
+        f"3\n00:15:00,000 --> 00:15:20,000\n{omega}\n"
+    )
+    other_content = (
+        "1\n00:01:40,000 --> 00:02:00,000\n"
+        "unrelated dialogue from a different episode\n"
+    )
+    catalog = (
+        EpisodeCatalogEntry("S01E01", 1, 1, "Matched", "", 1320),
+        EpisodeCatalogEntry("S01E02", 1, 2, "Other", "", 1320),
+    )
+    references = []
+    for episode, content in ((1, matching_content), (2, other_content)):
+        path = tmp_path / f"s01e{episode:02d}.srt"
+        path.write_text("", encoding="utf-8")
+        references.append(
+            SubtitleFile(
+                path=path,
+                content=content,
+                episode_info=EpisodeInfo(
+                    series_name="Example", season=1, episode=episode
+                ),
+            )
+        )
+    item = UnmatchedFileEvidence(
+        "shifted-title",
+        1320,
+        (alpha, beta, omega),
+        (120.0, 660.0, 1200.0),
+    )
+
+    def broad_score(_asr, _excerpts, content, _duration, **_kwargs):
+        return (
+            (0.96, (0.96, 0.1, 0.1))
+            if content == matching_content
+            else (
+                0.2,
+                (0.2, 0.1, 0.1),
+            )
+        )
+
+    monkeypatch.setattr(analysis, "_score_subtitle", broad_score)
+
+    class ASR:
+        @staticmethod
+        def calculate_match_score(transcript, reference):
+            return 0.96 if transcript in reference else 0.1
+
+    details = {}
+    scored = analysis._subtitle_candidates(
+        (item,),
+        references,
+        {(entry.season, entry.episode): entry for entry in catalog},
+        ASR(),
+        min_confidence=0.7,
+        enable_focused_refinement=True,
+        focused_alignment_details=details,
+    )
+    accepted, _diagnostics = analysis._accept_subtitle_candidates(
+        scored,
+        0.7,
+        set(),
+        diagnostic_details=details,
+    )
+
+    assert scored["shifted-title"][0][1] == 3
+    assert accepted["shifted-title"].episode_id == "S01E01"
+    assert details["shifted-title"]["focused_alignment_attempted"] is True
+    assert details["shifted-title"]["focused_alignment_confirmed"] is True
+    assert details["shifted-title"]["focused_qualifying_anchor_count"] == 3
+    assert details["shifted-title"]["reason"] == "accepted"
+
+
 def test_extended_anchor_global_search_is_bounded_and_keeps_rare_dialogue():
     decoy = "ordinary office conversation repeats every day for many people "
     content = (decoy * 900) + "rare pretzel day anchor with stanley at the end"

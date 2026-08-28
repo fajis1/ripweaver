@@ -12,6 +12,7 @@ from mkv_episode_matcher.media.handbrake import (
     HandBrakeError,
     HandBrakeJob,
     HandBrakeProfile,
+    HandBrakeResult,
     VerifiedMedia,
     _is_process_interruption,
     _redact,
@@ -20,6 +21,7 @@ from mkv_episode_matcher.media.handbrake import (
     execute_handbrake_job,
     inspect_handbrake_capabilities,
     partial_output_path,
+    recover_handbrake_completed_output,
     recover_handbrake_partial,
     select_audio_track,
     validate_handbrake_job,
@@ -585,14 +587,108 @@ def test_recovery_promotes_verified_existing_partial_without_handbrake(
         ),
     )
 
-    result = recover_handbrake_partial(
-        ffprobe, job, tmp_path, confirm_transcode=True
-    )
+    result = recover_handbrake_partial(ffprobe, job, tmp_path, confirm_transcode=True)
 
     assert not partial.exists()
     assert job.destination.read_bytes() == b"complete-encoded-output"
     assert result.output_bytes == len(b"complete-encoded-output")
     assert "partial-recovered" in result.event_log.read_text(encoding="utf-8")
+
+
+def test_recovery_adopts_exact_verified_completed_output_without_transcode(
+    tmp_path, monkeypatch
+):
+    _handbrake, ffprobe = _tools(tmp_path)
+    job = _job(tmp_path, attempt_number=2)
+    job.destination.write_bytes(b"complete-encoded-output")
+    run_dir = tmp_path / "run-attempt-002"
+    run_dir.mkdir()
+    verified = VerifiedMedia(
+        duration_seconds=1200,
+        size_bytes=job.destination.stat().st_size,
+        video_codec="hevc",
+        audio_streams=2,
+        subtitle_streams=1,
+        width=1440,
+        height=1080,
+        field_order="progressive",
+    )
+    result = HandBrakeResult(
+        media_id=job.media_id,
+        encoder=job.profile.encoder,
+        output_bytes=verified.size_bytes,
+        duration_seconds=verified.duration_seconds,
+        video_codec=verified.video_codec,
+        audio_streams=verified.audio_streams,
+        subtitle_streams=verified.subtitle_streams,
+        process_log=run_dir / "process.log",
+        event_log=run_dir / "events.jsonl",
+        width=verified.width,
+        height=verified.height,
+        field_order=verified.field_order,
+    )
+    event_log = run_dir / "handbrake-media-1-20260827T000000Z.jsonl"
+    event_log.write_text(
+        "\n".join((
+            json.dumps({"event": "started", **job.safe_plan()}),
+            json.dumps({"event": "verified-complete", **result.safe_report()}),
+        ))
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.media.handbrake._probe_media",
+        lambda _ffprobe, _destination: verified,
+    )
+
+    recovered = recover_handbrake_completed_output(
+        ffprobe, job, run_dir, confirm_transcode=True
+    )
+
+    assert job.destination.read_bytes() == b"complete-encoded-output"
+    assert recovered.output_bytes == verified.size_bytes
+    assert recovered.event_log == event_log
+
+
+def test_completed_output_recovery_refuses_changed_attempt_plan(tmp_path, monkeypatch):
+    _handbrake, ffprobe = _tools(tmp_path)
+    job = _job(tmp_path, attempt_number=2)
+    job.destination.write_bytes(b"complete-encoded-output")
+    run_dir = tmp_path / "run-attempt-002"
+    run_dir.mkdir()
+    changed_plan = job.safe_plan()
+    changed_plan["attempt_number"] = 1
+    event_log = run_dir / "handbrake-media-1-20260827T000000Z.jsonl"
+    event_log.write_text(
+        "\n".join((
+            json.dumps({"event": "started", **changed_plan}),
+            json.dumps({
+                "event": "verified-complete",
+                "mode": "handbrake-result",
+                "media_id": job.media_id,
+                "encoder": job.profile.encoder,
+                "output_bytes": job.destination.stat().st_size,
+                "duration_seconds": 1200,
+                "video_codec": "hevc",
+                "audio_streams": 2,
+                "subtitle_streams": 1,
+                "width": 1440,
+                "height": 1080,
+                "field_order": "progressive",
+            }),
+        ))
+        + "\n",
+        encoding="utf-8",
+    )
+    probe = Mock()
+    monkeypatch.setattr("mkv_episode_matcher.media.handbrake._probe_media", probe)
+
+    with pytest.raises(HandBrakeError, match="plan changed"):
+        recover_handbrake_completed_output(
+            ffprobe, job, run_dir, confirm_transcode=True
+        )
+
+    probe.assert_not_called()
 
 
 def test_failed_encode_preserves_partial_and_never_creates_final(

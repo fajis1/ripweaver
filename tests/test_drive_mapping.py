@@ -334,6 +334,8 @@ def test_mapping_wizard_saves_every_current_device_in_one_plan(tmp_path):
     }
     assert response["automatic_processing_requested"] is False
     assert all(drive["mapping_status"] == "trusted" for drive in response["drives"])
+    assert [drive["drive_index"] for drive in response["drives"]] == [1, 4]
+    assert [drive["display_number"] for drive in response["drives"]] == [1, 2]
 
 
 def test_transient_native_identity_failure_preserves_prior_trusted_mapping(tmp_path):

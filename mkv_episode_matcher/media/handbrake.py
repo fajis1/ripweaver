@@ -896,6 +896,131 @@ def recover_handbrake_partial(
     )
 
 
+def recover_handbrake_completed_output(  # noqa: C901 - strict evidence validation
+    ffprobe: Path,
+    job: HandBrakeJob,
+    run_dir: Path,
+    *,
+    confirm_transcode: bool,
+) -> HandBrakeResult:
+    """Verify one already-promoted output from an exact completed run.
+
+    The final destination can exist when HandBrake completed and promoted its
+    verified partial but the following immutable pipeline-contract write
+    failed. Recovery trusts neither the destination nor the private run log on
+    its own: the exact attempt plan, completed result, file size, and a fresh
+    FFprobe inspection must all agree. No media is renamed or overwritten.
+    """
+
+    if not confirm_transcode:
+        raise HandBrakeError("Completed-output recovery requires explicit confirmation")
+    if _MEDIA_ID.fullmatch(job.media_id) is None:
+        raise HandBrakeError("Media ID contains unsupported characters")
+    _validate_profile(job.profile)
+    _validate_sample(job)
+    if not job.source.is_file() or job.source.suffix.lower() != ".mkv":
+        raise HandBrakeError("Transcode source must be one explicit MKV")
+    if (
+        not job.destination.is_file()
+        or job.destination.suffix.lower() != ".mkv"
+        or job.destination.stat().st_size <= 0
+    ):
+        raise HandBrakeError("Completed transcode destination is unavailable")
+    if job.source.resolve() == job.destination.resolve():
+        raise HandBrakeError("Transcode source and destination must differ")
+    if job.source.resolve().parent == job.destination.resolve().parent:
+        raise HandBrakeError("Transcode destination must use a separate staging folder")
+    if not run_dir.is_dir():
+        raise HandBrakeError("Transcode run-log directory does not exist")
+
+    event_logs = tuple(run_dir.glob(f"handbrake-{job.media_id}-*.jsonl"))
+    if len(event_logs) != 1 or event_logs[0].stat().st_size > 1_048_576:
+        raise HandBrakeError("Completed transcode evidence is unavailable")
+    event_log = event_logs[0]
+    try:
+        events = [
+            json.loads(line)
+            for line in event_log.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HandBrakeError("Completed transcode evidence is invalid") from exc
+    if not events or any(not isinstance(event, dict) for event in events):
+        raise HandBrakeError("Completed transcode evidence is invalid")
+
+    started_indexes = [
+        index for index, event in enumerate(events) if event.get("event") == "started"
+    ]
+    completed_indexes = [
+        index
+        for index, event in enumerate(events)
+        if event.get("event") == "verified-complete"
+    ]
+    if len(started_indexes) != 1 or len(completed_indexes) != 1:
+        raise HandBrakeError("Completed transcode evidence is incomplete")
+    if completed_indexes[0] <= started_indexes[0]:
+        raise HandBrakeError("Completed transcode evidence order is invalid")
+    started = events[started_indexes[0]]
+    completed = events[completed_indexes[0]]
+    expected_plan = job.safe_plan()
+    if any(started.get(key) != value for key, value in expected_plan.items()):
+        raise HandBrakeError("Completed transcode plan changed")
+
+    try:
+        recorded_size = int(completed["output_bytes"])
+        recorded_duration = float(completed["duration_seconds"])
+        recorded_audio = int(completed["audio_streams"])
+        recorded_subtitles = int(completed["subtitle_streams"])
+        recorded_width = int(completed["width"])
+        recorded_height = int(completed["height"])
+        recorded_codec = str(completed["video_codec"])
+        recorded_field_order = str(completed["field_order"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HandBrakeError("Completed transcode result is invalid") from exc
+    if (
+        completed.get("mode") != "handbrake-result"
+        or completed.get("media_id") != job.media_id
+        or completed.get("encoder") != job.profile.encoder
+        or recorded_size <= 0
+        or recorded_duration <= 0
+        or recorded_audio < 0
+        or recorded_subtitles < 0
+        or recorded_width <= 0
+        or recorded_height <= 0
+    ):
+        raise HandBrakeError("Completed transcode result is invalid")
+
+    verified = _probe_media(ffprobe, job.destination)
+    if (
+        verified.size_bytes != recorded_size
+        or abs(verified.duration_seconds - recorded_duration) > 0.01
+        or verified.video_codec != recorded_codec
+        or verified.audio_streams != recorded_audio
+        or verified.subtitle_streams != recorded_subtitles
+        or verified.width != recorded_width
+        or verified.height != recorded_height
+        or verified.field_order != recorded_field_order
+        or verified.video_codec != _EXPECTED_VIDEO_CODEC[job.profile.encoder]
+    ):
+        raise HandBrakeError("Completed transcode verification did not match its run")
+
+    process_log = event_log.with_suffix(".log")
+    return HandBrakeResult(
+        media_id=job.media_id,
+        encoder=job.profile.encoder,
+        output_bytes=verified.size_bytes,
+        duration_seconds=verified.duration_seconds,
+        video_codec=verified.video_codec,
+        audio_streams=verified.audio_streams,
+        subtitle_streams=verified.subtitle_streams,
+        process_log=process_log,
+        event_log=event_log,
+        width=verified.width,
+        height=verified.height,
+        field_order=verified.field_order,
+    )
+
+
 def select_audio_track(preference: str, channel_counts: tuple[int, ...]) -> int:
     """Resolve a reusable layout preference to a one-based HandBrake audio track."""
 
