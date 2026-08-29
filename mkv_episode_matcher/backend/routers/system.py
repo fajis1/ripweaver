@@ -336,6 +336,23 @@ def validate_config():
     }
 
 
+@router.get("/health")
+def get_system_health():
+    """Return path-redacted setup and feature-readiness guidance."""
+
+    from mkv_episode_matcher.backend.system_health import build_system_health
+    from mkv_episode_matcher.core.config_manager import get_config_manager
+    from mkv_episode_matcher.core.credentials import credential_is_configured
+
+    config = get_config_manager().load()
+    discovered = discover_tools()["tools"]
+    return build_system_health(
+        config,
+        discovered=discovered,
+        credential_is_configured=credential_is_configured,
+    )
+
+
 def _cleanup_context(*, require_library: bool = True):
     from mkv_episode_matcher.backend.dependencies import get_pipeline_contract_root
     from mkv_episode_matcher.backend.jellyfin_cleanup import CleanupError, plan_cleanup
@@ -351,7 +368,7 @@ def _cleanup_context(*, require_library: bool = True):
         )
     ):
         raise CleanupError(
-            "Configure rip, encoded, and at least one Jellyfin library root first"
+            "Configure rip, encoded, and at least one media library root first"
         )
     return config, get_pipeline_contract_root(), plan_cleanup
 

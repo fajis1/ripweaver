@@ -511,14 +511,14 @@ const SettingsView: React.FC = () => {
 
                 <div className="space-y-4">
                     <h3 className="text-xl font-semibold text-white border-b border-[var(--border-color)] pb-2">Media Pipeline Locations</h3>
-                    <p className="text-sm text-[var(--text-muted)]">Rips and encodes stay in staging. After verified Jellyfin placement, an original rip can be retained in staging for deletion so it remains available for a later re-encode.</p>
+                    <p className="text-sm text-[var(--text-muted)]">Rips and encodes stay in staging. After verified media-library placement, an original rip can be retained in staging for deletion so it remains available for a later re-encode. The library folders may be used by Plex, Jellyfin, Emby, or another media server.</p>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         {[
                             ['rip_output_root', 'MakeMKV rip staging root'],
                             ['transcode_output_root', 'Encoded staging root'],
                             ['deletion_staging_root', 'Staging for deletion / reprocessing root'],
-                            ['jellyfin_tv_root', 'Jellyfin TV library root'],
-                            ['jellyfin_movie_root', 'Jellyfin movie library root'],
+                            ['jellyfin_tv_root', 'TV media library root'],
+                            ['jellyfin_movie_root', 'Movie media library root'],
                         ].map(([field, label]) => (
                             <div key={field} className="space-y-2">
                                 <span className="text-sm font-medium text-muted">{label}</span>
@@ -575,7 +575,7 @@ const SettingsView: React.FC = () => {
                     </label>
                     <label className="block rounded-xl border border-cyan-500/30 bg-cyan-500/10 p-4 text-sm text-cyan-100">
                         <input type="checkbox" className="mr-3" checked={config.automatic_eject_after_rip} onChange={(event) => handleChange('automatic_eject_after_rip', event.target.checked)} />
-                        Automatically eject a disc after every reviewed title has ripped and verified, or after a one-minute cancellable countdown when every known destination already exists in Jellyfin. Failure, timeout, pause, stop, unfinished rerip work, or other active rip work prevents ejection.
+                        Automatically eject a disc after every reviewed title has ripped and verified, or after a one-minute cancellable countdown when every known destination already exists in the media library. Failure, timeout, pause, stop, unfinished rerip work, or other active rip work prevents ejection.
                     </label>
                     <label className="block rounded-xl border border-indigo-500/30 bg-indigo-500/10 p-4 text-sm text-indigo-100">
                         <input type="checkbox" className="mr-3" checked={config.automatic_gemini_ambiguity_fallback} onChange={(event) => handleChange('automatic_gemini_ambiguity_fallback', event.target.checked)} />
@@ -588,11 +588,11 @@ const SettingsView: React.FC = () => {
                     <div className="rounded-xl border border-violet-500/30 bg-violet-500/10 p-4 text-sm text-violet-100 space-y-3">
                         <label className="block">
                             <input type="checkbox" className="mr-3" checked={config.ripweaver_catalogue_enabled} onChange={(event) => handleChange('ripweaver_catalogue_enabled', event.target.checked)} />
-                            Use the community RipWeaver Catalogue for automatic disc identification. Only the compatibility disc identifier is sent; media, local paths, drive details, and Jellyfin information are never uploaded.
+                            Use the community RipWeaver Catalogue for automatic disc identification. Only the compatibility disc identifier is sent; media, local paths, drive details, and media-library information are never uploaded.
                         </label>
                         <label className="block rounded-lg border border-violet-300/20 bg-black/10 p-3">
                             <input type="checkbox" className="mr-3" checked={config.ripweaver_catalogue_contributions_enabled} onChange={(event) => handleChange('ripweaver_catalogue_contributions_enabled', event.target.checked)} />
-                            Automatically contribute cumulative, durably matched title layouts from eligible discs. This is one-time consent for future eligible discs; unresolved titles are omitted until matched. Uploads contain only the disc identifier, playlist/segment structure, runtimes, sizes, match provenance, and canonical media names. No media, local paths, drive identity, Jellyfin location, transcript, or credential is uploaded.
+                            Automatically contribute cumulative, durably matched title layouts from eligible discs. This is one-time consent for future eligible discs; unresolved titles are omitted until matched. Uploads contain only the disc identifier, playlist/segment structure, runtimes, sizes, match provenance, and canonical media names. No media, local paths, drive identity, media-library location, transcript, or credential is uploaded.
                         </label>
                         <label className="block space-y-1">
                             <span className="text-xs font-semibold">Catalogue server</span>
@@ -649,7 +649,7 @@ const SettingsView: React.FC = () => {
                     </div>
                     <label className="block rounded-xl border border-blue-500/30 bg-blue-500/10 p-4 text-sm text-blue-100">
                         <input type="checkbox" className="mr-3" checked={config.automatic_organization_enabled} onChange={(event) => handleChange('automatic_organization_enabled', event.target.checked)} />
-                        Automatically move collision-free, verified encodes from staging into the configured Jellyfin library. Different resolution versions of one episode may coexist; an exact destination or another file at the same resolution stops for review. Overwrite and deletion are never automatic.
+                        Automatically move collision-free, verified encodes from staging into the configured media library. Different resolution versions of one episode may coexist; an exact destination or another file at the same resolution stops for review. Overwrite and deletion are never automatic.
                     </label>
                 </div>
 
