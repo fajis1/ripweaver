@@ -33,7 +33,19 @@ build is not currently Authenticode-signed, so Windows may display an
 `Unknown publisher` or Microsoft Defender SmartScreen prompt even after these
 checks pass.
 
-## Windows
+## Windows installer
+
+The simplest Windows download is `RipWeaver-Setup-Windows-x64.exe`. It installs
+RipWeaver for the current user, adds Start Menu shortcuts, and requires no
+administrator access. The installer does not install or download MakeMKV,
+HandBrakeCLI, FFmpeg, or FFprobe. Its external-tool page opens only the official
+download sites you choose.
+
+The installer is not currently Authenticode-signed, so Windows may display an
+`Unknown publisher` or Microsoft Defender SmartScreen prompt. Verify its
+matching `.sha256` file or GitHub build attestation before running it.
+
+## Windows portable archive
 
 1. Install MakeMKV, HandBrakeCLI, and FFmpeg/FFprobe for the complete pipeline.
 2. Extract the entire `RipWeaver-Windows-x64.zip` archive to a user-writable
@@ -58,7 +70,8 @@ For disc ripping and the complete downstream pipeline, configure:
 
 - the MakeMKV, HandBrakeCLI, FFmpeg, and FFprobe executables;
 - separate rip-staging and encoded-staging roots;
-- at least one Jellyfin television or movie library root; and
+- at least one television or movie media-library root for Plex, Jellyfin, Emby,
+  or another server; and
 - an OpenSubtitles API key unless the local-only subtitle provider is selected.
 
 TMDb improves canonical media metadata. Gemini and Tesseract OCR are optional.
