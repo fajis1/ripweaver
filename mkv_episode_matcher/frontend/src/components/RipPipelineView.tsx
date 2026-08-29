@@ -908,7 +908,7 @@ const pipelineStatusLabel = (item: PipelineQueueItem) => {
     rip: { active: 'Ripping now', waiting: 'Waiting to rip' },
     identify: { active: 'Matching now', waiting: 'Waiting to match' },
     transcode: { active: 'Transcoding now', waiting: 'Waiting to transcode' },
-    organize: { active: 'Transferring to Jellyfin now', waiting: 'Waiting to transfer to Jellyfin' },
+    organize: { active: 'Transferring to the media library now', waiting: 'Waiting to transfer to the media library' },
   }[item.stage];
   if (item.state === 'running') return action?.active || `${item.stage} running`;
   if (item.state === 'queued') return action?.waiting || `${item.stage} queued`;
@@ -1475,8 +1475,8 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
           window.alert(`No exact fingerprint-bound staged MKVs were found for "${label}". Use the metadata-only forget action instead.`);
           return;
         }
-        if (!window.confirm(`Permanently delete exactly ${mediaPlan.file_count} fingerprint-bound staged MKV file(s) (${formatBytes(mediaPlan.total_size_bytes)}) and forget the saved identity and matching history for "${label}"? Encoded files and Jellyfin media will not be changed. This cannot be undone.`)) return;
-      } else if (!window.confirm(`Forget RipWeaver's saved identity and matching history for "${label}"? This removes only database records for this exact disc fingerprint. Staged MKVs, encoded files, Jellyfin media, and logs will not be deleted or changed.`)) {
+        if (!window.confirm(`Permanently delete exactly ${mediaPlan.file_count} fingerprint-bound staged MKV file(s) (${formatBytes(mediaPlan.total_size_bytes)}) and forget the saved identity and matching history for "${label}"? Encoded files and media-library files will not be changed. This cannot be undone.`)) return;
+      } else if (!window.confirm(`Forget RipWeaver's saved identity and matching history for "${label}"? This removes only database records for this exact disc fingerprint. Staged MKVs, encoded files, media-library files, and logs will not be deleted or changed.`)) {
         return;
       }
       const response = await fetch(`/rip/drives/${drive.drive_index}/forget-disc-identity`, {
@@ -1703,7 +1703,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
     const futureMessage = futureSkip
       ? ' RipWeaver will also remember this exact disc fingerprint and title index so it is skipped on future rips. That decision can be restored from a future disc review.'
       : '';
-    if (!window.confirm(`Permanently delete the verified staged rip for “${title}”? This does not change Jellyfin.${futureMessage} The MKV deletion cannot be undone.`)) return;
+    if (!window.confirm(`Permanently delete the verified staged rip for “${title}”? This does not change the media library.${futureMessage} The MKV deletion cannot be undone.`)) return;
     setControlling(true);
     setError('');
     try {
@@ -1723,10 +1723,10 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
       setPipelineQueue(payload as unknown as PipelineQueue);
       setReviewNotice(futureSkip
         ? `Deleted the staged rip for “${title}” and saved an exact future-rip skip for this disc title.`
-        : `Permanently deleted the staged rip for “${title}” and removed it from the active queue. Jellyfin was not changed.`);
+        : `Permanently deleted the staged rip for “${title}” and removed it from the active queue. The media library was not changed.`);
       window.alert(futureSkip
-        ? `Deleted the staged rip for “${title}” and saved the future-rip skip. Jellyfin was not changed.`
-        : `Deleted the staged rip for “${title}”. Reripping will be required to recover it. Jellyfin was not changed.`);
+        ? `Deleted the staged rip for “${title}” and saved the future-rip skip. The media library was not changed.`
+        : `Deleted the staged rip for “${title}”. Reripping will be required to recover it. The media library was not changed.`);
       const jobsResponse = await fetch('/rip/jobs');
       if (jobsResponse.ok) setJobDashboard(await jobsResponse.json());
     } catch (requestError) {
@@ -1827,9 +1827,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
       const plan = await previewResponse.json();
       if (!previewResponse.ok) throw new Error(typeof plan.detail === 'string' ? plan.detail : 'Staged-file cleanup could not be reviewed safely.');
       if (!plan.file_count) {
-        throw new Error('No staged MKVs are eligible. RipWeaver only deletes a staged file when its previously matched Jellyfin file still exists.');
+        throw new Error('No staged MKVs are eligible. RipWeaver only deletes a staged file when its previously matched media-library file still exists.');
       }
-      if (!window.confirm(`Permanently delete exactly ${plan.file_count} staged MKV file(s) (${formatBytes(plan.total_size_bytes)}) because their previously matched Jellyfin files still exist? Jellyfin is not changed. This cannot be undone; reripping will be required to recover these staged copies.`)) return;
+      if (!window.confirm(`Permanently delete exactly ${plan.file_count} staged MKV file(s) (${formatBytes(plan.total_size_bytes)}) because their previously matched media-library files still exist? The media library is not changed. This cannot be undone; reripping will be required to recover these staged copies.`)) return;
       const response = await fetch(`/rip/jobs/${savedJob.job_id}/staged-library-duplicates/delete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1841,8 +1841,8 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : 'The reviewed staged files could not be deleted safely.');
-      setReviewNotice(`Deleted ${payload.deleted_file_count} redundant staged MKV(s). Existing Jellyfin files were not changed.`);
-      window.alert(`Deleted ${payload.deleted_file_count} staged MKV(s). Jellyfin was not changed.`);
+      setReviewNotice(`Deleted ${payload.deleted_file_count} redundant staged MKV(s). Existing media-library files were not changed.`);
+      window.alert(`Deleted ${payload.deleted_file_count} staged MKV(s). The media library was not changed.`);
       const refreshed = await fetch(`/rip/jobs/${savedJob.job_id}`);
       if (refreshed.ok) {
         const refreshedJob = await refreshed.json();
@@ -1902,9 +1902,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
     const replacing = action === 'replace-library';
     const message = replacing
       ? item.stage === 'organize'
-        ? `Replace the existing Jellyfin episode with the verified encode for “${item.display_name || item.media_id}”? The old Jellyfin file will first be moved to staging-for-deletion for recovery. The raw rip is preserved.`
-        : `Authorize replacement for “${item.display_name || item.media_id}”? It will be encoded first, then held for a final verified replacement. The existing Jellyfin file is not changed by this step.`
-      : `Permanently delete the new ${item.stage === 'organize' ? 'verified encode' : 'ripped MKV'} for “${item.display_name || item.media_id}”? The existing Jellyfin file is not changed.${item.stage === 'organize' ? ' The raw rip is preserved for reprocessing.' : ' Reripping the disc will be required to recover it.'}`;
+        ? `Replace the existing media-library episode with the verified encode for “${item.display_name || item.media_id}”? The old media-library file will first be moved to staging-for-deletion for recovery. The raw rip is preserved.`
+        : `Authorize replacement for “${item.display_name || item.media_id}”? It will be encoded first, then held for a final verified replacement. The existing media-library file is not changed by this step.`
+      : `Permanently delete the new ${item.stage === 'organize' ? 'verified encode' : 'ripped MKV'} for “${item.display_name || item.media_id}”? The existing media-library file is not changed.${item.stage === 'organize' ? ' The raw rip is preserved for reprocessing.' : ' Reripping the disc will be required to recover it.'}`;
     if (!window.confirm(message)) return;
     setControlling(true); setError(''); setReviewNotice('');
     try {
@@ -1917,8 +1917,8 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
       const refreshed = await fetch('/rip/pipeline/items');
       if (refreshed.ok) setPipelineQueue(await refreshed.json());
       setReviewNotice(replacing
-        ? item.stage === 'organize' ? 'Verified replacement completed; the previous Jellyfin file was retained in staging-for-deletion.' : 'Replacement authorized. Review and start the queued HandBrake job.'
-        : 'The selected new pipeline media was permanently deleted; the existing Jellyfin file was unchanged.');
+        ? item.stage === 'organize' ? 'Verified replacement completed; the previous media-library file was retained in staging-for-deletion.' : 'Replacement authorized. Review and start the queued HandBrake job.'
+        : 'The selected new pipeline media was permanently deleted; the existing media-library file was unchanged.');
       window.alert(replacing ? 'Replacement choice applied.' : 'The selected new pipeline media was deleted and duplicate held records were retired.');
     } catch (requestError) {
       const message = requestError instanceof Error ? requestError.message : 'The collision choice could not be applied safely.';
@@ -1930,7 +1930,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
 
   const inspectLibraryCollision = (item: PipelineQueueItem) => {
     if (pendingCollisionInspectionIdsRef.current.has(item.media_id)) return;
-    if (!window.confirm(`Read container metadata from the exact new encode and conflicting Jellyfin file for “${item.display_name || item.media_id}”? This uses local FFprobe and does not modify either file.`)) return;
+    if (!window.confirm(`Read container metadata from the exact new encode and conflicting media-library file for “${item.display_name || item.media_id}”? This uses local FFprobe and does not modify either file.`)) return;
     pendingCollisionInspectionIdsRef.current.add(item.media_id);
     setQueuedCollisionInspectionIds((current) => [...current, item.media_id]);
     setCollisionComparisonErrors((current) => ({ ...current, [item.media_id]: '' }));
@@ -1962,7 +1962,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
   };
 
   const playLibraryCollision = async (item: PipelineQueueItem, target: 'new-encode' | 'existing-jellyfin') => {
-    const label = target === 'new-encode' ? 'new verified encode' : 'existing Jellyfin file';
+    const label = target === 'new-encode' ? 'new verified encode' : 'existing media-library file';
     if (!window.confirm(`Open the exact ${label} for “${item.display_name || item.media_id}” in the Windows default media player? No file will be changed.`)) return;
     setOpeningReviewId(`${item.media_id}:${target}`);
     setError('');
@@ -2062,7 +2062,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
       setReviewNotice(evidenceSource === 'catalogue_candidate'
         ? 'Accepted the single-upload community candidate as server-assisted evidence. It will continue locally but cannot reinforce its own catalogue vote.'
         : isBonus
-          ? 'Saved the reviewed TV bonus identity. It will use the canonical series Extras folder in Jellyfin.'
+          ? 'Saved the reviewed TV bonus identity. It will use the canonical series Extras folder in the media library.'
           : 'Saved the reviewed episode identity and returned the staged rip to the automatic pipeline. The .mkv extension is preserved.');
     } catch (requestError) {
       const message = requestError instanceof Error ? requestError.message : 'Manual episode identification could not be saved.';
@@ -2075,7 +2075,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
 
   const renameProvisional = async (mediaId: string) => {
     const newName = (renameDrafts[mediaId] || '').trim(); if (!newName) return;
-    if (!window.confirm(`Rename this Jellyfin file to “${newName}.mkv”? The .mkv extension is preserved and existing files will not be overwritten.`)) return;
+    if (!window.confirm(`Rename this media-library file to “${newName}.mkv”? The .mkv extension is preserved and existing files will not be overwritten.`)) return;
     const response = await fetch(`/rip/pipeline/items/${encodeURIComponent(mediaId)}/rename-provisional`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ new_name: newName, confirm_rename: true }) });
     const payload = await response.json(); if (!response.ok) setError(payload.detail || 'Provisional file could not be renamed.'); else setRenameDrafts((current) => ({ ...current, [mediaId]: '' }));
   };
@@ -2097,7 +2097,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
 
   const authorizeTranscode = async () => {
     if (!transcodePlan) return;
-    if (!window.confirm(`Start HandBrake for exactly ${transcodePlan.item_count} queued item(s) using ${transcodePlan.profile_display_name}? Outputs go only to encoded staging. Existing files are never overwritten, and nothing will be organized into Jellyfin.`)) return;
+    if (!window.confirm(`Start HandBrake for exactly ${transcodePlan.item_count} queued item(s) using ${transcodePlan.profile_display_name}? Outputs go only to encoded staging. Existing files are never overwritten, and nothing will be organized into the media library.`)) return;
     setControlling(true);
     setError('');
     try {
@@ -2129,7 +2129,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
     const response = await fetch('/rip/pipeline/organization/preview');
     const payload = await response.json();
     if (!response.ok) {
-      setError(typeof payload.detail === 'string' ? payload.detail : 'Jellyfin organization review could not be prepared safely.');
+      setError(typeof payload.detail === 'string' ? payload.detail : 'Media-library organization review could not be prepared safely.');
       return;
     }
     setOrganizationPlan(payload);
@@ -2138,10 +2138,10 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
   const authorizeOrganization = async () => {
     if (!organizationPlan) return;
     if (organizationPlan.collision_count > 0) {
-      setError('One or more Jellyfin destinations already exist. Those items require collision review and will not be overwritten.');
+      setError('One or more media-library destinations already exist. Those items require collision review and will not be overwritten.');
       return;
     }
-    if (!window.confirm(`Move exactly ${organizationPlan.item_count} verified encoded file(s) from staging into the configured Jellyfin libraries? Existing destinations will not be overwritten. This removes each successfully moved file from encoded staging.`)) return;
+    if (!window.confirm(`Move exactly ${organizationPlan.item_count} verified encoded file(s) from staging into the configured media libraries? Existing destinations will not be overwritten. This removes each successfully moved file from encoded staging.`)) return;
     setControlling(true);
     setError('');
     try {
@@ -2155,11 +2155,11 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
         }),
       });
       const payload = await response.json();
-      if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : 'Jellyfin organization authorization failed safely.');
-      setReviewNotice(`Started the reviewed ${payload.authorized_item_count}-item Jellyfin placement batch. No overwrite was authorized.`);
+      if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : 'Media-library organization authorization failed safely.');
+      setReviewNotice(`Started the reviewed ${payload.authorized_item_count}-item media-library placement batch. No overwrite was authorized.`);
       setOrganizationPlan(null);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Jellyfin organization authorization failed safely.');
+      setError(requestError instanceof Error ? requestError.message : 'Media-library organization authorization failed safely.');
     } finally {
       setControlling(false);
     }
@@ -2179,7 +2179,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
       return;
     }
     if (unfinishedCount === 0) {
-      setError('Every reviewed title from this failed rip is already safely present in staging or Jellyfin.');
+      setError('Every reviewed title from this failed rip is already safely present in staging or the media library.');
       return;
     }
     const selectedTitleDescription = unfinishedCount === 1
@@ -2203,7 +2203,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
           ? ' preserve the failed attempt for review, then'
           : '';
       if (!window.confirm(
-        `Rerip exactly ${unfinishedCount} missing ${unfinishedCount === 1 ? 'title' : 'titles'} now (${selectedTitleDescription})? RipWeaver will${cleanupDescription} start MakeMKV for only these ${unfinishedCount} selected ${unfinishedCount === 1 ? 'title' : 'titles'} in a new isolated attempt. Existing staged titles and Jellyfin files will be preserved and never overwritten.`,
+        `Rerip exactly ${unfinishedCount} missing ${unfinishedCount === 1 ? 'title' : 'titles'} now (${selectedTitleDescription})? RipWeaver will${cleanupDescription} start MakeMKV for only these ${unfinishedCount} selected ${unfinishedCount === 1 ? 'title' : 'titles'} in a new isolated attempt. Existing staged titles and media-library files will be preserved and never overwritten.`,
       )) return;
       let recovered = job;
       if (job.state === 'failed' || job.state === 'awaiting_review') {
@@ -2288,7 +2288,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
       setSavedJob(executed);
       setPreview(executed.preview);
       setReviewNotice(cleanupRequired
-        ? `Removed ${cleanup?.attempt_directory_count} confirmed interrupted-attempt folder(s) and started the ${unfinishedCount}-item rerip. Verified titles are in the identification queue; Jellyfin files were preserved.`
+        ? `Removed ${cleanup?.attempt_directory_count} confirmed interrupted-attempt folder(s) and started the ${unfinishedCount}-item rerip. Verified titles are in the identification queue; media-library files were preserved.`
         : `Started the ${unfinishedCount}-item rerip in a new isolated attempt. Verified titles are in the identification queue.`);
       const jobsResponse = await fetch('/rip/jobs');
       if (jobsResponse.ok) setJobDashboard(await jobsResponse.json());
@@ -2470,7 +2470,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
           failedCleanupSha256 = cleanup.plan_sha256;
           confirmFailedCleanup = true;
           if (cleanup.file_count > 0 && !window.confirm(
-            `Start this rip from the beginning and permanently remove ${cleanup.file_count} incomplete MKV file(s) from ${cleanup.attempt_directory_count} failed attempt folder(s) (${formatBytes(cleanup.total_bytes)})? Verified outputs, Jellyfin files, and unrelated files will not be changed.`,
+            `Start this rip from the beginning and permanently remove ${cleanup.file_count} incomplete MKV file(s) from ${cleanup.attempt_directory_count} failed attempt folder(s) (${formatBytes(cleanup.total_bytes)})? Verified outputs, media-library files, and unrelated files will not be changed.`,
           )) return;
         }
         body = {
@@ -4055,7 +4055,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                   : earlierActiveJob
                     ? 'eject held by earlier rip job'
                     : driveAlreadyComplete
-                      ? 'already complete in Jellyfin'
+                      ? 'already complete in the media library'
                     : unavailableInventoryTitleIndexes.length > 0
                       ? `${unavailableInventoryTitleIndexes.length} previously seen ${unavailableInventoryTitleIndexes.length === 1 ? 'title is' : 'titles are'} missing from inventory`
                     : job?.state === 'completed'
@@ -4219,7 +4219,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                                 : 'Missing-title rerip ready'}
                           </div>
                           <div className="rounded border border-amber-300/30 bg-black/10 p-2">
-                            <div className="font-semibold">Current recovery status: {recoveryPresentTitleCount} of {recoveryKnownTitleCount} titles are already safely present in staging or Jellyfin.</div>
+                            <div className="font-semibold">Current recovery status: {recoveryPresentTitleCount} of {recoveryKnownTitleCount} titles are already safely present in staging or the media library.</div>
                             {recoverableStagedTitleIndexes.length > 0 && (
                               <div className="mt-2 rounded border border-blue-300/30 bg-blue-500/10 p-2 text-blue-100">
                                 <div className="font-semibold">{recoverableStagedTitleIndexes.length} completed staged title{recoverableStagedTitleIndexes.length === 1 ? ' is' : 's are'} preserved and awaiting read-only verification: {recoverableStagedTitleIndexes.join(', ')}.</div>
@@ -4327,7 +4327,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                     <div className="rounded-lg border border-red-400/40 bg-red-500/15 p-3 text-sm text-red-100 space-y-1">
                       <div className="font-semibold">Previously seen titles are missing from the current disc inventory</div>
                       <div className="text-xs">MakeMKV previously reported {unavailableInventoryTitleIndexes.length === 1 ? 'title' : 'titles'} {unavailableInventoryTitleIndexes.join(', ')}, but the latest complete inventory did not. RipWeaver cannot safely include {unavailableInventoryTitleIndexes.length === 1 ? 'it' : 'them'} in a rerip until MakeMKV reports {unavailableInventoryTitleIndexes.length === 1 ? 'that title' : 'those titles'} again.</div>
-                      <div className="text-xs">Clean and reseat the disc, refresh it, or try another optical drive. Existing staged and Jellyfin files remain untouched.</div>
+                      <div className="text-xs">Clean and reseat the disc, refresh it, or try another optical drive. Existing staged and media-library files remain untouched.</div>
                     </div>
                   )}
                   {drive.has_disc && discardedIdentificationRemains && !identificationNeedsAttention && (
@@ -4345,7 +4345,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                     <div className="rounded-lg border border-green-400/40 bg-green-500/15 p-3 text-sm text-green-100 space-y-2">
                       <div className="font-semibold">Disc content is safely present</div>
                       <div className="text-xs text-green-100/80">
-                        All {completedDiscTitleCount} substantial content {completedDiscTitleCount === 1 ? 'title is' : 'titles are'} safely present in staging or Jellyfin, or explicitly skipped. No additional MakeMKV rip is needed.
+                        All {completedDiscTitleCount} substantial content {completedDiscTitleCount === 1 ? 'title is' : 'titles are'} safely present in staging or the media library, or explicitly skipped. No additional MakeMKV rip is needed.
                         {outstandingDiscDownstreamItems.length > 0
                           ? ` ${outstandingDiscDownstreamItems.length} saved ${outstandingDiscDownstreamItems.length === 1 ? 'title still has' : 'titles still have'} identification, transcoding, organization, or review work remaining.`
                           : ' No downstream work remains for this disc.'}
@@ -4407,7 +4407,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                                     : item.stage === 'transcode'
                                       ? 'Queued to transcode the identified title with HandBrake.'
                                       : item.stage === 'organize'
-                                        ? 'Queued to place the verified encode in its Jellyfin destination.'
+                                        ? 'Queued to place the verified encode in its media-library destination.'
                                         : 'Queued for the next pipeline operation.'}
                                   {(pipelineQueue?.items ?? []).some((candidate) => candidate.media_id !== item.media_id && candidate.state === 'running' && candidate.stage === item.stage)
                                     ? ` Another ${item.stage} operation is running; this item will start automatically afterward.`
@@ -4438,7 +4438,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                   {drive.has_disc && driveAlreadyComplete && !driveRipComplete && job?.preview && (
                     <div className="rounded-lg border border-green-400/40 bg-green-500/15 p-3 text-sm text-green-100 space-y-2">
                       <div className="font-semibold">Nothing needs to be ripped</div>
-                      <div className="mt-1 text-xs text-green-100/80">All {new Set(job.preview.held_titles?.map((item) => item.title_index) ?? []).size} known episode destinations from this disc already exist in Jellyfin. RipWeaver did not start MakeMKV.</div>
+                      <div className="mt-1 text-xs text-green-100/80">All {new Set(job.preview.held_titles?.map((item) => item.title_index) ?? []).size} known episode destinations from this disc already exist in the media library. RipWeaver did not start MakeMKV.</div>
                       {completeAutoEjectSeconds !== null && (
                         <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-green-300/25 bg-black/10 p-2 text-xs">
                           <span>{completeAutoEjectRetryCount > 0 ? 'Retrying automatic eject verification' : 'Automatically ejecting this completed disc'} in {completeAutoEjectSeconds} second{completeAutoEjectSeconds === 1 ? '' : 's'}.</span>
@@ -4458,7 +4458,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                     <label className="block rounded-lg border border-blue-500/25 bg-blue-500/10 p-3 text-sm text-blue-100">
                       <input type="checkbox" className="mr-2" checked={setup.addMissingOnly} onChange={(event) => updateDiscSetup(driveKey, { addMissingOnly: event.target.checked })} />
                       Add missing items from this disc
-                      <span className="mt-1 block text-xs text-blue-100/70">Check known results during preparation and check Jellyfin again immediately after every match. Existing destinations are held individually for review while missing episodes, extras, editions, commentary variants, and unrelated titles continue.</span>
+                      <span className="mt-1 block text-xs text-blue-100/70">Check known results during preparation and check the media library again immediately after every match. Existing destinations are held individually for review while missing episodes, extras, editions, commentary variants, and unrelated titles continue.</span>
                     </label>
                   )}
                   {drive.has_disc && !driveRipComplete && !reripJob && !identificationNeedsAttention && !discardedIdentificationRemains && (!job || ['completed', 'failed'].includes(job.state) || stagingAttemptCollision) && (
@@ -4531,7 +4531,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                   {drive.has_disc && (drivePaused || interruptedQueued) && job && (
                     <div className="rounded-lg border border-amber-400/40 bg-amber-500/15 p-3 space-y-2">
                       <div className="font-semibold text-amber-100">Interrupted rip needs recovery</div>
-                      <div className="text-xs text-amber-100/80">Recovery removes only exact incomplete MKVs and empty title folders from the interrupted attempt, then starts the reviewed titles again. Verified outputs and Jellyfin files remain protected.</div>
+                      <div className="text-xs text-amber-100/80">Recovery removes only exact incomplete MKVs and empty title folders from the interrupted attempt, then starts the reviewed titles again. Verified outputs and media-library files remain protected.</div>
                       <button type="button" className="btn btn-primary" disabled={controlling} onClick={() => void reripMissingItems(job)}>Rerip unfinished items</button>
                     </div>
                   )}
@@ -4817,7 +4817,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
               <div>Profile: {transcodePlan.profile_display_name} ({transcodePlan.default_profile_id})</div>
               <div>Destination: configured encoded staging root</div>
               <div className="font-mono text-xs break-all text-[var(--text-muted)]">Plan: {transcodePlan.plan_sha256}</div>
-              <div className="text-amber-100">This starts HandBrake and FFprobe verification. It does not overwrite existing output or organize files into Jellyfin.</div>
+              <div className="text-amber-100">This starts HandBrake and FFprobe verification. It does not overwrite existing output or organize files into the media library.</div>
               <div className="flex flex-wrap gap-2">
                 <button type="button" className="btn btn-primary" disabled={controlling} onClick={authorizeTranscode}>
                   Start this exact transcode batch
@@ -4830,7 +4830,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
           )}
           {pipelineQueue?.automatic_organization_enabled && (runningOrganizationItems.length > 0 || queuedOrganizationItems.length > 0) && (
             <div className="rounded-lg border border-emerald-400/30 bg-emerald-400/10 p-3 text-sm text-emerald-100 space-y-1">
-              <div className="font-semibold">Automatic Jellyfin placement</div>
+              <div className="font-semibold">Automatic media-library placement</div>
               <div>
                 {runningOrganizationItems.length > 0 ? 'A verified encode is being placed now. ' : ''}
                 {queuedOrganizationItems.length > 0
@@ -4842,15 +4842,15 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
           )}
           {!pipelineQueue?.automatic_organization_enabled && queuedOrganizationItems.length > 0 && !organizationPlan && (
             <div className="rounded-lg border border-blue-400/30 bg-blue-400/10 p-3 text-sm text-blue-100 space-y-3">
-              <p>Verified encodes are ready in staging. Review their exact Jellyfin destinations and confirm a collision-refusing move.</p>
+              <p>Verified encodes are ready in staging. Review their exact media-library destinations and confirm a collision-refusing move.</p>
               <button type="button" className="btn btn-primary" disabled={controlling} onClick={reviewOrganizationAuthorization}>
-                Review placement into Jellyfin
+                Review media-library placement
               </button>
             </div>
           )}
           {organizationPlan && !pipelineQueue?.automatic_organization_enabled && (
             <div className="rounded-lg border border-indigo-400/30 bg-indigo-400/10 p-4 space-y-3 text-sm">
-              <div className="font-semibold text-white">Reviewed Jellyfin placement</div>
+              <div className="font-semibold text-white">Reviewed media-library placement</div>
               <div>{organizationPlan.item_count} exact verified encode(s): {organizationPlan.tv_count} TV, {organizationPlan.movie_count} movie/bonus feature.</div>
               <div>{organizationPlan.collision_count === 0 ? 'No destination collisions detected.' : `${organizationPlan.collision_count} destination collision(s) require separate review.`}</div>
               <div className="max-h-48 overflow-y-auto rounded-lg border border-indigo-300/20 bg-black/10 p-2 space-y-1">
@@ -4861,10 +4861,10 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                 ))}
               </div>
               <div className="font-mono text-xs break-all text-[var(--text-muted)]">Plan: {organizationPlan.plan_sha256}</div>
-              <div className="text-amber-100">This moves verified encodes from staging into Jellyfin. Existing destinations are never overwritten.</div>
+              <div className="text-amber-100">This moves verified encodes from staging into the media library. Existing destinations are never overwritten.</div>
               <div className="flex flex-wrap gap-2">
                 <button type="button" className="btn btn-primary" disabled={controlling || organizationPlan.collision_count > 0} onClick={authorizeOrganization}>
-                  Move these verified files into Jellyfin
+                  Move these verified files into the media library
                 </button>
                 <button type="button" className="btn btn-secondary" disabled={controlling} onClick={() => setOrganizationPlan(null)}>Cancel</button>
               </div>
@@ -4872,8 +4872,8 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
           )}
           {visiblePipelineItems.some((item) => item.review_code === 'library_collision') && (
             <div className="rounded-lg border border-red-400/30 bg-red-400/10 p-3 text-sm text-red-100 space-y-2">
-              <div className="font-semibold">Existing Jellyfin episode found</div>
-              <p>These items are intentionally held. Starting or resuming the queue cannot overwrite or bypass this review. The match was checked against Jellyfin before HandBrake for new work; older jobs that had already encoded remain safely held here.</p>
+              <div className="font-semibold">Existing media-library episode found</div>
+              <p>These items are intentionally held. Starting or resuming the queue cannot overwrite or bypass this review. The match was checked against the media library before HandBrake for new work; older jobs that had already encoded remain safely held here.</p>
             </div>
           )}
           {!attentionOnly && visiblePipelineItems.some((item) => item.state === 'review_required' && item.review_code !== 'all_season_analysis_running') && (
@@ -4883,7 +4883,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                 <div>Episode identification needs a series/season analysis choice. Use the analysis panel above.</div>
               )}
               {visiblePipelineItems.some((item) => item.review_code === 'library_collision') && (
-                <div>A matched Jellyfin destination already exists. Each affected card lets you encode/replace after verification or delete only the new pipeline copy.</div>
+                <div>A matched media-library destination already exists. Each affected card lets you encode/replace after verification or delete only the new pipeline copy.</div>
               )}
               {visiblePipelineItems.some((item) => item.review_code === 'catalogue_candidate_help_available') && (
                 <div>The community catalogue has a single-upload candidate for this title, but it has not reached two-installation consensus. RipWeaver kept it as a review hint and did not apply it automatically.</div>
@@ -5021,12 +5021,12 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                   )}
                   {item.stage === 'organize' && item.state === 'queued' && (
                     <div className="max-w-md rounded-lg border border-blue-400/30 bg-blue-400/10 p-3 text-xs text-blue-100">
-                      Transcoding and verification finished. Waiting for the organization worker to transfer this file to Jellyfin. An unrelated transcode does not block this move, and no destination collision has been detected.
+                      Transcoding and verification finished. Waiting for the organization worker to transfer this file to the media library. An unrelated transcode does not block this move, and no destination collision has been detected.
                     </div>
                   )}
                   {item.stage === 'organize' && item.state === 'completed' && (
                     <div className="max-w-md rounded-lg border border-green-400/30 bg-green-400/10 p-3 text-xs text-green-100">
-                      <div>Moved into Jellyfin on {new Date(item.updated_at).toLocaleString()}.</div>
+                      <div>Moved into the media library on {new Date(item.updated_at).toLocaleString()}.</div>
                       {formatBytes(item.output_size_bytes) && <div className="mt-1">Finished file size: {formatBytes(item.output_size_bytes)}</div>}
                       {item.retained_source_available && <div className="mt-1">Original retained in staging for deletion/reprocessing for up to {retainedSourceTtlDays} day(s).</div>}
                       {item.original_source_unavailable && <div className="mt-1">The original staged rip was already unavailable, so there was nothing to archive. The verified encode was still placed safely.</div>}
@@ -5037,10 +5037,10 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                   {['failed', 'review_required'].includes(item.state) && (
                     item.stage === 'organize' && item.error_type === 'PipelineQueueError' && item.original_source_unavailable ? (
                       <div className="max-w-md rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-100">
-                        <div>The verified encode is preserved, but the old ripped source is no longer in staging. Nothing needs to be archived before Jellyfin placement.</div>
+                        <div>The verified encode is preserved, but the old ripped source is no longer in staging. Nothing needs to be archived before media-library placement.</div>
                         <div className="mt-2">After updating or restarting RipWeaver, retry this item to place the verified encode without reripping or retranscoding.</div>
                         <div className="mt-3 flex flex-wrap gap-2">
-                          <button type="button" className="btn btn-primary text-xs" disabled={controlling} onClick={() => controlPipeline('resume', item.media_id)}>Retry Jellyfin placement</button>
+                          <button type="button" className="btn btn-primary text-xs" disabled={controlling} onClick={() => controlPipeline('resume', item.media_id)}>Retry media-library placement</button>
                           <button type="button" className="btn btn-secondary text-xs" disabled={controlling} onClick={() => dismissPipelineItems([item.media_id])}>Clear from queue and keep encode</button>
                         </div>
                       </div>
@@ -5054,24 +5054,24 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                     ) : item.review_code === 'corrected_identification_ready' ? (
                       <div className="max-w-md rounded-lg border border-green-400/30 bg-green-400/10 p-3 text-xs text-green-100">
                         <div>The episode identity was corrected using the independent matches from this disc. The verified encode was preserved and no media was moved or renamed.</div>
-                        <div className="mt-2">Confirm below only when you want RipWeaver to place this corrected episode in Jellyfin.</div>
+                        <div className="mt-2">Confirm below only when you want RipWeaver to place this corrected episode in the media library.</div>
                         <div className="mt-3 flex flex-wrap gap-2">
                           <button
                             type="button"
                             className="btn btn-primary text-xs"
                             disabled={controlling}
                             onClick={() => {
-                              if (window.confirm(`Place “${item.display_name || item.media_id}” in Jellyfin using the corrected episode identity? This moves the existing verified encode; it does not rerip or retranscode.`)) void controlPipeline('resume', item.media_id);
+                              if (window.confirm(`Place “${item.display_name || item.media_id}” in the media library using the corrected episode identity? This moves the existing verified encode; it does not rerip or retranscode.`)) void controlPipeline('resume', item.media_id);
                             }}
                           >
-                            Place corrected episode in Jellyfin
+                            Place corrected episode in the media library
                           </button>
                           <button type="button" className="btn btn-secondary text-xs" disabled={controlling} onClick={() => dismissPipelineItems([item.media_id])}>Keep encode and clear from queue</button>
                         </div>
                       </div>
                     ) : item.review_code === 'library_collision' ? (
                       <div className="max-w-2xl rounded-lg border border-red-400/30 bg-red-400/10 p-3 text-xs text-red-100">
-                        <div>An existing Jellyfin episode conflicts with this matched title. Choose exactly what happens to the new pipeline media.</div>
+                        <div>An existing media-library episode conflicts with this matched title. Choose exactly what happens to the new pipeline media.</div>
                         {item.stage === 'organize' && (
                           <div className="mt-3 flex flex-wrap gap-2">
                             <button type="button" className="btn btn-secondary text-xs" disabled={inspectingCollisionId === item.media_id || queuedCollisionInspectionIds.includes(item.media_id)} onClick={() => inspectLibraryCollision(item)}>
@@ -5088,7 +5088,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                               {openingReviewId === `${item.media_id}:new-encode` ? 'Opening new encode…' : 'Play new encode'}
                             </button>
                             <button type="button" className="btn btn-secondary text-xs" disabled={openingReviewId === `${item.media_id}:existing-jellyfin`} onClick={() => playLibraryCollision(item, 'existing-jellyfin')}>
-                              {openingReviewId === `${item.media_id}:existing-jellyfin` ? 'Opening Jellyfin file…' : 'Play existing Jellyfin file'}
+                              {openingReviewId === `${item.media_id}:existing-jellyfin` ? 'Opening media-library file…' : 'Play existing media-library file'}
                             </button>
                           </div>
                         )}
@@ -5119,7 +5119,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                           return (
                             <div className="mt-3 overflow-x-auto rounded border border-red-300/20 bg-black/20">
                               <table className="w-full min-w-[34rem] text-left">
-                                <thead><tr><th className="p-2">Property</th><th className="p-2">New pipeline encode</th><th className="p-2">Existing Jellyfin file</th></tr></thead>
+                                <thead><tr><th className="p-2">Property</th><th className="p-2">New pipeline encode</th><th className="p-2">Existing media-library file</th></tr></thead>
                                 <tbody>{rows.map(([property, newValue, existingValue]) => (
                                   <tr key={property} className="border-t border-red-300/15"><th className="p-2 font-medium">{property}</th><td className="p-2">{newValue}</td><td className="p-2">{existingValue}</td></tr>
                                 ))}</tbody>
@@ -5530,7 +5530,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
             : 'border-green-500/30 bg-green-500/10'
           }`}>
             <div className="font-bold text-white">
-              {existingRipsNeedAnalysis ? 'Existing rips need episode analysis' : existingRipsInPipeline ? 'Existing rips are processing' : allReviewedTitlesAlreadyInLibrary ? 'Disc already complete in Jellyfin' : catalogueSupportRequired ? 'Automatic catalogue lookup paused' : preview.requires_review ? 'Your attention is needed' : 'Ready for your approval'}
+              {existingRipsNeedAnalysis ? 'Existing rips need episode analysis' : existingRipsInPipeline ? 'Existing rips are processing' : allReviewedTitlesAlreadyInLibrary ? 'Disc already complete in the media library' : catalogueSupportRequired ? 'Automatic catalogue lookup paused' : preview.requires_review ? 'Your attention is needed' : 'Ready for your approval'}
             </div>
             <div className="text-sm text-[var(--text-muted)] mt-1">
               {existingRipsNeedAnalysis
@@ -5538,9 +5538,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                 : existingRipsInPipeline
                 ? `${preview.jobs.length} existing completed MKV(s) were accepted as inputs. No rerip or overwrite decision is needed while identification proceeds.`
                 : allReviewedTitlesAlreadyInLibrary
-                ? `No missing titles were found. All ${heldLibraryTitleIndexes.size} known episode destination(s) currently exist in Jellyfin, including resolution-suffixed versions. Nothing will be queued for MakeMKV unless you explicitly choose a rerip.`
+                ? `No missing titles were found. All ${heldLibraryTitleIndexes.size} known episode destination(s) currently exist in the media library, including resolution-suffixed versions. Nothing will be queued for MakeMKV unless you explicitly choose a rerip.`
                 : separatedHeldLibraryTitles.length > 0
-                ? `${separatedHeldLibraryTitles.length} known Jellyfin destination(s) were held out of this missing-only plan. ${preview.jobs.length} missing or unresolved title(s) remain for review.`
+                ? `${separatedHeldLibraryTitles.length} known media-library destination(s) were held out of this missing-only plan. ${preview.jobs.length} missing or unresolved title(s) remain for review.`
                 : catalogueSupportRequired
                 ? 'The automatic monthly allowance and saved credits are exhausted. Nothing was charged. Choose support, contribute a reviewed disc, or continue this lookup manually.'
                 : preview.requires_review
@@ -5790,10 +5790,10 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                       </button>
                     </div>
                     <div className="text-xs text-amber-100/70 mt-3">
-                      “Missing only” excludes every title whose known episode is currently present in Jellyfin, including a resolution-suffixed filename, plus titles with an existing planned output or partial. “Replacement copies” uses new collision-safe folders. “Deliberately replace” records your intent, but still rerips safely first and requires an exact second confirmation after verification. Nothing is deleted at this rip stage.
+                      “Missing only” excludes every title whose known episode is currently present in the media library, including a resolution-suffixed filename, plus titles with an existing planned output or partial. “Replacement copies” uses new collision-safe folders. “Deliberately replace” records your intent, but still rerips safely first and requires an exact second confirmation after verification. Nothing is deleted at this rip stage.
                     </div>
                     <button type="button" className="btn btn-secondary mt-3 mr-2 border-red-500/50 text-red-100" disabled={controlling} onClick={deleteStagedFilesAlreadyInJellyfin}>
-                      Delete staged files already safely present in Jellyfin
+                      Delete staged files already safely present in the media library
                     </button>
                     <button type="button" className="btn btn-secondary mt-3 border-red-500/50 text-red-100" disabled={controlling} onClick={cancelRipPlanAndEject}>
                       Cancel this rip plan and eject disc
@@ -5942,15 +5942,15 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                     {job.prior_outcome_name && (
                       <div className="mb-2 rounded-lg border border-green-500/30 bg-green-500/10 p-2 text-sm text-green-100">
                         <div className="font-semibold">Previously matched as: {job.prior_outcome_name}</div>
-                        <div className="text-xs mt-1">A prior verified run of this disc title produced this Jellyfin name.</div>
-                        {job.prior_library_status === 'present' && <div className="text-xs mt-1 font-semibold">Present now in Jellyfin; held out of missing-only ripping.</div>}
+                        <div className="text-xs mt-1">A prior verified run of this disc title produced this media-library name.</div>
+                        {job.prior_library_status === 'present' && <div className="text-xs mt-1 font-semibold">Present now in the media library; held out of missing-only ripping.</div>}
                         {job.prior_library_status === 'missing' && <div className="text-xs mt-1 text-amber-200">The known episode is not currently present at this destination, so it remains eligible as missing.</div>}
-                        {job.prior_library_status === 'unavailable' && <div className="text-xs mt-1 text-amber-200">The Jellyfin destination could not be checked safely; this title remains held for review.</div>}
-                        {job.prior_library_relative && <div className="mt-2 break-all font-mono text-[11px] text-green-50">Historical Jellyfin path: {job.prior_library_relative}</div>}
+                        {job.prior_library_status === 'unavailable' && <div className="text-xs mt-1 text-amber-200">The media-library destination could not be checked safely; this title remains held for review.</div>}
+                        {job.prior_library_relative && <div className="mt-2 break-all font-mono text-[11px] text-green-50">Historical media-library path: {job.prior_library_relative}</div>}
                       </div>
                     )}
                     {job.display_name && <div className="text-sm font-semibold text-white">{job.display_name}</div>}
-                    {job.extras_folder && <div className="text-xs text-indigo-200">Jellyfin extras category: {job.extras_folder}</div>}
+                    {job.extras_folder && <div className="text-xs text-indigo-200">Media-library extras category: {job.extras_folder}</div>}
                     {job.identification_status === 'evidence-required' && (
                       <div className="text-xs text-amber-300">Name remains held for fingerprint, image, OCR, or audio evidence after ripping.</div>
                     )}
@@ -5976,9 +5976,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                       : 'text-amber-400'
                   }`}>
                     {job.collision_status === 'library-exists'
-                      ? 'already in Jellyfin — held'
+                      ? 'already in the media library — held'
                       : job.collision_status === 'library-check-unavailable'
-                      ? 'Jellyfin check unavailable — held'
+                      ? 'media-library check unavailable — held'
                       : existingRipsInPipeline && job.collision_status === 'final-exists'
                       ? 'existing MKV accepted for matching'
                       : job.collision_status}
@@ -5990,9 +5990,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
 
           {separatedHeldLibraryTitles.length > 0 && (
             <div className="rounded-xl border border-green-400/40 bg-green-500/10 p-4">
-              <div className="font-bold text-green-100">Already in Jellyfin — held out of this rip</div>
+              <div className="font-bold text-green-100">Already in the media library — held out of this rip</div>
               <div className="mt-1 text-sm text-green-100/75">
-                RipWeaver found the same episode IDs in the expected Jellyfin season folders. Resolution-suffixed versions count as existing destinations and are not sent back to MakeMKV.
+                RipWeaver found the same episode IDs in the expected media-library season folders. Resolution-suffixed versions count as existing destinations and are not sent back to MakeMKV.
               </div>
               <div className="mt-3 grid gap-2 md:grid-cols-2">
                 {separatedHeldLibraryTitles.map((held) => (

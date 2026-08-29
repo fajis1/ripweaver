@@ -21,6 +21,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, systemStatus
         { id: 'dashboard', label: 'Library Scan', icon: '📺' },
         { id: 'logs', label: 'Logs', icon: '📋' },
         { id: 'system-cleanup', label: 'System Cleanup', icon: '🧹' },
+        { id: 'setup-health', label: 'Setup & Health', icon: '＋' },
         { id: 'settings', label: 'Settings', icon: '⚙️' },
         { id: 'help', label: 'Help', icon: '❓' },
     ];

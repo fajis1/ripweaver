@@ -45,7 +45,8 @@ not include MakeMKV, HandBrakeCLI, FFmpeg, provider credentials, or media tools.
 2. Discover or select the MakeMKV, HandBrakeCLI, FFmpeg, and FFprobe
    executables.
 3. Select separate rip-staging and encoded-staging roots plus at least one
-   Jellyfin library root.
+   TV or movie media-library root used by Plex, Jellyfin, Emby, or another
+   media server.
 4. Enter the provider credentials you intend to use and click **Save**.
 
 Credential values are written to the local ignored `.env` and are never
