@@ -27,10 +27,10 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            output_name: MKVMatch-Windows-CPU
+            output_name: RipWeaver-Windows-x64
             archive_ext: zip
           - os: ubuntu-latest
-            output_name: MKVMatch-Linux-CPU
+            output_name: RipWeaver-Linux-x64
             archive_ext: tar.gz
 
     steps:
@@ -49,18 +49,11 @@ jobs:
           echo "Disk space after cleanup:"
           df -h
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: mkv_episode_matcher/frontend/package-lock.json
-
-      - name: Build Frontend
-        working-directory: mkv_episode_matcher/frontend
+      - name: Verify reviewed frontend bundle
+        shell: bash
         run: |
-          npm ci
-          npm run build
+          test -s mkv_episode_matcher/frontend/dist/index.html
+          grep -R -F -q "Current recovery status" mkv_episode_matcher/frontend/dist/assets
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -88,25 +81,53 @@ jobs:
         run: |
           echo "Build output:"
           ls -la dist/
-          if [ -d "dist/mkv-match" ]; then
-            echo "Contents of mkv-match folder:"
-            ls -la dist/mkv-match/ | head -50
+          if [ -d "dist/RipWeaver" ]; then
+            echo "Contents of RipWeaver folder:"
+            ls -la dist/RipWeaver/ | head -50
             echo "Total size:"
-            du -sh dist/mkv-match/
+            du -sh dist/RipWeaver/
           fi
+
+      - name: Add portable documentation
+        shell: bash
+        run: |
+          cp docs/PORTABLE_INSTALL.md dist/RipWeaver/README.txt
+          cp LICENSE dist/RipWeaver/LICENSE.txt
+          cp THIRD_PARTY_NOTICES.md dist/RipWeaver/THIRD_PARTY_NOTICES.txt
 
       - name: Create Archive (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          cd dist
-          7z a -tzip "${{ matrix.output_name }}.zip" "mkv-match"
+          Set-Location dist
+          7z a -tzip "${{ matrix.output_name }}.zip" "RipWeaver"
 
       - name: Create Archive (Linux)
         if: runner.os == 'Linux'
         run: |
           cd dist
-          tar -czf "${{ matrix.output_name }}.tar.gz" mkv-match
+          tar -czf "${{ matrix.output_name }}.tar.gz" RipWeaver
+
+      - name: Smoke test Windows portable archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $smokeRoot = Join-Path $env:RUNNER_TEMP ("RipWeaver portable {0} test" -f [char]0x03A9)
+          New-Item -ItemType Directory -Path $smokeRoot | Out-Null
+          Expand-Archive -LiteralPath "dist\${{ matrix.output_name }}.zip" -DestinationPath $smokeRoot
+          $executable = Join-Path $smokeRoot 'RipWeaver\RipWeaver.exe'
+          & $executable --portable-smoke-test
+          if ($LASTEXITCODE -ne 0) { throw 'The packaged RipWeaver smoke test failed.' }
+
+      - name: Smoke test Linux portable archive
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          unicode_char="$(printf '\u03A9')"
+          smoke_root="$RUNNER_TEMP/RipWeaver portable $unicode_char test"
+          mkdir -p "$smoke_root"
+          tar -xzf "dist/${{ matrix.output_name }}.tar.gz" -C "$smoke_root"
+          "$smoke_root/RipWeaver/RipWeaver" --portable-smoke-test
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -128,28 +149,21 @@ jobs:
         include:
           - os: windows
             runner: [self-hosted, windows, cuda]
-            output_name: MKVMatch-Windows-CUDA
+            output_name: RipWeaver-Windows-x64-CUDA
             archive_ext: zip
           - os: linux
             runner: [self-hosted, linux, cuda]
-            output_name: MKVMatch-Linux-CUDA
+            output_name: RipWeaver-Linux-x64-CUDA
             archive_ext: tar.gz
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: mkv_episode_matcher/frontend/package-lock.json
-
-      - name: Build Frontend
-        working-directory: mkv_episode_matcher/frontend
+      - name: Verify reviewed frontend bundle
+        shell: bash
         run: |
-          npm ci
-          npm run build
+          test -s mkv_episode_matcher/frontend/dist/index.html
+          grep -R -F -q "Current recovery status" mkv_episode_matcher/frontend/dist/assets
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -176,18 +190,46 @@ jobs:
         run: |
           uv run pyinstaller mkv_match.spec --clean
 
+      - name: Add portable documentation
+        shell: bash
+        run: |
+          cp docs/PORTABLE_INSTALL.md dist/RipWeaver/README.txt
+          cp LICENSE dist/RipWeaver/LICENSE.txt
+          cp THIRD_PARTY_NOTICES.md dist/RipWeaver/THIRD_PARTY_NOTICES.txt
+
       - name: Create Archive (Windows)
         if: matrix.os == 'windows'
         shell: pwsh
         run: |
-          cd dist
-          Compress-Archive -Path "mkv-match" -DestinationPath "${{ matrix.output_name }}.zip"
+          Set-Location dist
+          Compress-Archive -Path "RipWeaver" -DestinationPath "${{ matrix.output_name }}.zip"
 
       - name: Create Archive (Linux)
         if: matrix.os == 'linux'
         run: |
           cd dist
-          tar -czf "${{ matrix.output_name }}.tar.gz" mkv-match
+          tar -czf "${{ matrix.output_name }}.tar.gz" RipWeaver
+
+      - name: Smoke test Windows portable archive
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          $smokeRoot = Join-Path $env:RUNNER_TEMP ("RipWeaver portable {0} test" -f [char]0x03A9)
+          New-Item -ItemType Directory -Path $smokeRoot | Out-Null
+          Expand-Archive -LiteralPath "dist\${{ matrix.output_name }}.zip" -DestinationPath $smokeRoot
+          $executable = Join-Path $smokeRoot 'RipWeaver\RipWeaver.exe'
+          & $executable --portable-smoke-test
+          if ($LASTEXITCODE -ne 0) { throw 'The packaged RipWeaver smoke test failed.' }
+
+      - name: Smoke test Linux portable archive
+        if: matrix.os == 'linux'
+        shell: bash
+        run: |
+          unicode_char="$(printf '\u03A9')"
+          smoke_root="$RUNNER_TEMP/RipWeaver portable $unicode_char test"
+          mkdir -p "$smoke_root"
+          tar -xzf "dist/${{ matrix.output_name }}.tar.gz" -C "$smoke_root"
+          "$smoke_root/RipWeaver/RipWeaver" --portable-smoke-test
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -201,7 +243,7 @@ jobs:
   release:
     needs: [build-cpu]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
 

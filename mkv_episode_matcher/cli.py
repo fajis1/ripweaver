@@ -3765,7 +3765,7 @@ def _display_comprehensive_summary(results, failures, dry_run, output_dir, conso
 @app.command()
 def serve(
     port: int = typer.Option(8001, "--port", "-p", help="Port to run the server on"),
-    host: str = typer.Option("0.0.0.0", "--host", help="Host to bind to"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Host to bind to"),
     no_browser: bool = typer.Option(
         False, "--no-browser", help="Don't open browser automatically"
     ),
@@ -3833,7 +3833,7 @@ def gui(
     """Launch the Web UI (alias for 'serve')."""
     serve(
         port=port,
-        host="0.0.0.0",
+        host="127.0.0.1",
         no_browser=no_browser,
         hold_automatic_rips=False,
     )

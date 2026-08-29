@@ -4,12 +4,13 @@ Get started with MKV Episode Matcher quickly and efficiently.
 
 ## 🚀 Launch the Application
 
-### Option 1: Windows Executable (Recommended)
-The easiest way to run the application on Windows is using the standalone executable.
+### Option 1: Windows Portable Release (Recommended)
 
-1.  Download `mkv-match.exe` from **[GitHub Releases](https://github.com/Jsakkos/mkv-episode-matcher/releases)**.
-2.  Double-click `mkv-match.exe`.
-3.  The Web UI will open automatically in your browser.
+1. Download `RipWeaver-Windows-x64.zip` from
+   [RipWeaver Releases](https://github.com/fajis1/ripweaver/releases).
+2. Extract the complete archive.
+3. Run `RipWeaver\RipWeaver.exe` without separating it from `_internal`.
+4. Keep the console window open while the Web UI runs in your browser.
 
 > [!NOTE]
 > First run takes **~5-10 seconds** to load the speech recognition model. You will see a "System Loading" indicator.
@@ -35,7 +36,7 @@ mkv-match gui
 
 ## First Time Setup
 
-1. **Start the App**: Launch `mkv-match.exe` or run `mkv-match serve`.
+1. **Start the App**: Launch `RipWeaver\RipWeaver.exe` or run `mkv-match serve`.
 2. **Configure Settings**:
    - Go to the **Settings** tab.
    - Enter your **OpenSubtitles** credentials (for subtitles).

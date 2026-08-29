@@ -1,140 +1,93 @@
 # Installation Guide
 
-MKV Episode Matcher v1.0.0 offers multiple installation options. The recommended method for Windows users is the Standalone Executable.
+RipWeaver is distributed as a portable application directory. Windows users do
+not need Python, uv, or Node.js when using a release archive.
 
-## 🚀 Quick Installation Options
+## Windows portable release
 
-### Windows Executable (Recommended)
-1. Download `mkv-match.exe` from **[GitHub Releases](https://github.com/Jsakkos/mkv-episode-matcher/releases)**.
-2. Run it. No Python installation required.
+1. Install the external tools needed for your workflow:
+   - MakeMKV for disc inventory and ripping;
+   - HandBrakeCLI for transcoding; and
+   - FFmpeg and FFprobe for evidence extraction and output verification.
+2. Download `RipWeaver-Windows-x64.zip` from the
+   [RipWeaver releases page](https://github.com/fajis1/ripweaver/releases).
+3. Extract the complete archive into a user-writable directory.
+4. Run `RipWeaver\RipWeaver.exe`.
+5. Keep its console window open while using `http://localhost:8001`.
 
-### Package Installation (Cross-Platform)
+The executable must remain beside its `_internal` directory. The release does
+not install a service, create shortcuts, modify `PATH`, or start with Windows.
+Those behaviors are reserved for the future per-user installer.
 
-**Using uv (Recommended for Devs):**
-```bash
-uv sync --extra cpu    # Basic
-uv sync --extra cu128  # CUDA GPU
-```
+## First-run configuration
 
-**Using pip:**
-```bash
-pip install mkv-episode-matcher
-```
+Use **Settings** in the local dashboard to configure:
 
-## Prerequisites
+- MakeMKV, HandBrakeCLI, FFmpeg, and FFprobe executable paths;
+- separate MakeMKV rip-staging and encoded-staging directories;
+- Jellyfin television and/or movie library roots;
+- an OpenSubtitles API key unless using local subtitles; and
+- optional TMDb, Gemini, and Tesseract OCR integrations.
 
-### 1. FFmpeg (Required)
-You must have FFmpeg installed and in your system PATH for audio extraction.
+The dashboard can discover common executable locations and provides local
+folder pickers. External programs and provider credentials are not bundled.
 
-- **Windows**: `winget install FFmpeg.FFmpeg`
-- **macOS**: `brew install ffmpeg`
-- **Linux**: `sudo apt install ffmpeg`
+The first episode-identification run may download the selected faster-whisper
+model into the user's model cache. This requires network access and additional
+disk space.
 
-**Verification:**
-```bash
-ffmpeg -version
-```
+## Linux portable release
 
-### 2. Python (Only if not using Executable)
-- Python 3.10 - 3.12
-- pip or uv package manager
-
-## Installation Methods
-
-### Method 1: Windows Standalone Executable
-This is a self-contained binary that includes everything you need (except FFmpeg).
-
-1.  **Download**: Get the latest `.exe` from [Releases](https://github.com/Jsakkos/mkv-episode-matcher/releases).
-2.  **Run**: Double-click `mkv-match.exe`.
-3.  **Use**: The Web UI will launch automatically.
-
-### Method 2: uv Package Manager (Recommended for Python users)
-
-**Install uv:**
-```bash
-# Windows
-powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
-
-# macOS/Linux
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-**Install & Run:**
-```bash
-git clone https://github.com/Jsakkos/mkv-episode-matcher.git
-cd mkv-episode-matcher
-
-# Install
-uv sync --extra cpu   # or cu128 for GPU
-
-# Run
-uv run mkv-match gui
-```
-
-### Method 3: pip Installation
+Download and extract `RipWeaver-Linux-x64.tar.gz`, then run:
 
 ```bash
-# Install
-pip install mkv-episode-matcher
-
-# Run
-mkv-match gui
+./RipWeaver/RipWeaver
 ```
 
-### Method 4: Development Installation
+The same external tools and first-run configuration are required. Physical-disc
+and hardware behavior is developed primarily against Windows; review release
+notes before relying on another platform for live disc work.
 
-```bash
-git clone https://github.com/Jsakkos/mkv-episode-matcher.git
-cd mkv-episode-matcher
-pip install uv
-uv sync --group dev
-uv run pytest
+## Source installation
+
+Source development supports Python 3.10 through 3.12 and uses Python 3.11 in
+this checkout:
+
+```powershell
+git clone https://github.com/fajis1/ripweaver.git
+Set-Location ripweaver
+uv sync --extra cpu --group dev
+uv run mkv-match serve
 ```
 
-## GPU Acceleration Setup (Optional)
+Node.js 20 and npm are required only when rebuilding the React frontend. The
+compiled frontend is included in source and release packages.
 
-If you have an NVIDIA GPU, you can speed up speech recognition significantly.
+Do not use `pip install mkv-episode-matcher` to install current RipWeaver. That
+name belongs to the upstream MKV Episode Matcher distribution on PyPI.
 
-**Requirement:**
-- NVIDIA GPU with CUDA support.
-- Standalone Executable: Use the GPU-enabled build (if available) or Python install.
-- Python Install:
-  ```bash
-  uv sync --extra cu128
-  # or
-  pip install mkv-episode-matcher[cu128]
-  ```
+## Building a portable release
 
-## Configuration
+From a prepared source checkout:
 
-**GUI (Easiest):**
-Launch the app and use the Settings ⚙️ icon.
-
-**CLI:**
-```bash
-mkv-match config
+```powershell
+uv sync --extra cpu --group dev
+uv run pyinstaller mkv_match.spec --clean
+dist\RipWeaver\RipWeaver.exe --portable-smoke-test
 ```
 
-### API Keys
-- **OpenSubtitles**: For subtitles. [Get Key](https://www.opensubtitles.com/consumers).
-- **TMDb**: For metadata. [Get Key](https://www.themoviedb.org/settings/api).
+The current release process packages the reviewed frontend bundle tracked in
+`mkv_episode_matcher/frontend/dist`. Do not run `npm run build` for a release
+until the source recovery described in `FRONTEND_RECOVERY_GUIDE.md` is complete.
+CI verifies that the reviewed bundle still contains the existing-rip recovery
+surface before packaging it.
 
-## System Requirements
+The smoke flag starts only a minimal loopback server. It verifies the packaged
+health response and frontend assets, then shuts down. It does not run the normal
+backend startup lifecycle, inspect drives, invoke media tools, or expose
+production control routes.
 
-| Component | Minimum | Recommended |
-|-----------|---------|-------------|
-| **OS** | Windows 10, macOS 12, Linux | Windows 11, macOS 13+ |
-| **RAM** | 4GB | 8GB+ |
-| **GPU** | None (CPU) | NVIDIA GTX 1060+ (4GB VRAM) |
-
-## Troubleshooting
-
-**FFmpeg Not Found:**
-Run `ffmpeg -version` in a terminal. If it fails, reinstall FFmpeg or add it to your PATH.
-
-**Permission Errors:**
-Try installing with `--user`:
-`pip install --user mkv-episode-matcher`
-
-**Logs:**
-Check `~/.mkv-episode-matcher/logs/` if the application fails to start.
+Release CI packages the complete `dist/RipWeaver` directory and repeats the
+smoke test after extracting the archive into a path containing spaces and
+non-ASCII characters. A tag matching `v*` publishes the validated CPU archives;
+a manual workflow run builds artifacts without creating a GitHub release.
