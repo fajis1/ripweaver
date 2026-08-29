@@ -1864,6 +1864,15 @@ private binding, exact authorization, queueing, dispatch, and the production
 adapter with a fake queue runner. Drive-monitor simulation, automatic policy,
 matching/transcode continuation, and the complete-disc state machine remain.</p>
 <h3 id="phase-10-windows-installer-and-desktop-launcher">Phase 10: Windows installer and desktop launcher</h3>
+<p>Current status: the branded portable foundation is implemented. Release CI
+builds and archives the complete <code>RipWeaver</code> onedir application and verifies an
+extracted copy from a path containing spaces and non-ASCII characters with a
+minimal loopback-only frozen smoke boundary. While the frontend source recovery
+remains open, CI packages the reviewed tracked frontend bundle and refuses one
+missing its existing-rip recovery marker instead of rebuilding incomplete
+source. Manual workflow dispatch produces artifacts without publishing; <code>v*</code>
+tags remain the only release trigger. The installer-specific work below remains
+open.</p>
 <ul>
 <li>select and configure a reproducible Windows installer around the packaged
   executable;</li>

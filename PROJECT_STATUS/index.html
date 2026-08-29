@@ -673,6 +673,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#2026-08-29-portable-ripweaver-release-foundation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2026-08-29 - Portable RipWeaver release foundation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#2026-08-25-inventory-aware-whole-disc-batch-validation" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1268,6 +1279,34 @@ Approximately 1,200 lines of uncommitted frontend changes (implementing the "Exi
 <p><strong>Any agent attempting to work on the UI or RipPipelineView.tsx MUST first read <code>FRONTEND_RECOVERY_GUIDE.md</code></strong> at the root of the project to understand the state of the code, where the surviving logic is located (in the compiled Vite output), and where the exact recovered source lines are stored. Do not attempt to rebuild the file blindly without reading the guide.</p>
 <p><em>Note: A full snapshot of all uncommitted files as of 2026-08-23 has been safely saved to the local branch <code>emergency-backup-20260823</code>. If you accidentally destroy the working tree, you can recover from that branch.</em></p>
 </blockquote>
+<h2 id="2026-08-29-portable-ripweaver-release-foundation">2026-08-29 - Portable RipWeaver release foundation</h2>
+<p>The PyInstaller product and output directory are now branded <code>RipWeaver</code>.
+Release CI produces <code>RipWeaver-Windows-x64.zip</code> and
+<code>RipWeaver-Linux-x64.tar.gz</code>, places installation and license material at the
+archive root, and smoke-tests the extracted application before artifact upload.
+Windows validation extracts into a path containing spaces and non-ASCII
+characters.</p>
+<p>Until the <code>RipPipelineView.tsx</code> recovery is complete, release CI packages the
+reviewed compiled frontend already tracked in the repository instead of
+rebuilding from incomplete source. It refuses to package a bundle missing the
+existing-rip recovery marker. The locally built Windows archive likewise uses
+that reviewed bundle.</p>
+<p>The frozen executable's hidden <code>--portable-smoke-test</code> boundary starts a
+minimal loopback-only FastAPI application, verifies its path-free health result
+and every compiled frontend asset referenced by <code>index.html</code>, then shuts down
+cleanly. It does not register production routes or run the normal backend
+startup lifecycle, so it cannot reconcile work, enumerate or terminate MakeMKV
+processes, discover optical drives, access media, or start provider work.</p>
+<p>Normal double-click, <code>serve</code>, and <code>gui</code> startup now bind to <code>127.0.0.1</code> by
+default. Explicit host overrides remain available to developers, while the
+documented portable application remains local-only. A manual build workflow
+creates tested artifacts only; a <code>v*</code> tag is required to create a public GitHub
+release.</p>
+<p>This completes the portable-archive foundation of Phase 10. A per-user Windows
+installer, Start Menu entry, optional desktop shortcut, code signing,
+repeated-launch reuse, clean upgrade, and uninstall validation remain future
+gates. No installer or release was published during implementation, and no
+physical disc or media tool was accessed.</p>
 <h2 id="2026-08-25-inventory-aware-whole-disc-batch-validation">2026-08-25 - Inventory-aware whole-disc batch validation</h2>
 <p>Whole-disc validation now distinguishes an inventory-predicted tiny
 menu/control title from a truncated episode. A nonzero MKV below 1 MB is valid

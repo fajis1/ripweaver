@@ -3814,9 +3814,7 @@ This makes the executable user-friendly when double-clicked.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>mkv_episode_matcher/__main__.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-7"> 7</a></span>
-<span class="normal"><a href="#__codelineno-0-8"> 8</a></span>
-<span class="normal"><a href="#__codelineno-0-9"> 9</a></span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-9"> 9</a></span>
 <span class="normal"><a href="#__codelineno-0-10">10</a></span>
 <span class="normal"><a href="#__codelineno-0-11">11</a></span>
 <span class="normal"><a href="#__codelineno-0-12">12</a></span>
@@ -3830,23 +3828,45 @@ This makes the executable user-friendly when double-clicked.</p>
 <span class="normal"><a href="#__codelineno-0-20">20</a></span>
 <span class="normal"><a href="#__codelineno-0-21">21</a></span>
 <span class="normal"><a href="#__codelineno-0-22">22</a></span>
-<span class="normal"><a href="#__codelineno-0-23">23</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-7" name="__codelineno-0-7"></a><span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
-<a id="__codelineno-0-8" name="__codelineno-0-8"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Entry point for the application.</span>
-<a id="__codelineno-0-9" name="__codelineno-0-9"></a>
-<a id="__codelineno-0-10" name="__codelineno-0-10"></a><span class="sd">    If no arguments are provided, defaults to launching the web server.</span>
-<a id="__codelineno-0-11" name="__codelineno-0-11"></a><span class="sd">    This makes the executable user-friendly when double-clicked.</span>
-<a id="__codelineno-0-12" name="__codelineno-0-12"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-13" name="__codelineno-0-13"></a>    <span class="c1"># If no arguments provided (e.g., double-clicking the exe), default to serve</span>
-<a id="__codelineno-0-14" name="__codelineno-0-14"></a>    <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">sys</span><span class="o">.</span><span class="n">argv</span><span class="p">)</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
-<a id="__codelineno-0-15" name="__codelineno-0-15"></a>        <span class="c1"># Call serve directly with defaults</span>
-<a id="__codelineno-0-16" name="__codelineno-0-16"></a>        <span class="n">serve</span><span class="p">(</span>
-<a id="__codelineno-0-17" name="__codelineno-0-17"></a>            <span class="n">port</span><span class="o">=</span><span class="mi">8001</span><span class="p">,</span>
-<a id="__codelineno-0-18" name="__codelineno-0-18"></a>            <span class="n">host</span><span class="o">=</span><span class="s2">&quot;0.0.0.0&quot;</span><span class="p">,</span>
-<a id="__codelineno-0-19" name="__codelineno-0-19"></a>            <span class="n">no_browser</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-<a id="__codelineno-0-20" name="__codelineno-0-20"></a>            <span class="n">hold_automatic_rips</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-<a id="__codelineno-0-21" name="__codelineno-0-21"></a>        <span class="p">)</span>
-<a id="__codelineno-0-22" name="__codelineno-0-22"></a>    <span class="k">else</span><span class="p">:</span>
-<a id="__codelineno-0-23" name="__codelineno-0-23"></a>        <span class="n">cli_app</span><span class="p">()</span>
+<span class="normal"><a href="#__codelineno-0-23">23</a></span>
+<span class="normal"><a href="#__codelineno-0-24">24</a></span>
+<span class="normal"><a href="#__codelineno-0-25">25</a></span>
+<span class="normal"><a href="#__codelineno-0-26">26</a></span>
+<span class="normal"><a href="#__codelineno-0-27">27</a></span>
+<span class="normal"><a href="#__codelineno-0-28">28</a></span>
+<span class="normal"><a href="#__codelineno-0-29">29</a></span>
+<span class="normal"><a href="#__codelineno-0-30">30</a></span>
+<span class="normal"><a href="#__codelineno-0-31">31</a></span>
+<span class="normal"><a href="#__codelineno-0-32">32</a></span>
+<span class="normal"><a href="#__codelineno-0-33">33</a></span>
+<span class="normal"><a href="#__codelineno-0-34">34</a></span>
+<span class="normal"><a href="#__codelineno-0-35">35</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-9" name="__codelineno-0-9"></a><span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Entry point for the application.</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11"></a>
+<a id="__codelineno-0-12" name="__codelineno-0-12"></a><span class="sd">    If no arguments are provided, defaults to launching the web server.</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13"></a><span class="sd">    This makes the executable user-friendly when double-clicked.</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15"></a>    <span class="k">if</span> <span class="n">sys</span><span class="o">.</span><span class="n">argv</span><span class="p">[</span><span class="mi">1</span><span class="p">:]</span> <span class="o">==</span> <span class="p">[</span><span class="n">_PORTABLE_SMOKE_ARGUMENT</span><span class="p">]:</span>
+<a id="__codelineno-0-16" name="__codelineno-0-16"></a>        <span class="kn">from</span><span class="w"> </span><span class="nn">mkv_episode_matcher.portable_smoke</span><span class="w"> </span><span class="kn">import</span> <span class="n">run_portable_smoke_check</span>
+<a id="__codelineno-0-17" name="__codelineno-0-17"></a>
+<a id="__codelineno-0-18" name="__codelineno-0-18"></a>        <span class="n">result</span> <span class="o">=</span> <span class="n">run_portable_smoke_check</span><span class="p">()</span>
+<a id="__codelineno-0-19" name="__codelineno-0-19"></a>        <span class="nb">print</span><span class="p">(</span>
+<a id="__codelineno-0-20" name="__codelineno-0-20"></a>            <span class="s2">&quot;RipWeaver portable smoke test passed &quot;</span>
+<a id="__codelineno-0-21" name="__codelineno-0-21"></a>            <span class="sa">f</span><span class="s2">&quot;(version=</span><span class="si">{</span><span class="n">result</span><span class="o">.</span><span class="n">version</span><span class="si">}</span><span class="s2">, assets=</span><span class="si">{</span><span class="n">result</span><span class="o">.</span><span class="n">asset_count</span><span class="si">}</span><span class="s2">)&quot;</span>
+<a id="__codelineno-0-22" name="__codelineno-0-22"></a>        <span class="p">)</span>
+<a id="__codelineno-0-23" name="__codelineno-0-23"></a>        <span class="k">return</span>
+<a id="__codelineno-0-24" name="__codelineno-0-24"></a>
+<a id="__codelineno-0-25" name="__codelineno-0-25"></a>    <span class="c1"># If no arguments provided (e.g., double-clicking the exe), default to serve</span>
+<a id="__codelineno-0-26" name="__codelineno-0-26"></a>    <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">sys</span><span class="o">.</span><span class="n">argv</span><span class="p">)</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+<a id="__codelineno-0-27" name="__codelineno-0-27"></a>        <span class="c1"># Call serve directly with defaults</span>
+<a id="__codelineno-0-28" name="__codelineno-0-28"></a>        <span class="n">serve</span><span class="p">(</span>
+<a id="__codelineno-0-29" name="__codelineno-0-29"></a>            <span class="n">port</span><span class="o">=</span><span class="mi">8001</span><span class="p">,</span>
+<a id="__codelineno-0-30" name="__codelineno-0-30"></a>            <span class="n">host</span><span class="o">=</span><span class="s2">&quot;127.0.0.1&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-31" name="__codelineno-0-31"></a>            <span class="n">no_browser</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+<a id="__codelineno-0-32" name="__codelineno-0-32"></a>            <span class="n">hold_automatic_rips</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+<a id="__codelineno-0-33" name="__codelineno-0-33"></a>        <span class="p">)</span>
+<a id="__codelineno-0-34" name="__codelineno-0-34"></a>    <span class="k">else</span><span class="p">:</span>
+<a id="__codelineno-0-35" name="__codelineno-0-35"></a>        <span class="n">cli_app</span><span class="p">()</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -11822,7 +11842,7 @@ mkv-match show/ --json --confidence 0.8
 <a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>        <span class="n">help</span><span class="o">=</span><span class="s2">&quot;Port to run the server on&quot;</span><span class="p">,</span>
 <a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="p">),</span>
 <a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">host</span><span class="o">=</span><span class="n">typer</span><span class="o">.</span><span class="n">Option</span><span class="p">(</span>
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        <span class="s2">&quot;0.0.0.0&quot;</span><span class="p">,</span> <span class="s2">&quot;--host&quot;</span><span class="p">,</span> <span class="n">help</span><span class="o">=</span><span class="s2">&quot;Host to bind to&quot;</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        <span class="s2">&quot;127.0.0.1&quot;</span><span class="p">,</span> <span class="s2">&quot;--host&quot;</span><span class="p">,</span> <span class="n">help</span><span class="o">=</span><span class="s2">&quot;Host to bind to&quot;</span>
 <a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="p">),</span>
 <a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">no_browser</span><span class="o">=</span><span class="n">typer</span><span class="o">.</span><span class="n">Option</span><span class="p">(</span>
 <a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>        <span class="kc">False</span><span class="p">,</span>
@@ -11914,7 +11934,7 @@ mkv-match serve --port 9000 --no-browser
 <span class="normal"><a href="#__codelineno-0-3823">3823</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-3765" name="__codelineno-0-3765"></a><span class="nd">@app</span><span class="o">.</span><span class="n">command</span><span class="p">()</span>
 <a id="__codelineno-0-3766" name="__codelineno-0-3766"></a><span class="k">def</span><span class="w"> </span><span class="nf">serve</span><span class="p">(</span>
 <a id="__codelineno-0-3767" name="__codelineno-0-3767"></a>    <span class="n">port</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">typer</span><span class="o">.</span><span class="n">Option</span><span class="p">(</span><span class="mi">8001</span><span class="p">,</span> <span class="s2">&quot;--port&quot;</span><span class="p">,</span> <span class="s2">&quot;-p&quot;</span><span class="p">,</span> <span class="n">help</span><span class="o">=</span><span class="s2">&quot;Port to run the server on&quot;</span><span class="p">),</span>
-<a id="__codelineno-0-3768" name="__codelineno-0-3768"></a>    <span class="n">host</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">typer</span><span class="o">.</span><span class="n">Option</span><span class="p">(</span><span class="s2">&quot;0.0.0.0&quot;</span><span class="p">,</span> <span class="s2">&quot;--host&quot;</span><span class="p">,</span> <span class="n">help</span><span class="o">=</span><span class="s2">&quot;Host to bind to&quot;</span><span class="p">),</span>
+<a id="__codelineno-0-3768" name="__codelineno-0-3768"></a>    <span class="n">host</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">typer</span><span class="o">.</span><span class="n">Option</span><span class="p">(</span><span class="s2">&quot;127.0.0.1&quot;</span><span class="p">,</span> <span class="s2">&quot;--host&quot;</span><span class="p">,</span> <span class="n">help</span><span class="o">=</span><span class="s2">&quot;Host to bind to&quot;</span><span class="p">),</span>
 <a id="__codelineno-0-3769" name="__codelineno-0-3769"></a>    <span class="n">no_browser</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="n">typer</span><span class="o">.</span><span class="n">Option</span><span class="p">(</span>
 <a id="__codelineno-0-3770" name="__codelineno-0-3770"></a>        <span class="kc">False</span><span class="p">,</span> <span class="s2">&quot;--no-browser&quot;</span><span class="p">,</span> <span class="n">help</span><span class="o">=</span><span class="s2">&quot;Don&#39;t open browser automatically&quot;</span>
 <a id="__codelineno-0-3771" name="__codelineno-0-3771"></a>    <span class="p">),</span>
@@ -12029,7 +12049,7 @@ mkv-match serve --port 9000 --no-browser
 <a id="__codelineno-0-3833" name="__codelineno-0-3833"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Launch the Web UI (alias for &#39;serve&#39;).&quot;&quot;&quot;</span>
 <a id="__codelineno-0-3834" name="__codelineno-0-3834"></a>    <span class="n">serve</span><span class="p">(</span>
 <a id="__codelineno-0-3835" name="__codelineno-0-3835"></a>        <span class="n">port</span><span class="o">=</span><span class="n">port</span><span class="p">,</span>
-<a id="__codelineno-0-3836" name="__codelineno-0-3836"></a>        <span class="n">host</span><span class="o">=</span><span class="s2">&quot;0.0.0.0&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-3836" name="__codelineno-0-3836"></a>        <span class="n">host</span><span class="o">=</span><span class="s2">&quot;127.0.0.1&quot;</span><span class="p">,</span>
 <a id="__codelineno-0-3837" name="__codelineno-0-3837"></a>        <span class="n">no_browser</span><span class="o">=</span><span class="n">no_browser</span><span class="p">,</span>
 <a id="__codelineno-0-3838" name="__codelineno-0-3838"></a>        <span class="n">hold_automatic_rips</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
 <a id="__codelineno-0-3839" name="__codelineno-0-3839"></a>    <span class="p">)</span>

@@ -76,7 +76,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#mkv-episode-matcher" class="md-skip">
+        <a href="#ripweaver" class="md-skip">
           Skip to content
         </a>
       
@@ -543,21 +543,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#option-a-install-via-pip-cross-platform" class="md-nav__link">
+  <a href="#run-from-source" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Option A: Install via pip (Cross-platform)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#option-b-run-from-source-development" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Option B: Run from Source (Development)
+        Run from Source
       
     </span>
   </a>
@@ -1118,21 +1107,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#option-a-install-via-pip-cross-platform" class="md-nav__link">
+  <a href="#run-from-source" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Option A: Install via pip (Cross-platform)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#option-b-run-from-source-development" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Option B: Run from Source (Development)
+        Run from Source
       
     </span>
   </a>
@@ -1263,45 +1241,52 @@
   
 
 
-<h1 id="mkv-episode-matcher">MKV Episode Matcher</h1>
-<p><a href="https://pypi.org/project/mkv-episode-matcher/"><img alt="Development Status" src="https://img.shields.io/pypi/status/mkv-episode-matcher" /></a>
-<a href="https://pypi.org/project/mkv-episode-matcher/"><img alt="PyPI version" src="https://img.shields.io/pypi/v/mkv-episode-matcher.svg" /></a>
-<a href="https://opensource.org/licenses/MIT"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg" /></a>
-<a href="https://jsakkos.github.io/mkv-episode-matcher/"><img alt="Documentation Status" src="https://img.shields.io/github/actions/workflow/status/Jsakkos/mkv-episode-matcher/documentation.yml?label=docs" /></a>
-<a href="https://pepy.tech/project/mkv-episode-matcher"><img alt="Downloads" src="https://static.pepy.tech/badge/mkv-episode-matcher" /></a></p>
-<p>Automatically match and rename your MKV TV episodes using advanced speech recognition and subtitle matching.</p>
-<blockquote>
-<p>[!TIP]
-<strong>Recommended: Try Engram for new projects.</strong> <a href="https://github.com/Jsakkos/engram">Engram</a> provides a complete end-to-end media workflow including episode matching, automated organization, and more. MKV Episode Matcher remains available for standalone matching use cases.</p>
-</blockquote>
+<h1 id="ripweaver">RipWeaver</h1>
+<p><a href="https://opensource.org/licenses/MIT"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg" /></a>
+<a href="https://github.com/fajis1/ripweaver/actions/workflows/tests.yml"><img alt="Build" src="https://github.com/fajis1/ripweaver/actions/workflows/tests.yml/badge.svg" /></a></p>
+<p>RipWeaver is a local web application for guarded disc ripping, episode and
+movie identification, optional transcoding, and collision-refusing media
+organization.</p>
 <h2 id="quick-start">🚀 Quick Start</h2>
 <p>Follow these steps to get up and running in minutes.</p>
 <h3 id="1-prerequisites">1. Prerequisites</h3>
-<p>Before you start, ensure you have the following:
-*   <strong><a href="https://ffmpeg.org/download.html">FFmpeg</a></strong>: Installed and added to your system PATH.
-*   <strong>API Keys</strong>:
-    *   <strong>OpenSubtitles.com</strong> account (for downloading subtitles).
-    *   <strong>TMDb</strong> API Key (for fetching episode titles).
-*   <strong>Directory Structure</strong>: Your files must be organized by Show/Season. See <a href="#folder-directory-structure">Directory Structure</a> below.</p>
+<p>For the complete pipeline, install:</p>
+<ul>
+<li><a href="https://www.makemkv.com/">MakeMKV</a> and its command-line executable;</li>
+<li><a href="https://handbrake.fr/downloads2.php">HandBrakeCLI</a>; and</li>
+<li><a href="https://ffmpeg.org/download.html">FFmpeg</a>, including FFprobe.</li>
+</ul>
+<p>Episode matching through OpenSubtitles requires an OpenSubtitles.com API key
+unless the local-only subtitle provider is selected. TMDb improves canonical
+metadata. Gemini and Tesseract OCR are optional.</p>
 <h3 id="2-install-launch">2. Install &amp; Launch</h3>
-<p><strong>The easiest way to run MKV Episode Matcher is using the standalone Windows executable.</strong></p>
+<p>The easiest Windows installation is the portable release:</p>
 <ol>
-<li>Download the latest <code>mkv-match.exe</code> from <a href="https://github.com/Jsakkos/mkv-episode-matcher/releases">GitHub Releases</a>.</li>
-<li>Double-click <code>mkv-match.exe</code> to launch.</li>
-<li>The Web UI will automatically open in your default browser at <code>http://localhost:8001</code>.</li>
+<li>Download <code>RipWeaver-Windows-x64.zip</code> from
+   <a href="https://github.com/fajis1/ripweaver/releases">RipWeaver Releases</a>.</li>
+<li>Extract the complete archive; do not move <code>RipWeaver.exe</code> away from its
+   adjacent <code>_internal</code> directory.</li>
+<li>Run <code>RipWeaver\RipWeaver.exe</code>.</li>
+<li>Keep the console window open while using the dashboard at
+   <code>http://localhost:8001</code>.</li>
 </ol>
+<p>The portable build includes RipWeaver's Python runtime and web frontend. It does
+not include MakeMKV, HandBrakeCLI, FFmpeg, provider credentials, or media tools.</p>
 <blockquote>
 <p>[!NOTE]
 On the very first run, the system needs to download the speech recognition model (approx. 5-10 seconds). You will see a "System Loading" indicator.</p>
 </blockquote>
 <h3 id="3-setup">3. Setup</h3>
 <ol>
-<li>In the Web UI, go to the <strong>Settings</strong> tab.</li>
-<li>Enter your <strong>OpenSubtitles</strong> credentials and <strong>TMDb API Key</strong>. Saved values
-    are written to the local, Git-ignored <code>.env</code> and are never returned to the
-    browser.</li>
-<li>Click <strong>Save</strong>.</li>
+<li>In the Web UI, go to <strong>Settings</strong>.</li>
+<li>Discover or select the MakeMKV, HandBrakeCLI, FFmpeg, and FFprobe
+   executables.</li>
+<li>Select separate rip-staging and encoded-staging roots plus at least one
+   Jellyfin library root.</li>
+<li>Enter the provider credentials you intend to use and click <strong>Save</strong>.</li>
 </ol>
+<p>Credential values are written to the local ignored <code>.env</code> and are never
+returned to the browser.</p>
 <p>For CLI setup, use hidden prompts:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">credentials</span> <span class="n">tmdb</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">credentials</span> <span class="n">opensubtitles-api</span>
@@ -1361,52 +1346,47 @@ and the provider's key-management page.</p>
 <p>MKV Episode Matcher needs reference subtitles to compare against the audio it extracts from your video files. The app downloads all subtitles for a season upfront, which quickly exhausts free account limits.</p>
 <hr />
 <h2 id="advanced-installation-usage">🛠️ Advanced Installation &amp; Usage</h2>
-<p>For developers, Linux/macOS users, or those preferring the command line.</p>
-<h3 id="option-a-install-via-pip-cross-platform">Option A: Install via pip (Cross-platform)</h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Basic install</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>pip<span class="w"> </span>install<span class="w"> </span>mkv-episode-matcher<span class="o">[</span>cpu<span class="o">]</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># With CUDA support (NVIDIA GPU required)</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>pip<span class="w"> </span>install<span class="w"> </span>mkv-episode-matcher<span class="o">[</span>cu128<span class="o">]</span>
-</code></pre></div>
-<h3 id="option-b-run-from-source-development">Option B: Run from Source (Development)</h3>
+<p>The <code>mkv-episode-matcher</code> package on PyPI is the upstream project and is not a
+distribution channel for the current RipWeaver application. Install current
+RipWeaver from a portable release or this repository.</p>
+<h3 id="run-from-source">Run from Source</h3>
 <p>We recommend using <a href="https://docs.astral.sh/uv/">uv</a> for dependency management.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/Jsakkos/mkv-episode-matcher.git
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="nb">cd</span><span class="w"> </span>mkv-episode-matcher
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># Install dependencies</span>
-<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>uv<span class="w"> </span>sync<span class="w"> </span>--extra<span class="w"> </span>cpu
-<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>
-<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="c1"># Launch Server</span>
-<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>uv<span class="w"> </span>run<span class="w"> </span>mkv-match<span class="w"> </span>serve
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/fajis1/ripweaver.git
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="nb">cd</span><span class="w"> </span>ripweaver
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># Install dependencies</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>uv<span class="w"> </span>sync<span class="w"> </span>--extra<span class="w"> </span>cpu<span class="w"> </span>--group<span class="w"> </span>dev
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="c1"># Launch Server</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>uv<span class="w"> </span>run<span class="w"> </span>mkv-match<span class="w"> </span>serve
 </code></pre></div>
 <h3 id="cli-mode">CLI Mode</h3>
 <p>You can also use the Command Line Interface (CLI) for automation. Make sure to run the command from the root directory of the repository or your home directory, not the show directory.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># Match a folder</span>
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>mkv-match<span class="w"> </span>match<span class="w"> </span><span class="s2">&quot;C:\Path\To\Show&quot;</span>
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="c1"># Match with subtitle download</span>
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>mkv-match<span class="w"> </span>match<span class="w"> </span><span class="s2">&quot;C:\Path\To\Show&quot;</span><span class="w"> </span>--get-subs
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># Match a folder</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>mkv-match<span class="w"> </span>match<span class="w"> </span><span class="s2">&quot;C:\Path\To\Show&quot;</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># Match with subtitle download</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>mkv-match<span class="w"> </span>match<span class="w"> </span><span class="s2">&quot;C:\Path\To\Show&quot;</span><span class="w"> </span>--get-subs
 </code></pre></div>
 <h3 id="plan-titles-from-saved-makemkv-metadata">Plan Titles from Saved MakeMKV Metadata</h3>
 <p>This command reads preflight JSON only. It does not access a disc or create a
 rip command:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">plan-titles</span> <span class="p">.</span><span class="n">mkv-preflight</span><span class="p">\</span><span class="n">saved-report</span><span class="p">.</span><span class="n">json</span>
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">plan-titles</span> <span class="p">.</span><span class="n">mkv-preflight</span><span class="p">\</span><span class="n">saved-report</span><span class="p">.</span><span class="n">json</span> <span class="p">-</span><span class="n">-json</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">plan-titles</span> <span class="p">.</span><span class="n">mkv-preflight</span><span class="p">\</span><span class="n">saved-report</span><span class="p">.</span><span class="n">json</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">plan-titles</span> <span class="p">.</span><span class="n">mkv-preflight</span><span class="p">\</span><span class="n">saved-report</span><span class="p">.</span><span class="n">json</span> <span class="p">-</span><span class="n">-json</span>
 </code></pre></div>
 <p>The plan identifies likely individual episodes, combined-title duplicates,
 short extras, review items, and the preferred diagnostic audio stream.</p>
 <p>For ambiguous discs, optional constraints make the selection evidence explicit:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">plan-titles</span> <span class="n">saved-report</span><span class="p">.</span><span class="n">json</span> <span class="p">`</span>
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>  <span class="p">-</span><span class="n">-expected-episodes</span> <span class="n">4</span> <span class="p">`</span>
-<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>  <span class="p">-</span><span class="n">-expected-runtime</span> <span class="n">50</span> <span class="p">`</span>
-<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>  <span class="p">-</span><span class="n">-runtime-tolerance</span> <span class="n">3</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">plan-titles</span> <span class="n">saved-report</span><span class="p">.</span><span class="n">json</span> <span class="p">`</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>  <span class="p">-</span><span class="n">-expected-episodes</span> <span class="n">4</span> <span class="p">`</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>  <span class="p">-</span><span class="n">-expected-runtime</span> <span class="n">50</span> <span class="p">`</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>  <span class="p">-</span><span class="n">-runtime-tolerance</span> <span class="n">3</span>
 </code></pre></div>
 <h3 id="plan-audio-diagnostics-from-saved-ffprobe-json">Plan Audio Diagnostics from Saved FFprobe JSON</h3>
 <p>This fixture-only Phase 2 command does not invoke FFprobe or FFmpeg and does not
 open an MKV:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">plan-audio</span> <span class="n">saved</span><span class="p">.</span><span class="n">ffprobe</span><span class="p">.</span><span class="n">json</span>
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">plan-audio</span> <span class="n">saved</span><span class="p">.</span><span class="n">ffprobe</span><span class="p">.</span><span class="n">json</span> <span class="p">-</span><span class="n">-json</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">plan-audio</span> <span class="n">saved</span><span class="p">.</span><span class="n">ffprobe</span><span class="p">.</span><span class="n">json</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">plan-audio</span> <span class="n">saved</span><span class="p">.</span><span class="n">ffprobe</span><span class="p">.</span><span class="n">json</span> <span class="p">-</span><span class="n">-json</span>
 </code></pre></div>
 <p>It ranks main, multichannel, and commentary streams; plans three sample
 windows; and records the loudness, silence, and transcript-information
@@ -1414,17 +1394,26 @@ measurements required before matching.</p>
 <h3 id="create-a-sanitized-ffprobe-report">Create a Sanitized FFprobe Report</h3>
 <p>This command reads metadata from explicit MKV files sequentially. It does not
 extract, transcribe, rename, move, delete, or transcode media:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">probe-mkv</span> <span class="n">C</span><span class="p">:\</span><span class="n">path</span><span class="p">\</span><span class="n">to</span><span class="p">\</span><span class="n">explicit-test</span><span class="o">-file</span><span class="p">.</span><span class="n">mkv</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">probe-mkv</span> <span class="n">C</span><span class="p">:\</span><span class="n">path</span><span class="p">\</span><span class="n">to</span><span class="p">\</span><span class="n">explicit-test</span><span class="o">-file</span><span class="p">.</span><span class="n">mkv</span>
 </code></pre></div>
 <p>Configure <code>FFPROBE_PATH</code> in the local <code>.env</code>, pass <code>--ffprobe-path</code>, or place
 <code>ffprobe.exe</code> on <code>PATH</code>. Reports use ordinal names under
 <code>.mkv-preflight\ffprobe</code> and omit source filenames. Use those reports with
 <code>mkv-match plan-audio</code>.</p>
 <h3 id="building-the-executable">Building the Executable</h3>
-<p>To build the <code>.exe</code> yourself:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>uv<span class="w"> </span>sync<span class="w"> </span>--extra<span class="w"> </span>cpu
-<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>uv<span class="w"> </span>run<span class="w"> </span>pyinstaller<span class="w"> </span>mkv_match.spec
+<p>To build the portable application directory yourself:
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>uv<span class="w"> </span>sync<span class="w"> </span>--extra<span class="w"> </span>cpu<span class="w"> </span>--group<span class="w"> </span>dev
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>uv<span class="w"> </span>run<span class="w"> </span>pyinstaller<span class="w"> </span>mkv_match.spec
 </code></pre></div></p>
+<p>PyInstaller writes <code>dist/RipWeaver/RipWeaver.exe</code> on Windows. Release CI adds
+the portable README and license files, archives the complete directory, extracts
+it into a path containing spaces and non-ASCII characters, and runs the frozen
+smoke check before uploading the artifact.</p>
+<p>Release CI currently packages the reviewed frontend already tracked under
+<code>mkv_episode_matcher/frontend/dist</code>. It deliberately refuses a bundle missing
+the existing-rip recovery marker. Do not rebuild that frontend from the current
+source until the recovery work described in <code>FRONTEND_RECOVERY_GUIDE.md</code> has
+been restored and reviewed.</p>
 <hr />
 <h2 id="reference-subtitle-structure">Reference Subtitle Structure</h2>
 <p>If you have your own subtitles or don't use the auto-download feature, ensure your files are named correctly so the system can find them.</p>
@@ -1432,9 +1421,9 @@ extract, transcribe, rename, move, delete, or transcode media:</p>
 <p><strong>Naming Format:</strong>
 <code>{show_name} - S{season:02d}E{episode:02d}.srt</code></p>
 <p>Example:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>Show Name/
-<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>├── Show Name - S01E01.srt
-<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>├── Show Name - S01E02.srt
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>Show Name/
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>├── Show Name - S01E01.srt
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>├── Show Name - S01E02.srt
 </code></pre></div></p>
 <h2 id="contributing">Contributing</h2>
 <ol>
