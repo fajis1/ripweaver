@@ -54,6 +54,30 @@ _catalogue_contribution_worker: CatalogueContributionWorker | None = None
 UVICORN_GRACEFUL_SHUTDOWN_SECONDS = 15
 
 
+def run_uvicorn_server(*, host: str, port: int) -> None:
+    """Run Uvicorn with an application-visible graceful shutdown callback."""
+
+    import uvicorn
+
+    config = uvicorn.Config(
+        app,
+        host=host,
+        port=port,
+        timeout_graceful_shutdown=UVICORN_GRACEFUL_SHUTDOWN_SECONDS,
+    )
+    server = uvicorn.Server(config)
+
+    def request_shutdown() -> None:
+        server.should_exit = True
+
+    app.state.request_server_shutdown = request_shutdown
+    try:
+        server.run()
+    finally:
+        if getattr(app.state, "request_server_shutdown", None) is request_shutdown:
+            del app.state.request_server_shutdown
+
+
 def _authorization_required(_item):
     raise PipelineReviewRequiredError("combined_pipeline_authorization_required")
 
@@ -364,11 +388,4 @@ async def health_check():
 
 
 if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=8000,
-        timeout_graceful_shutdown=UVICORN_GRACEFUL_SHUTDOWN_SECONDS,
-    )
+    run_uvicorn_server(host="127.0.0.1", port=8000)

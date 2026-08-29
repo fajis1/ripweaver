@@ -1,44 +1,55 @@
-# MKV Episode Matcher
+# RipWeaver
 
-[![Development Status](https://img.shields.io/pypi/status/mkv-episode-matcher)](https://pypi.org/project/mkv-episode-matcher/)
-[![PyPI version](https://img.shields.io/pypi/v/mkv-episode-matcher.svg)](https://pypi.org/project/mkv-episode-matcher/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Documentation Status](https://img.shields.io/github/actions/workflow/status/Jsakkos/mkv-episode-matcher/documentation.yml?label=docs)](https://jsakkos.github.io/mkv-episode-matcher/)
-[![Downloads](https://static.pepy.tech/badge/mkv-episode-matcher)](https://pepy.tech/project/mkv-episode-matcher)
+[![Build](https://github.com/fajis1/ripweaver/actions/workflows/tests.yml/badge.svg)](https://github.com/fajis1/ripweaver/actions/workflows/tests.yml)
 
-Automatically match and rename your MKV TV episodes using advanced speech recognition and subtitle matching.
-
-> [!TIP]
-> **Recommended: Try Engram for new projects.** [Engram](https://github.com/Jsakkos/engram) provides a complete end-to-end media workflow including episode matching, automated organization, and more. MKV Episode Matcher remains available for standalone matching use cases.
+RipWeaver is a local web application for guarded disc ripping, episode and
+movie identification, optional transcoding, and collision-refusing media
+organization.
 
 ## 🚀 Quick Start
 
 Follow these steps to get up and running in minutes.
 
 ### 1. Prerequisites
-Before you start, ensure you have the following:
-*   **[FFmpeg](https://ffmpeg.org/download.html)**: Installed and added to your system PATH.
-*   **API Keys**:
-    *   **OpenSubtitles.com** account (for downloading subtitles).
-    *   **TMDb** API Key (for fetching episode titles).
-*   **Directory Structure**: Your files must be organized by Show/Season. See [Directory Structure](#folder-directory-structure) below.
+
+For the complete pipeline, install:
+
+- [MakeMKV](https://www.makemkv.com/) and its command-line executable;
+- [HandBrakeCLI](https://handbrake.fr/downloads2.php); and
+- [FFmpeg](https://ffmpeg.org/download.html), including FFprobe.
+
+Episode matching through OpenSubtitles requires an OpenSubtitles.com API key
+unless the local-only subtitle provider is selected. TMDb improves canonical
+metadata. Gemini and Tesseract OCR are optional.
 
 ### 2. Install & Launch
-**The easiest way to run MKV Episode Matcher is using the standalone Windows executable.**
+The easiest Windows installation is the portable release:
 
-1.  Download the latest `mkv-match.exe` from [GitHub Releases](https://github.com/Jsakkos/mkv-episode-matcher/releases).
-2.  Double-click `mkv-match.exe` to launch.
-3.  The Web UI will automatically open in your default browser at `http://localhost:8001`.
+1. Download `RipWeaver-Windows-x64.zip` from
+   [RipWeaver Releases](https://github.com/fajis1/ripweaver/releases).
+2. Extract the complete archive; do not move `RipWeaver.exe` away from its
+   adjacent `_internal` directory.
+3. Run `RipWeaver\RipWeaver.exe`.
+4. Keep the console window open while using the dashboard at
+   `http://localhost:8001`.
+
+The portable build includes RipWeaver's Python runtime and web frontend. It does
+not include MakeMKV, HandBrakeCLI, FFmpeg, provider credentials, or media tools.
 
 > [!NOTE]
 > On the very first run, the system needs to download the speech recognition model (approx. 5-10 seconds). You will see a "System Loading" indicator.
 
 ### 3. Setup
-1.  In the Web UI, go to the **Settings** tab.
-2.  Enter your **OpenSubtitles** credentials and **TMDb API Key**. Saved values
-    are written to the local, Git-ignored `.env` and are never returned to the
-    browser.
-3.  Click **Save**.
+1. In the Web UI, go to **Settings**.
+2. Discover or select the MakeMKV, HandBrakeCLI, FFmpeg, and FFprobe
+   executables.
+3. Select separate rip-staging and encoded-staging roots plus at least one
+   Jellyfin library root.
+4. Enter the provider credentials you intend to use and click **Save**.
+
+Credential values are written to the local ignored `.env` and are never
+returned to the browser.
 
 For CLI setup, use hidden prompts:
 
@@ -120,26 +131,19 @@ MKV Episode Matcher needs reference subtitles to compare against the audio it ex
 
 ## 🛠️ Advanced Installation & Usage
 
-For developers, Linux/macOS users, or those preferring the command line.
+The `mkv-episode-matcher` package on PyPI is the upstream project and is not a
+distribution channel for the current RipWeaver application. Install current
+RipWeaver from a portable release or this repository.
 
-### Option A: Install via pip (Cross-platform)
-```bash
-# Basic install
-pip install mkv-episode-matcher[cpu]
-
-# With CUDA support (NVIDIA GPU required)
-pip install mkv-episode-matcher[cu128]
-```
-
-### Option B: Run from Source (Development)
+### Run from Source
 We recommend using [uv](https://docs.astral.sh/uv/) for dependency management.
 
 ```bash
-git clone https://github.com/Jsakkos/mkv-episode-matcher.git
-cd mkv-episode-matcher
+git clone https://github.com/fajis1/ripweaver.git
+cd ripweaver
 
 # Install dependencies
-uv sync --extra cpu
+uv sync --extra cpu --group dev
 
 # Launch Server
 uv run mkv-match serve
@@ -207,11 +211,22 @@ Configure `FFPROBE_PATH` in the local `.env`, pass `--ffprobe-path`, or place
 `mkv-match plan-audio`.
 
 ### Building the Executable
-To build the `.exe` yourself:
+To build the portable application directory yourself:
 ```bash
-uv sync --extra cpu
+uv sync --extra cpu --group dev
 uv run pyinstaller mkv_match.spec
 ```
+
+PyInstaller writes `dist/RipWeaver/RipWeaver.exe` on Windows. Release CI adds
+the portable README and license files, archives the complete directory, extracts
+it into a path containing spaces and non-ASCII characters, and runs the frozen
+smoke check before uploading the artifact.
+
+Release CI currently packages the reviewed frontend already tracked under
+`mkv_episode_matcher/frontend/dist`. It deliberately refuses a bundle missing
+the existing-rip recovery marker. Do not rebuild that frontend from the current
+source until the recovery work described in `FRONTEND_RECOVERY_GUIDE.md` has
+been restored and reviewed.
 
 ---
 

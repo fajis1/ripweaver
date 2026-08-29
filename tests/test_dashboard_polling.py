@@ -34,6 +34,34 @@ def _item(*, state: str, fingerprint: str) -> SimpleNamespace:
     )
 
 
+def _lineage_item(
+    tmp_path: Path,
+    *,
+    media_id: str,
+    fingerprint: str,
+    title_index: int,
+    stage: str,
+    state: str,
+    created_at: str,
+) -> SimpleNamespace:
+    contract = tmp_path / f"{media_id}.verified-rip.json"
+    contract.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "disc_fingerprint": fingerprint,
+            "title_index": title_index,
+        }),
+        encoding="utf-8",
+    )
+    return SimpleNamespace(
+        media_id=media_id,
+        stage=stage,
+        state=state,
+        created_at=created_at,
+        artifact=SimpleNamespace(contract_path=contract),
+    )
+
+
 def test_dashboard_disc_scope_is_bounded_validated_and_deduplicated() -> None:
     assert _parse_dashboard_disc_fingerprints(
         "a5c6de13f86cc16b,a5c6de13f86cc16b,5b2c2f4143e17730"
@@ -88,6 +116,78 @@ def test_pipeline_scopes_return_only_items_visible_in_each_view() -> None:
     assert _filter_dashboard_pipeline_items(
         items, scope="active", disc_fingerprints=()
     ) == (selected_review, other_running)
+
+
+def test_attention_scopes_hide_failure_superseded_by_newer_completed_lineage(
+    tmp_path,
+) -> None:
+    fingerprint = "a5c6de13f86cc16b"
+    stale = _lineage_item(
+        tmp_path,
+        media_id="opaque-old-attempt",
+        fingerprint=fingerprint,
+        title_index=3,
+        stage="identify",
+        state="review_required",
+        created_at="2026-08-22T00:00:00+00:00",
+    )
+    completed = _lineage_item(
+        tmp_path,
+        media_id="opaque-new-result",
+        fingerprint=fingerprint,
+        title_index=3,
+        stage="organize",
+        state="completed",
+        created_at="2026-08-26T00:00:00+00:00",
+    )
+    current_failure = _lineage_item(
+        tmp_path,
+        media_id="opaque-current-failure",
+        fingerprint=fingerprint,
+        title_index=4,
+        stage="transcode",
+        state="failed",
+        created_at="2026-08-27T00:00:00+00:00",
+    )
+    items = (stale, completed, current_failure)
+
+    assert _filter_dashboard_pipeline_items(
+        items, scope="attention", disc_fingerprints=()
+    ) == (current_failure,)
+    assert _filter_dashboard_pipeline_items(
+        items, scope="active", disc_fingerprints=()
+    ) == (current_failure,)
+    assert _filter_dashboard_pipeline_items(
+        items,
+        scope="dashboard",
+        disc_fingerprints=(fingerprint,),
+    ) == (completed, current_failure)
+
+
+def test_attention_keeps_failure_when_completion_is_older(tmp_path) -> None:
+    fingerprint = "a5c6de13f86cc16b"
+    completed = _lineage_item(
+        tmp_path,
+        media_id="opaque-old-result",
+        fingerprint=fingerprint,
+        title_index=3,
+        stage="organize",
+        state="completed",
+        created_at="2026-08-22T00:00:00+00:00",
+    )
+    current_failure = _lineage_item(
+        tmp_path,
+        media_id="opaque-new-attempt",
+        fingerprint=fingerprint,
+        title_index=3,
+        stage="identify",
+        state="review_required",
+        created_at="2026-08-26T00:00:00+00:00",
+    )
+
+    assert _filter_dashboard_pipeline_items(
+        (completed, current_failure), scope="attention", disc_fingerprints=()
+    ) == (current_failure,)
 
 
 def test_dashboard_pipeline_scope_uses_saved_fingerprint_for_opaque_recovery_ids(

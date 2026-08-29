@@ -75,7 +75,7 @@ class RipExecutionRegistry:
         token = object()
         with self._lock:
             if self._all_drive_discovery is not None:
-                raise RipError(
+                raise AllDriveDiscoveryBlocksDriveError(
                     "Read-only all-drive discovery is active; disc preparation was not started"
                 )
             existing_operation = self._drive_operation(drive_index)
@@ -266,6 +266,10 @@ class AllDriveDiscoveryDeferredError(RipError):
 
 class AllDriveDiscoveryInProgressError(RipError):
     """Raised when a second full discovery is requested concurrently."""
+
+
+class AllDriveDiscoveryBlocksDriveError(RipError):
+    """Raised when full discovery temporarily blocks exact-drive work."""
 
 
 class OpticalWorkLease:

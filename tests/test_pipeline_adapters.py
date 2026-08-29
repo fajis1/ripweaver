@@ -11,7 +11,11 @@ from mkv_episode_matcher.core.tv_identification_policy import (
     LOCAL_DIALOGUE_DISC_CORROBORATED_SOURCE,
     LOCAL_DIALOGUE_TWO_WINDOW_SOURCE,
 )
-from mkv_episode_matcher.media.handbrake import HandBrakeProfile, HandBrakeResult
+from mkv_episode_matcher.media.handbrake import (
+    HandBrakeError,
+    HandBrakeProfile,
+    HandBrakeResult,
+)
 from mkv_episode_matcher.pipeline_adapters import (
     IdentifyStageAdapter,
     OrganizeStageAdapter,
@@ -1467,6 +1471,164 @@ def test_transcode_retry_uses_new_attempt_when_prior_run_directory_exists(
 
     assert observed == {"attempt": 2, "run_dir": "media-1-attempt-002"}
     assert artifact.contract_path.is_file()
+
+
+def test_transcode_recovers_completed_destination_and_revises_old_contract(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"raw")
+    contracts = tmp_path / "contracts"
+    encoded_root = tmp_path / "encoded"
+    run_root = tmp_path / "runs"
+    for path in (contracts, encoded_root, run_root):
+        path.mkdir()
+    identify_contract = tmp_path / "identify.json"
+    identify_contract.write_text(
+        json.dumps({
+            "mode": "identified-episode-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "episode_id": "S01E01",
+            "library_relative": "Test Show/Season 01/Test Show - S01E01 - First.mkv",
+        }),
+        encoding="utf-8",
+    )
+    item = QueuedPipelineItem(
+        media_id="media-1",
+        state="running",
+        stage="transcode",
+        artifact=build_artifact("identify", identify_contract),
+        created_at="2026-08-01T00:00:00+00:00",
+        updated_at="2026-08-01T00:00:00+00:00",
+        error_type=None,
+        review_code=None,
+    )
+    old_encoded = encoded_root / "old-episode.mkv"
+    old_encoded.write_bytes(b"old-encoded")
+    old_contract = contracts / "media-1.transcode.json"
+    old_contract.write_text(
+        json.dumps({
+            "mode": "verified-transcode-contract",
+            "media_id": "media-1",
+            "episode_id": "S01E08",
+            "encoded_path": str(old_encoded),
+            "encoded_size_bytes": old_encoded.stat().st_size,
+        }),
+        encoding="utf-8",
+    )
+    destination = (
+        encoded_root
+        / "encoded-staging/Test Show/Season 01/Test Show - S01E01 - First.mkv"
+    )
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(b"new-encoded")
+    run_dir = run_root / "media-1-attempt-002"
+    run_dir.mkdir()
+    observed = {}
+
+    def fake_recovery(_ffprobe, job, selected_run_dir, **_kwargs):
+        observed["attempt"] = job.attempt_number
+        observed["run_dir"] = selected_run_dir.name
+        return HandBrakeResult(
+            media_id=job.media_id,
+            encoder=job.profile.encoder,
+            output_bytes=destination.stat().st_size,
+            duration_seconds=1200,
+            video_codec="hevc",
+            audio_streams=2,
+            subtitle_streams=0,
+            process_log=run_dir / "process.log",
+            event_log=run_dir / "events.jsonl",
+            width=1920,
+            height=1080,
+            field_order="progressive",
+        )
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.pipeline_adapters.recover_handbrake_completed_output",
+        fake_recovery,
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.pipeline_adapters.execute_handbrake_job",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("HandBrake must not rerun a verified completed output")
+        ),
+    )
+
+    artifact = TranscodeStageAdapter(
+        handbrake=tmp_path / "HandBrakeCLI.exe",
+        ffprobe=tmp_path / "ffprobe.exe",
+        output_root=encoded_root,
+        run_root=run_root,
+        contract_root=contracts,
+        profile=HandBrakeProfile(),
+    )(item)
+
+    assert observed == {"attempt": 2, "run_dir": "media-1-attempt-002"}
+    assert artifact.contract_path != old_contract
+    assert json.loads(old_contract.read_text())["episode_id"] == "S01E08"
+    assert json.loads(artifact.contract_path.read_text())["episode_id"] == "S01E01"
+
+
+def test_transcode_holds_unproven_existing_destination_for_review(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"raw")
+    contracts = tmp_path / "contracts"
+    encoded_root = tmp_path / "encoded"
+    run_root = tmp_path / "runs"
+    for path in (contracts, encoded_root, run_root):
+        path.mkdir()
+    identify_contract = tmp_path / "identify.json"
+    identify_contract.write_text(
+        json.dumps({
+            "mode": "identified-episode-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "episode_id": "S01E01",
+            "library_relative": "Test Show/Season 01/Test Show - S01E01 - First.mkv",
+        }),
+        encoding="utf-8",
+    )
+    item = QueuedPipelineItem(
+        media_id="media-1",
+        state="running",
+        stage="transcode",
+        artifact=build_artifact("identify", identify_contract),
+        created_at="2026-08-01T00:00:00+00:00",
+        updated_at="2026-08-01T00:00:00+00:00",
+        error_type=None,
+        review_code=None,
+    )
+    destination = (
+        encoded_root
+        / "encoded-staging/Test Show/Season 01/Test Show - S01E01 - First.mkv"
+    )
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(b"unproven")
+    run_dir = run_root / "media-1-attempt-001"
+    run_dir.mkdir()
+    monkeypatch.setattr(
+        "mkv_episode_matcher.pipeline_adapters.recover_handbrake_completed_output",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(HandBrakeError("no proof")),
+    )
+
+    with pytest.raises(
+        PipelineReviewRequiredError,
+        match="transcode_destination_verification_required",
+    ):
+        TranscodeStageAdapter(
+            handbrake=tmp_path / "HandBrakeCLI.exe",
+            ffprobe=tmp_path / "ffprobe.exe",
+            output_root=encoded_root,
+            run_root=run_root,
+            contract_root=contracts,
+            profile=HandBrakeProfile(),
+        )(item)
+
+    assert destination.read_bytes() == b"unproven"
 
 
 @pytest.mark.parametrize(

@@ -9,6 +9,10 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from statistics import median
 
+from mkv_episode_matcher.disc.batch_output_validation import (
+    is_complete_batch_output_size,
+    is_inventory_planned_tiny_output,
+)
 from mkv_episode_matcher.disc.ripper import RipError, RipJob
 
 _STAGING_BASENAME = re.compile(
@@ -195,8 +199,25 @@ def _failed_batch_cohorts(  # noqa: C901 - linear identity and prefix guards
             for job in ordered:
                 path = ordinal_paths.get(ordinal_map[job.title_index])
                 if path is None:
+                    # An inventory-predicted menu/control title is not required
+                    # to recover later exact-ordinal outputs from the same
+                    # failed batch. It remains missing and cannot masquerade as
+                    # an episode, but it no longer hides subsequent content.
+                    if is_inventory_planned_tiny_output(job.estimated_bytes):
+                        continue
                     break
-                ratio = path.stat().st_size / job.estimated_bytes
+                actual_bytes = path.stat().st_size
+                if is_inventory_planned_tiny_output(job.estimated_bytes):
+                    if not is_complete_batch_output_size(
+                        actual_bytes=actual_bytes,
+                        estimated_bytes=job.estimated_bytes,
+                    ):
+                        break
+                    recovered[job.title_index] = path
+                    # Container overhead dominates tiny files, so their ratio
+                    # must not distort the episode-sized cohort baseline.
+                    continue
+                ratio = actual_bytes / job.estimated_bytes
                 if not _BATCH_ESTIMATE_RATIO_MIN <= ratio <= _BATCH_ESTIMATE_RATIO_MAX:
                     break
                 if accepted_ratios:

@@ -29,6 +29,7 @@ from mkv_episode_matcher.media.handbrake import (
     HandBrakeProfile,
     execute_handbrake_job,
     partial_output_path,
+    recover_handbrake_completed_output,
     recover_handbrake_partial,
     source_video_height,
 )
@@ -790,6 +791,40 @@ class TranscodeStageAdapter:
             timeout_seconds=self.timeout_seconds,
         )
 
+    def _recover_completed_destination(
+        self,
+        item: QueuedPipelineItem,
+        source: Path,
+        destination: Path,
+        profile: HandBrakeProfile,
+    ):
+        run_directories = sorted(
+            self.run_root.glob(f"{item.media_id}-attempt-[0-9][0-9][0-9]"),
+            reverse=True,
+        )
+        for run_dir in run_directories:
+            try:
+                attempt = int(run_dir.name.rsplit("-", 1)[-1])
+            except ValueError:
+                continue
+            job = HandBrakeJob(
+                item.media_id,
+                source,
+                destination,
+                profile,
+                attempt_number=attempt,
+            )
+            try:
+                return recover_handbrake_completed_output(
+                    self.ffprobe,
+                    job,
+                    run_dir,
+                    confirm_transcode=True,
+                )
+            except HandBrakeError:
+                continue
+        raise PipelineReviewRequiredError("transcode_destination_verification_required")
+
     def __call__(self, item: QueuedPipelineItem) -> PipelineArtifact:
         payload = _load_contract(item, "identified-episode-contract")
         source = _source_from_contract(payload, "source_path", "source_size_bytes")
@@ -813,12 +848,16 @@ class TranscodeStageAdapter:
             destination.relative_to(self.output_root)
         except ValueError as exc:
             raise PipelineQueueError("Transcode destination escapes staging") from exc
-        if destination.exists():
-            raise PipelineQueueError("Transcode destination already exists")
         destination.parent.mkdir(parents=True, exist_ok=True)
 
         profile_id, selected_profile = self._select_profile(payload, source)
-        result = self._recover_or_encode(item, source, destination, selected_profile)
+        result = (
+            self._recover_completed_destination(
+                item, source, destination, selected_profile
+            )
+            if destination.exists()
+            else self._recover_or_encode(item, source, destination, selected_profile)
+        )
         if (
             not destination.is_file()
             or destination.stat().st_size != result.output_bytes
@@ -849,6 +888,7 @@ class TranscodeStageAdapter:
                 "provisional_match": bool(payload.get("provisional_match")),
                 "gemini_confidence": payload.get("gemini_confidence"),
             },
+            allow_revision=True,
         )
 
 

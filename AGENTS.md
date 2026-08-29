@@ -316,7 +316,12 @@ authorization.
 Preserved outputs from a failed single-open batch must be offered for exact
 read-only verification before any rerip. MakeMKV 0-byte menu and navigation
 outputs are treated as graceful skips (with zero output bytes and no file
-distribution) rather than batch errors. Inventory-only titles outside the
+distribution) rather than batch errors. A nonzero output below 1 MB is accepted
+only when the bound saved inventory also predicted a positive size below 1 MB
+and at least half that estimate was written; otherwise it remains a strict
+partial-file error. Such inventory-predicted menu/control outputs must not
+distort the failed-batch episode-size cohort or prevent later exact-ordinal
+outputs from being recovered. Inventory-only titles outside the
 classifier-derived matching scope must not appear as missing recovery work. Once
 every relevant title is verified in staging/Jellyfin or explicitly skipped, the
 disc counts as acquisition-complete and the configured automatic-eject flow may

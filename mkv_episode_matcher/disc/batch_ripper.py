@@ -20,6 +20,11 @@ from datetime import datetime
 from pathlib import Path
 
 from mkv_episode_matcher.core.datetime_compat import UTC
+from mkv_episode_matcher.disc.batch_output_validation import (
+    MINIMUM_SUBSTANTIAL_MKV_BYTES,
+    is_complete_batch_output_size,
+    is_inventory_planned_tiny_output,
+)
 from mkv_episode_matcher.disc.makemkv_process_control import (
     audit_makemkv_process_exit,
     start_makemkv_process,
@@ -269,18 +274,20 @@ def verify_single_open_batch_outputs(
     for job, output_name in zip(plan.jobs, plan.batch_output_names, strict=True):
         output = by_name[output_name.casefold()]
         output_bytes = output.stat().st_size
-        # Exactly 0 bytes means MakeMKV produced nothing for this title (a
-        # menu or navigation track with no usable content).  Treat it as a
-        # graceful skip rather than a failure.  Any file between 1 and
-        # 999 999 bytes was partially written and is unexpectedly small.
-        if 0 < output_bytes < 1_000_000:
+        # Exactly 0 bytes remains a graceful MakeMKV no-content skip. A small
+        # nonzero file is complete only when the saved inventory also predicted
+        # a tiny title (typically menu/control data) and at least half of that
+        # estimate was written. Episode-sized plans retain the strict guard.
+        if (
+            0 < output_bytes < MINIMUM_SUBSTANTIAL_MKV_BYTES
+            and not is_inventory_planned_tiny_output(job.estimated_bytes)
+        ):
             raise RipError(
                 "A batch MKV is unexpectedly small; all files were preserved"
             )
-        if (
-            output_bytes > 0
-            and job.estimated_bytes
-            and output_bytes < job.estimated_bytes * 0.5
+        if not is_complete_batch_output_size(
+            actual_bytes=output_bytes,
+            estimated_bytes=job.estimated_bytes,
         ):
             raise RipError(
                 "A batch MKV is less than half its planned size; all files were "

@@ -107,6 +107,34 @@ class DiscCoherenceError(GeminiAnalysisError):
 
 _SUBTITLE_YIELD_EVERY_COMPARISONS = 32
 _SUBTITLE_YIELD_SECONDS = 0.001
+_FOCUSED_SUBTITLE_WINDOW_LIMIT = 768
+_FOCUSED_SUBTITLE_OPTION_LIMIT = 8
+
+
+@dataclass(frozen=True)
+class _TimedSubtitleWindow:
+    start_seconds: float
+    end_seconds: float
+    text: str
+
+
+@dataclass(frozen=True)
+class _FocusedSubtitleAnchor:
+    sample_index: int
+    source_start_seconds: float
+    reference_start_seconds: float
+    reference_end_seconds: float
+    score: float
+
+
+@dataclass(frozen=True)
+class _FocusedSubtitleAlignment:
+    score: float
+    qualifying_anchor_count: int
+    coherent_anchor_count: int
+    source_coverage_seconds: float
+    reference_coverage_seconds: float
+    spread_confirmed: bool
 
 
 class _SubtitleAnalysisProgress:
@@ -560,6 +588,236 @@ def _subtitle_reference_windows(content: str, excerpt: str) -> tuple[str, ...]:
     return tuple(window for _index, window in shortlisted)
 
 
+def _timed_subtitle_reference_windows(
+    content: str,
+    excerpt: str,
+    *,
+    maximum_windows: int = _FOCUSED_SUBTITLE_WINDOW_LIMIT,
+) -> tuple[_TimedSubtitleWindow, ...]:
+    """Build a deeper focused-search index while retaining subtitle time."""
+
+    cues = _subtitle_cues(content)
+    timed_words = []
+    cue_word_starts = []
+    for start, end, text in cues:
+        words = clean_text(re.sub(r"<[^>]+>", " ", text)).split()
+        if not words:
+            continue
+        cue_word_starts.append(len(timed_words))
+        timed_words.extend((word, start, end) for word in words)
+    query = clean_text(excerpt).split()
+    if not timed_words or not query:
+        return ()
+    excerpt_words = max(8, len(query))
+    width = max(24, excerpt_words + max(8, excerpt_words // 2))
+    step = max(4, width // 4)
+    starts = list(range(0, max(1, len(timed_words) - width + 1), step))
+    starts.extend(cue_word_starts)
+    final_start = max(0, len(timed_words) - width)
+    starts.append(final_start)
+    starts = sorted(set(starts))
+    windows = [
+        _TimedSubtitleWindow(
+            timed_words[start][1],
+            timed_words[min(len(timed_words), start + width) - 1][2],
+            " ".join(
+                word
+                for word, _cue_start, _cue_end in timed_words[start : start + width]
+            ),
+        )
+        for start in starts
+    ]
+    windows = list(dict.fromkeys(windows))
+    if len(windows) <= maximum_windows:
+        return tuple(windows)
+
+    query_tokens = set(query)
+    query_pairs = set(zip(query, query[1:], strict=False))
+
+    def lexical_rank(
+        value: tuple[int, _TimedSubtitleWindow],
+    ) -> tuple[int, int, int, int]:
+        index, window = value
+        tokens = window.text.split()
+        pairs = set(zip(tokens, tokens[1:], strict=False))
+        return (
+            len(query_pairs & pairs),
+            len(query_tokens & set(tokens)),
+            -abs(len(tokens) - width),
+            -index,
+        )
+
+    shortlisted = sorted(
+        enumerate(windows),
+        key=lexical_rank,
+        reverse=True,
+    )[:maximum_windows]
+    return tuple(window for _index, window in shortlisted)
+
+
+def _focused_anchor_options(
+    asr,
+    cleaned_excerpt: str,
+    sample_index: int,
+    source_start_seconds: float,
+    content: str,
+    *,
+    min_confidence: float,
+    analysis_progress: _SubtitleAnalysisProgress | None = None,
+) -> tuple[_FocusedSubtitleAnchor, ...]:
+    floor = max(0.45, min_confidence - 0.2)
+    scored = []
+    for window in _timed_subtitle_reference_windows(content, cleaned_excerpt):
+        _checkpoint_subtitle_progress(analysis_progress)
+        score = asr.calculate_match_score(cleaned_excerpt, window.text)
+        if score >= floor:
+            scored.append(
+                _FocusedSubtitleAnchor(
+                    sample_index,
+                    source_start_seconds,
+                    window.start_seconds,
+                    window.end_seconds,
+                    score,
+                )
+            )
+    selected = []
+    for anchor in sorted(scored, key=lambda value: value.score, reverse=True):
+        if any(
+            abs(anchor.reference_start_seconds - prior.reference_start_seconds) < 12.0
+            for prior in selected
+        ):
+            continue
+        selected.append(anchor)
+        if len(selected) == _FOCUSED_SUBTITLE_OPTION_LIMIT:
+            break
+    return tuple(selected)
+
+
+def _focused_anchor_path_rank(
+    path: tuple[_FocusedSubtitleAnchor, ...],
+    min_confidence: float,
+) -> tuple[int, float, float, float, int, float]:
+    qualifying = tuple(anchor for anchor in path if anchor.score >= min_confidence)
+    source_coverage = (
+        qualifying[-1].source_start_seconds - qualifying[0].source_start_seconds
+        if len(qualifying) >= 2
+        else 0.0
+    )
+    reference_coverage = (
+        qualifying[-1].reference_start_seconds - qualifying[0].reference_start_seconds
+        if len(qualifying) >= 2
+        else 0.0
+    )
+    return (
+        len(qualifying),
+        source_coverage,
+        reference_coverage,
+        sum(anchor.score for anchor in qualifying),
+        len(path),
+        sum(anchor.score for anchor in path),
+    )
+
+
+def _focused_subtitle_alignment(
+    asr,
+    excerpts: tuple[str, ...],
+    content: str,
+    duration_seconds: float,
+    *,
+    min_confidence: float,
+    sample_start_seconds: tuple[float, ...] = (),
+    analysis_progress: _SubtitleAnalysisProgress | None = None,
+) -> _FocusedSubtitleAlignment:
+    """Confirm a seeded episode with a monotonic, piecewise dialogue timeline."""
+
+    starts = (
+        sample_start_seconds
+        if len(sample_start_seconds) == len(excerpts)
+        else tuple(
+            max(0.0, duration_seconds * position / (len(excerpts) + 1) - 15.0)
+            for position in range(1, len(excerpts) + 1)
+        )
+    )
+    option_groups = []
+    for sample_index, (excerpt, start) in enumerate(zip(excerpts, starts, strict=True)):
+        cleaned = clean_text(excerpt)
+        if not cleaned:
+            continue
+        options = _focused_anchor_options(
+            asr,
+            cleaned,
+            sample_index,
+            float(start),
+            content,
+            min_confidence=min_confidence,
+            analysis_progress=analysis_progress,
+        )
+        if options:
+            option_groups.append(options)
+    if not option_groups:
+        return _FocusedSubtitleAlignment(0.0, 0, 0, 0.0, 0.0, False)
+
+    nodes = [anchor for options in option_groups for anchor in options]
+    nodes.sort(
+        key=lambda anchor: (
+            anchor.sample_index,
+            anchor.reference_start_seconds,
+            -anchor.score,
+        )
+    )
+    best_ending_at: list[tuple[_FocusedSubtitleAnchor, ...]] = []
+    for node_index, node in enumerate(nodes):
+        best_path = (node,)
+        for prior_index in range(node_index):
+            prior = nodes[prior_index]
+            if prior.sample_index >= node.sample_index:
+                continue
+            if prior.reference_start_seconds + 5.0 > node.reference_start_seconds:
+                continue
+            proposed = best_ending_at[prior_index] + (node,)
+            if _focused_anchor_path_rank(
+                proposed, min_confidence
+            ) > _focused_anchor_path_rank(best_path, min_confidence):
+                best_path = proposed
+        best_ending_at.append(best_path)
+    path = max(
+        best_ending_at,
+        key=lambda value: _focused_anchor_path_rank(value, min_confidence),
+    )
+    qualifying = tuple(anchor for anchor in path if anchor.score >= min_confidence)
+    source_coverage = (
+        qualifying[-1].source_start_seconds - qualifying[0].source_start_seconds
+        if len(qualifying) >= 2
+        else 0.0
+    )
+    reference_coverage = (
+        qualifying[-1].reference_start_seconds - qualifying[0].reference_start_seconds
+        if len(qualifying) >= 2
+        else 0.0
+    )
+    minimum_source_coverage = max(60.0, min(180.0, duration_seconds * 0.15))
+    spread_confirmed = (
+        len(qualifying) >= 2
+        and source_coverage >= minimum_source_coverage
+        and reference_coverage >= 45.0
+    )
+    qualifying_count = len(qualifying) if spread_confirmed else min(1, len(qualifying))
+    relevant_scores = (
+        tuple(anchor.score for anchor in qualifying)
+        if qualifying
+        else tuple(anchor.score for anchor in path)
+    )
+    score = sum(relevant_scores) / len(relevant_scores) if relevant_scores else 0.0
+    return _FocusedSubtitleAlignment(
+        score,
+        qualifying_count,
+        len(path),
+        source_coverage,
+        reference_coverage,
+        spread_confirmed,
+    )
+
+
 def _best_global_subtitle_pair(
     asr,
     excerpt: str,
@@ -903,6 +1161,127 @@ def _release_ladder_references(references: tuple, tier: str) -> tuple:
     raise ValueError("Subtitle release ladder tier is invalid")
 
 
+def _refine_seeded_subtitle_candidates(  # noqa: C901 - bounded focused refinement
+    item: UnmatchedFileEvidence,
+    ranked: list[tuple[float, int, EpisodeCatalogEntry]],
+    references_by_episode: Mapping[tuple[int, int], tuple],
+    asr,
+    *,
+    min_confidence: float,
+    alignment_details: dict[str, dict[str, object]] | None = None,
+    analysis_progress: _SubtitleAnalysisProgress | None = None,
+) -> list[tuple[float, int, EpisodeCatalogEntry]]:
+    """Spend extra CPU only after a broad score seeds a focused candidate set."""
+
+    if not ranked:
+        return ranked
+    best_score, best_votes, _best_entry = ranked[0]
+    if best_score < min_confidence or best_votes >= 2:
+        return ranked
+
+    seeded = [candidate for candidate in ranked[:3] if candidate[0] >= min_confidence]
+    if not seeded:
+        return ranked
+    refined_by_episode = {
+        entry.episode_id: (score, votes, entry) for score, votes, entry in ranked
+    }
+    best_evidence_by_episode: dict[str, _FocusedSubtitleAlignment] = {}
+    for _broad_score, broad_votes, entry in seeded:
+        references = sorted(
+            references_by_episode.get((entry.season, entry.episode), ()),
+            key=lambda reference: release_match_priority(
+                getattr(reference, "release_match", "unresolved")
+            ),
+            reverse=True,
+        )[:4]
+        best_alignment = None
+        best_release_priority = -1
+        for subtitle in references:
+            _checkpoint_subtitle_progress(analysis_progress)
+            try:
+                content = subtitle.content or SubtitleReader.read_srt_file(
+                    subtitle.path
+                )
+            except (OSError, ValueError):
+                continue
+            alignment = _focused_subtitle_alignment(
+                asr,
+                item.transcript_excerpts,
+                content,
+                item.duration_seconds,
+                min_confidence=min_confidence,
+                sample_start_seconds=item.transcript_start_seconds,
+                analysis_progress=analysis_progress,
+            )
+            release_priority = release_match_priority(
+                getattr(subtitle, "release_match", "unresolved")
+            )
+            if best_alignment is None or (
+                alignment.qualifying_anchor_count,
+                alignment.score,
+                alignment.source_coverage_seconds,
+                alignment.reference_coverage_seconds,
+                release_priority,
+            ) > (
+                best_alignment.qualifying_anchor_count,
+                best_alignment.score,
+                best_alignment.source_coverage_seconds,
+                best_alignment.reference_coverage_seconds,
+                best_release_priority,
+            ):
+                best_alignment = alignment
+                best_release_priority = release_priority
+        if best_alignment is None:
+            continue
+        best_evidence_by_episode[entry.episode_id] = best_alignment
+        if best_alignment.qualifying_anchor_count > broad_votes:
+            refined_by_episode[entry.episode_id] = (
+                best_alignment.score,
+                best_alignment.qualifying_anchor_count,
+                entry,
+            )
+
+    refined = sorted(
+        refined_by_episode.values(),
+        key=lambda value: (value[0], value[1]),
+        reverse=True,
+    )
+    if alignment_details is not None:
+        selected_entry = refined[0][2]
+        selected_evidence = best_evidence_by_episode.get(selected_entry.episode_id)
+        alignment_details.setdefault(item.file_id, {}).update({
+            "focused_alignment_attempted": True,
+            "focused_candidate_count": len(seeded),
+            "focused_candidate_episode_id": selected_entry.episode_id,
+            "focused_alignment_confirmed": bool(
+                selected_evidence is not None
+                and selected_evidence.spread_confirmed
+                and selected_evidence.qualifying_anchor_count >= 2
+            ),
+            "focused_qualifying_anchor_count": (
+                selected_evidence.qualifying_anchor_count
+                if selected_evidence is not None
+                else 0
+            ),
+            "focused_coherent_anchor_count": (
+                selected_evidence.coherent_anchor_count
+                if selected_evidence is not None
+                else 0
+            ),
+            "focused_source_coverage_seconds": (
+                round(selected_evidence.source_coverage_seconds, 3)
+                if selected_evidence is not None
+                else 0.0
+            ),
+            "focused_reference_coverage_seconds": (
+                round(selected_evidence.reference_coverage_seconds, 3)
+                if selected_evidence is not None
+                else 0.0
+            ),
+        })
+    return refined
+
+
 def _subtitle_candidates(  # noqa: C901 - per-reference rejection audit
     files,
     references,
@@ -912,10 +1291,22 @@ def _subtitle_candidates(  # noqa: C901 - per-reference rejection audit
     min_confidence,
     rejected_candidates=None,
     phase="direct",
+    enable_focused_refinement=False,
+    focused_alignment_details=None,
     analysis_progress: _SubtitleAnalysisProgress | None = None,
 ):
     scored = {}
     altered_cut = _references_use_altered_cut(tuple(references))
+    references_by_episode: dict[tuple[int, int], list] = {}
+    for subtitle in references:
+        info = subtitle.episode_info
+        if info is not None:
+            references_by_episode.setdefault((info.season, info.episode), []).append(
+                subtitle
+            )
+    frozen_references_by_episode = {
+        key: tuple(value) for key, value in references_by_episode.items()
+    }
     for item in files:
         if analysis_progress is not None:
             analysis_progress.checkpoint()
@@ -1003,11 +1394,22 @@ def _subtitle_candidates(  # noqa: C901 - per-reference rejection audit
             )
             if prior is None or candidate_rank > prior[0]:
                 candidates_by_episode[episode_key] = (candidate_rank, candidate)
-        scored[item.file_id] = sorted(
+        ranked = sorted(
             (value[1] for value in candidates_by_episode.values()),
             key=lambda value: value[0],
             reverse=True,
         )
+        if enable_focused_refinement:
+            ranked = _refine_seeded_subtitle_candidates(
+                item,
+                ranked,
+                frozen_references_by_episode,
+                asr,
+                min_confidence=min_confidence,
+                alignment_details=focused_alignment_details,
+                analysis_progress=analysis_progress,
+            )
+        scored[item.file_id] = ranked
     return scored
 
 
@@ -1114,7 +1516,7 @@ def _scored_candidate_audit(
                 if rank == 1
                 else "lower_ranked_candidate"
             )
-            records.append({
+            record = {
                 "phase": phase,
                 "rank": rank,
                 "candidate_episode_id": entry.episode_id,
@@ -1126,7 +1528,20 @@ def _scored_candidate_audit(
                 "runtime_consistent": True,
                 "disposition": "selected" if is_selected else "rejected",
                 "reason": reason,
-            })
+            }
+            if rank == 1:
+                for detail_key in (
+                    "focused_alignment_attempted",
+                    "focused_candidate_count",
+                    "focused_alignment_confirmed",
+                    "focused_qualifying_anchor_count",
+                    "focused_coherent_anchor_count",
+                    "focused_source_coverage_seconds",
+                    "focused_reference_coverage_seconds",
+                ):
+                    if detail_key in details:
+                        record[detail_key] = details[detail_key]
+            records.append(record)
         audit[file_id] = records
     return audit
 
@@ -1162,14 +1577,14 @@ def _accept_subtitle_candidates(
             best_score, best_votes, margin, min_confidence
         )
         if diagnostic_details is not None:
-            diagnostic_details[file_id] = {
+            diagnostic_details.setdefault(file_id, {}).update({
                 "best_score": best_score,
                 "runner_up_score": runner_up,
                 "margin": margin,
                 "qualifying_window_count": best_votes,
                 "candidate_episode_id": best.episode_id,
                 "reason": rejection_reason or "candidate_pending",
-            }
+            })
         if best_score >= min_confidence and best_votes >= 2 and margin >= 0.08:
             proposals.append((best_score, margin, file_id, best))
     accepted = {}
@@ -1201,14 +1616,14 @@ def _accept_residual_subtitle_candidates(
         ]
         if not remaining:
             if diagnostic_details is not None:
-                diagnostic_details[file_id] = {
+                diagnostic_details.setdefault(file_id, {}).update({
                     "best_score": 0.0,
                     "runner_up_score": 0.0,
                     "margin": 0.0,
                     "qualifying_window_count": 0,
                     "candidate_episode_id": None,
                     "reason": "all_candidates_already_assigned",
-                }
+                })
             continue
         best_score, best_votes, best = remaining[0]
         runner_up = remaining[1][0] if len(remaining) > 1 else 0.0
@@ -1223,14 +1638,14 @@ def _accept_residual_subtitle_candidates(
             else "candidate_pending"
         )
         if diagnostic_details is not None:
-            diagnostic_details[file_id] = {
+            diagnostic_details.setdefault(file_id, {}).update({
                 "best_score": best_score,
                 "runner_up_score": runner_up,
                 "margin": margin,
                 "qualifying_window_count": best_votes,
                 "candidate_episode_id": best.episode_id,
                 "reason": reason,
-            }
+            })
         if reason == "candidate_pending":
             proposals.append((best_score, margin, best_votes, file_id, best))
     accepted = {}
@@ -1240,14 +1655,14 @@ def _accept_residual_subtitle_candidates(
         accepted[file_id] = entry
         used.add(entry.episode_id)
         if diagnostic_details is not None:
-            diagnostic_details[file_id] = {
+            diagnostic_details.setdefault(file_id, {}).update({
                 "best_score": score,
                 "runner_up_score": score - margin,
                 "margin": margin,
                 "qualifying_window_count": best_votes,
                 "candidate_episode_id": entry.episode_id,
                 "reason": "accepted_after_disc_residual_reduction",
-            }
+            })
     return accepted
 
 
@@ -1463,6 +1878,8 @@ def match_opensubtitles_seasons(  # noqa: C901 - direct and residual audit ledge
             min_confidence=min_confidence,
             rejected_candidates=rejected_candidates,
             phase=direct_phase,
+            enable_focused_refinement=True,
+            focused_alignment_details=diagnostic_details,
             analysis_progress=analysis_progress,
         )
         initial_scored_by_season[season] = scored
@@ -1575,6 +1992,8 @@ def match_opensubtitles_seasons(  # noqa: C901 - direct and residual audit ledge
                     min_confidence=min_confidence,
                     rejected_candidates=failover_rejected,
                     phase="alternate-release-failover",
+                    enable_focused_refinement=True,
+                    focused_alignment_details=diagnostic_details,
                     analysis_progress=analysis_progress,
                 )
                 combined_scored = {}
@@ -1643,6 +2062,8 @@ def match_opensubtitles_seasons(  # noqa: C901 - direct and residual audit ledge
             min_confidence=min_confidence,
             rejected_candidates=generic_rejected,
             phase="season-release-generic",
+            enable_focused_refinement=True,
+            focused_alignment_details=diagnostic_details,
             analysis_progress=analysis_progress,
         )
         combined_scored = {}

@@ -277,6 +277,59 @@ def test_read_only_verifier_accepts_zero_byte_menu_outputs_as_graceful_skips(
     assert verified[1][1] == 0
 
 
+def test_read_only_verifier_accepts_inventory_predicted_tiny_control_output(
+    tmp_path,
+):
+    jobs = (
+        _job(0),
+        replace(_job(1), estimated_bytes=18_432),
+        _job(2),
+    )
+    plan = plan_single_open_batch(
+        jobs,
+        tuple(
+            BatchInventoryTitle(
+                job.title_index, 600, f"disc_t{job.title_index:02d}.mkv"
+            )
+            for job in jobs
+        ),
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    actual_sizes = (2_000_000, 97_325, 2_100_000)
+    for name, size in zip(plan.batch_output_names, actual_sizes, strict=True):
+        path = workspace / name
+        path.write_bytes(b"x")
+        with path.open("r+b") as stream:
+            stream.truncate(size)
+
+    verified = verify_single_open_batch_outputs(workspace, plan)
+
+    assert [size for _path, size in verified] == list(actual_sizes)
+
+
+def test_read_only_verifier_rejects_incomplete_inventory_predicted_tiny_output(
+    tmp_path,
+):
+    jobs = (_job(0), replace(_job(1), estimated_bytes=18_432))
+    plan = plan_single_open_batch(
+        jobs,
+        tuple(
+            BatchInventoryTitle(
+                job.title_index, 600, f"disc_t{job.title_index:02d}.mkv"
+            )
+            for job in jobs
+        ),
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / plan.batch_output_names[0]).write_bytes(b"x" * 2_000_000)
+    (workspace / plan.batch_output_names[1]).write_bytes(b"x" * 8_000)
+
+    with pytest.raises(RipError, match="less than half"):
+        verify_single_open_batch_outputs(workspace, plan)
+
+
 def test_read_only_verifier_rejects_partially_written_small_outputs(
     tmp_path,
 ):

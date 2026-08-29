@@ -9,6 +9,57 @@
 > *Note: A full snapshot of all uncommitted files as of 2026-08-23 has been safely saved to the local branch `emergency-backup-20260823`. If you accidentally destroy the working tree, you can recover from that branch.*
 
 
+## 2026-08-29 - Portable RipWeaver release foundation
+
+The PyInstaller product and output directory are now branded `RipWeaver`.
+Release CI produces `RipWeaver-Windows-x64.zip` and
+`RipWeaver-Linux-x64.tar.gz`, places installation and license material at the
+archive root, and smoke-tests the extracted application before artifact upload.
+Windows validation extracts into a path containing spaces and non-ASCII
+characters.
+
+Until the `RipPipelineView.tsx` recovery is complete, release CI packages the
+reviewed compiled frontend already tracked in the repository instead of
+rebuilding from incomplete source. It refuses to package a bundle missing the
+existing-rip recovery marker. The locally built Windows archive likewise uses
+that reviewed bundle.
+
+The frozen executable's hidden `--portable-smoke-test` boundary starts a
+minimal loopback-only FastAPI application, verifies its path-free health result
+and every compiled frontend asset referenced by `index.html`, then shuts down
+cleanly. It does not register production routes or run the normal backend
+startup lifecycle, so it cannot reconcile work, enumerate or terminate MakeMKV
+processes, discover optical drives, access media, or start provider work.
+
+Normal double-click, `serve`, and `gui` startup now bind to `127.0.0.1` by
+default. Explicit host overrides remain available to developers, while the
+documented portable application remains local-only. A manual build workflow
+creates tested artifacts only; a `v*` tag is required to create a public GitHub
+release.
+
+This completes the portable-archive foundation of Phase 10. A per-user Windows
+installer, Start Menu entry, optional desktop shortcut, code signing,
+repeated-launch reuse, clean upgrade, and uninstall validation remain future
+gates. No installer or release was published during implementation, and no
+physical disc or media tool was accessed.
+
+
+## 2026-08-25 - Inventory-aware whole-disc batch validation
+
+Whole-disc validation now distinguishes an inventory-predicted tiny
+menu/control title from a truncated episode. A nonzero MKV below 1 MB is valid
+only when the bound saved inventory also predicted a positive size below 1 MB
+and the output reached at least half that estimate. The normal 1 MB and
+50-percent guards remain unchanged for episode-sized titles.
+
+Failed-batch recovery applies the same rule without allowing a tiny file's
+container-overhead ratio to distort the episode cohort. A valid or absent
+inventory-predicted tiny ordinal can no longer hide later exact-ordinal episode
+outputs. The tiny ordinal remains missing when absent and cannot satisfy episode
+scope; classifier-derived relevant titles remain the acquisition-completion
+authority.
+
+
 ## 2026-08-25 - Alternate-release subtitle failover
 
 Disc-level episode identification now has a universal, bounded second subtitle
@@ -108,10 +159,11 @@ content. Previously, `verify_single_open_batch_outputs` raised a `RipError` for
 any file under 1,000,000 bytes, causing successful multi-episode whole-disc rips
 to be marked as failed simply because 0-byte menu placeholders were present.
 
-The batch pipeline now handles these cleanly:
-- `verify_single_open_batch_outputs` treats exactly 0-byte outputs as graceful
-  MakeMKV skips with `output_bytes=0`. Non-zero truncated outputs (between 1 and
-  999,999 bytes, or under 50% of positive estimated size) remain strict errors.
+The batch pipeline initially handled these as follows:
+- `verify_single_open_batch_outputs` treated exactly 0-byte outputs as graceful
+  MakeMKV skips with `output_bytes=0`. Non-zero outputs between 1 and 999,999
+  bytes remained strict errors at this stage; the inventory-aware 2026-08-25
+  change above later narrowed that rule without weakening episode validation.
 - `run_single_open_batch` skips file movement/distribution for 0-byte items and
   records a `RipResult` with `output_count=0` and `output_bytes=0`. Real content
   episodes are finalized into the flat season staging folder normally.

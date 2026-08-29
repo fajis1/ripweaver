@@ -2,9 +2,11 @@ import hashlib
 import json
 import shutil
 import string
+import threading
+import time
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from loguru import logger
 
 from mkv_episode_matcher import __version__
@@ -118,9 +120,10 @@ def discover_tools():
                     program_files / "MakeMKV" / "makemkvcon64.exe",
                 ),
             ),
-            "disc_image_creator_path": _find_executable(
-                ("DiscImageCreator.exe", "DiscImageCreator")
-            )
+            "disc_image_creator_path": _find_executable((
+                "DiscImageCreator.exe",
+                "DiscImageCreator",
+            ))
             or _find_portable_executable(
                 "DiscImageCreator.exe", _portable_download_roots()
             ),
@@ -334,6 +337,23 @@ def validate_config():
     }
 
 
+@router.get("/health")
+def get_system_health():
+    """Return path-redacted setup and feature-readiness guidance."""
+
+    from mkv_episode_matcher.backend.system_health import build_system_health
+    from mkv_episode_matcher.core.config_manager import get_config_manager
+    from mkv_episode_matcher.core.credentials import credential_is_configured
+
+    config = get_config_manager().load()
+    discovered = discover_tools()["tools"]
+    return build_system_health(
+        config,
+        discovered=discovered,
+        credential_is_configured=credential_is_configured,
+    )
+
+
 def _cleanup_context(*, require_library: bool = True):
     from mkv_episode_matcher.backend.dependencies import get_pipeline_contract_root
     from mkv_episode_matcher.backend.jellyfin_cleanup import CleanupError, plan_cleanup
@@ -349,7 +369,7 @@ def _cleanup_context(*, require_library: bool = True):
         )
     ):
         raise CleanupError(
-            "Configure rip, encoded, and at least one Jellyfin library root first"
+            "Configure rip, encoded, and at least one media library root first"
         )
     return config, get_pipeline_contract_root(), plan_cleanup
 
@@ -551,13 +571,8 @@ def shutdown_status():
 
 
 @router.post("/shutdown")
-def shutdown_server(payload: dict | None = None):
+def shutdown_server(request: Request, payload: dict | None = None):
     """Shutdown the application server."""
-    import os
-    import signal
-    import threading
-    import time
-
     activity = _shutdown_activity()
     if not activity["safe_to_shutdown"] and not (payload or {}).get(
         "confirm_interrupt"
@@ -570,10 +585,27 @@ def shutdown_server(payload: dict | None = None):
             },
         )
 
-    def kill_server():
-        time.sleep(1)
-        os.kill(os.getpid(), signal.SIGTERM)
+    request_shutdown = getattr(request.app.state, "request_server_shutdown", None)
+    if not callable(request_shutdown):
+        raise HTTPException(
+            status_code=503,
+            detail="The server shutdown controller is unavailable",
+        )
 
-    # Schedule shutdown in a separate thread to allow response to return
-    threading.Thread(target=kill_server).start()
+    def stop_server():
+        time.sleep(1)
+        try:
+            request_shutdown()
+        except Exception as error:
+            logger.error(
+                "Graceful server shutdown request failed: {}",
+                type(error).__name__,
+            )
+
+    # Return the HTTP response before asking Uvicorn to stop accepting requests.
+    threading.Thread(
+        target=stop_server,
+        name="ripweaver-server-shutdown",
+        daemon=True,
+    ).start()
     return {"status": "shutting_down", "interrupted_work": activity["active_count"]}

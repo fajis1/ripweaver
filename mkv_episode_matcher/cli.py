@@ -3765,7 +3765,7 @@ def _display_comprehensive_summary(results, failures, dry_run, output_dir, conso
 @app.command()
 def serve(
     port: int = typer.Option(8001, "--port", "-p", help="Port to run the server on"),
-    host: str = typer.Option("0.0.0.0", "--host", help="Host to bind to"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Host to bind to"),
     no_browser: bool = typer.Option(
         False, "--no-browser", help="Don't open browser automatically"
     ),
@@ -3796,17 +3796,12 @@ def serve(
     import time
     import webbrowser
 
-    import uvicorn
-
     from mkv_episode_matcher.backend.automatic_rip import (
         set_automatic_rip_startup_hold,
     )
 
     set_automatic_rip_startup_hold(hold_automatic_rips)
-    from mkv_episode_matcher.backend.main import (
-        UVICORN_GRACEFUL_SHUTDOWN_SECONDS,
-    )
-    from mkv_episode_matcher.backend.main import app as fastapi_app
+    from mkv_episode_matcher.backend.main import run_uvicorn_server
 
     print_banner()
     console.print(f"[blue]Starting Web UI server on http://{host}:{port}[/blue]")
@@ -3825,12 +3820,7 @@ def serve(
 
         threading.Thread(target=open_browser, daemon=True).start()
 
-    uvicorn.run(
-        fastapi_app,
-        host=host,
-        port=port,
-        timeout_graceful_shutdown=UVICORN_GRACEFUL_SHUTDOWN_SECONDS,
-    )
+    run_uvicorn_server(host=host, port=port)
 
 
 @app.command()
@@ -3843,7 +3833,7 @@ def gui(
     """Launch the Web UI (alias for 'serve')."""
     serve(
         port=port,
-        host="0.0.0.0",
+        host="127.0.0.1",
         no_browser=no_browser,
         hold_automatic_rips=False,
     )
