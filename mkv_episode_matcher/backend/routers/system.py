@@ -120,10 +120,9 @@ def discover_tools():
                     program_files / "MakeMKV" / "makemkvcon64.exe",
                 ),
             ),
-            "disc_image_creator_path": _find_executable((
-                "DiscImageCreator.exe",
-                "DiscImageCreator",
-            ))
+            "disc_image_creator_path": _find_executable(
+                ("DiscImageCreator.exe", "DiscImageCreator")
+            )
             or _find_portable_executable(
                 "DiscImageCreator.exe", _portable_download_roots()
             ),

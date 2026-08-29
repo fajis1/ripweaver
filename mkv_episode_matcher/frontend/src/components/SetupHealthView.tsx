@@ -129,7 +129,7 @@ const SetupHealthView = ({ onOpenSettings }: SetupHealthViewProps) => {
                         )}
                         {item.download_url && item.status !== 'ready' && (
                           <a className="btn btn-secondary text-xs" href={item.download_url} target="_blank" rel="noopener noreferrer">
-                            Official download page
+                            Official installation page
                           </a>
                         )}
                       </div>

@@ -9,7 +9,7 @@ TOOL_DOWNLOAD_URLS = {
     "handbrake_path": "https://handbrake.fr/downloads2.php",
     "ffmpeg_path": "https://ffmpeg.org/download.html",
     "ffprobe_path": "https://ffmpeg.org/download.html",
-    "tesseract_path": "https://github.com/UB-Mannheim/tesseract/wiki",
+    "tesseract_path": "https://tesseract-ocr.github.io/tessdoc/Installation.html",
     "disc_image_creator_path": "https://github.com/saramibreak/DiscImageCreator/releases",
 }
 
