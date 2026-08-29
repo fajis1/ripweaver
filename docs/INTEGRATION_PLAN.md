@@ -893,6 +893,16 @@ matching/transcode continuation, and the complete-disc state machine remain.
 
 ### Phase 10: Windows installer and desktop launcher
 
+Current status: the branded portable foundation is implemented. Release CI
+builds and archives the complete `RipWeaver` onedir application and verifies an
+extracted copy from a path containing spaces and non-ASCII characters with a
+minimal loopback-only frozen smoke boundary. While the frontend source recovery
+remains open, CI packages the reviewed tracked frontend bundle and refuses one
+missing its existing-rip recovery marker instead of rebuilding incomplete
+source. Manual workflow dispatch produces artifacts without publishing; `v*`
+tags remain the only release trigger. The installer-specific work below remains
+open.
+
 - select and configure a reproducible Windows installer around the packaged
   executable;
 - add the optional desktop-shortcut prompt and Start Menu launcher;
