@@ -684,10 +684,21 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#windows" class="md-nav__link">
+  <a href="#windows-installer" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Windows
+        Windows installer
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#windows-portable-archive" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Windows portable archive
       
     </span>
   </a>
@@ -769,7 +780,16 @@ RipWeaver build workflow:</p>
 build is not currently Authenticode-signed, so Windows may display an
 <code>Unknown publisher</code> or Microsoft Defender SmartScreen prompt even after these
 checks pass.</p>
-<h2 id="windows">Windows</h2>
+<h2 id="windows-installer">Windows installer</h2>
+<p>The simplest Windows download is <code>RipWeaver-Setup-Windows-x64.exe</code>. It installs
+RipWeaver for the current user, adds Start Menu shortcuts, and requires no
+administrator access. The installer does not install or download MakeMKV,
+HandBrakeCLI, FFmpeg, or FFprobe. Its external-tool page opens only the official
+download sites you choose.</p>
+<p>The installer is not currently Authenticode-signed, so Windows may display an
+<code>Unknown publisher</code> or Microsoft Defender SmartScreen prompt. Verify its
+matching <code>.sha256</code> file or GitHub build attestation before running it.</p>
+<h2 id="windows-portable-archive">Windows portable archive</h2>
 <ol>
 <li>Install MakeMKV, HandBrakeCLI, and FFmpeg/FFprobe for the complete pipeline.</li>
 <li>Extract the entire <code>RipWeaver-Windows-x64.zip</code> archive to a user-writable
@@ -792,7 +812,8 @@ closing it stops the application.</p>
 <ul>
 <li>the MakeMKV, HandBrakeCLI, FFmpeg, and FFprobe executables;</li>
 <li>separate rip-staging and encoded-staging roots;</li>
-<li>at least one Jellyfin television or movie library root; and</li>
+<li>at least one television or movie media-library root for Plex, Jellyfin, Emby,
+  or another server; and</li>
 <li>an OpenSubtitles API key unless the local-only subtitle provider is selected.</li>
 </ul>
 <p>TMDb improves canonical media metadata. Gemini and Tesseract OCR are optional.
