@@ -4,6 +4,35 @@ This archive contains RipWeaver and its Python runtime. Keep the complete
 `RipWeaver` directory together; the executable depends on the adjacent
 `_internal` directory.
 
+## Verify the download
+
+Official release archives include a matching `.sha256` file. On Linux, verify
+the archive before extracting it:
+
+```bash
+sha256sum --check RipWeaver-Linux-x64.tar.gz.sha256
+```
+
+On Windows, compare the hash printed by PowerShell with the first value in the
+downloaded `.sha256` file:
+
+```powershell
+Get-FileHash .\RipWeaver-Windows-x64.zip -Algorithm SHA256
+Get-Content .\RipWeaver-Windows-x64.zip.sha256
+```
+
+GitHub CLI users can also verify that an archive was produced by the official
+RipWeaver build workflow:
+
+```text
+gh attestation verify <archive> --repo fajis1/ripweaver
+```
+
+Do not run an archive when either verification fails. The Windows portable
+build is not currently Authenticode-signed, so Windows may display an
+`Unknown publisher` or Microsoft Defender SmartScreen prompt even after these
+checks pass.
+
 ## Windows
 
 1. Install MakeMKV, HandBrakeCLI, and FFmpeg/FFprobe for the complete pipeline.
