@@ -673,6 +673,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#verify-the-download" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verify the download
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#windows" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -740,6 +751,24 @@
 <p>This archive contains RipWeaver and its Python runtime. Keep the complete
 <code>RipWeaver</code> directory together; the executable depends on the adjacent
 <code>_internal</code> directory.</p>
+<h2 id="verify-the-download">Verify the download</h2>
+<p>Official release archives include a matching <code>.sha256</code> file. On Linux, verify
+the archive before extracting it:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>sha256sum<span class="w"> </span>--check<span class="w"> </span>RipWeaver-Linux-x64.tar.gz.sha256
+</code></pre></div>
+<p>On Windows, compare the hash printed by PowerShell with the first value in the
+downloaded <code>.sha256</code> file:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nb">Get-FileHash</span> <span class="p">.\</span><span class="n">RipWeaver-Windows-x64</span><span class="p">.</span><span class="n">zip</span> <span class="n">-Algorithm</span> <span class="n">SHA256</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="nb">Get-Content</span> <span class="p">.\</span><span class="n">RipWeaver-Windows-x64</span><span class="p">.</span><span class="n">zip</span><span class="p">.</span><span class="n">sha256</span>
+</code></pre></div>
+<p>GitHub CLI users can also verify that an archive was produced by the official
+RipWeaver build workflow:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>gh attestation verify &lt;archive&gt; --repo fajis1/ripweaver
+</code></pre></div>
+<p>Do not run an archive when either verification fails. The Windows portable
+build is not currently Authenticode-signed, so Windows may display an
+<code>Unknown publisher</code> or Microsoft Defender SmartScreen prompt even after these
+checks pass.</p>
 <h2 id="windows">Windows</h2>
 <ol>
 <li>Install MakeMKV, HandBrakeCLI, and FFmpeg/FFprobe for the complete pipeline.</li>
@@ -775,8 +804,8 @@ upgrade.</p>
 <h2 id="source-installation">Source installation</h2>
 <p>The portable archive requires neither Python, uv, nor Node.js. Developers can
 instead clone <code>https://github.com/fajis1/ripweaver</code> and run:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">uv</span> <span class="n">sync</span> <span class="p">-</span><span class="n">-extra</span> <span class="n">cpu</span> <span class="p">-</span><span class="n">-group</span> <span class="n">dev</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">serve</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">uv</span> <span class="n">sync</span> <span class="p">-</span><span class="n">-extra</span> <span class="n">cpu</span> <span class="p">-</span><span class="n">-group</span> <span class="n">dev</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">uv</span> <span class="n">run</span> <span class="n">mkv</span><span class="o">-match</span> <span class="n">serve</span>
 </code></pre></div>
 
 
