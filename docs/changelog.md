@@ -21,9 +21,6 @@ All notable changes to MKV Episode Matcher are documented here.
 - Expanded the Gemini model panel with clearly numbered primary, first-fallback,
   and second-fallback selectors plus the labeled model presets offered by the
   OpenReader-style setup.
-- Changed the Build and Release workflow to produce downloadable Windows and
-  Linux test artifacts after every branch push. Only an explicit `v*` tag can
-  publish a GitHub release.
 
 - Added bounded alternate-release subtitle failover for confidently resolved TV
   series and seasons. When usable Whisper evidence fails against every normal
