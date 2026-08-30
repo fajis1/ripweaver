@@ -183,6 +183,7 @@ from mkv_episode_matcher.pipeline_adapters import (
     TranscodeStageAdapter,
 )
 from mkv_episode_matcher.pipeline_queue import (
+    DEFAULT_SHORT_TITLE_REVIEW_SECONDS,
     DownstreamDispatcher,
     PipelineQueueError,
     PipelineQueueStore,
@@ -1724,7 +1725,11 @@ def _auto_admit_staged_disc_if_complete(  # noqa: C901 - auto-admit verification
             job.job_id: _existing_rip_recovery_media_id(candidate)
             for job, candidate in zip(verified_jobs, verified_candidates, strict=True)
         },
-        short_title_review_seconds=config.short_title_review_seconds,
+        short_title_review_seconds=getattr(
+            config,
+            "short_title_review_seconds",
+            DEFAULT_SHORT_TITLE_REVIEW_SECONDS,
+        ),
     )
     admit_preview = (
         replace(preview, requires_review=False) if preview.requires_review else preview
@@ -4581,7 +4586,11 @@ def _enqueue_completed_rip_results(  # noqa: C901
             "media_contexts": contexts,
             "expected_title_indexes_by_disc": expected_title_indexes_by_disc,
             "short_title_review_seconds": (
-                get_config_manager().load().short_title_review_seconds
+                getattr(
+                    get_config_manager().load(),
+                    "short_title_review_seconds",
+                    DEFAULT_SHORT_TITLE_REVIEW_SECONDS,
+                )
             ),
         }
         try:
@@ -6799,7 +6808,11 @@ def verify_existing_rip_candidates(  # noqa: C901 - per-file recovery isolation
                 )
             },
             short_title_review_seconds=(
-                get_config_manager().load().short_title_review_seconds
+                getattr(
+                    get_config_manager().load(),
+                    "short_title_review_seconds",
+                    DEFAULT_SHORT_TITLE_REVIEW_SECONDS,
+                )
             ),
         )
         return {
