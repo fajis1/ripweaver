@@ -19,6 +19,7 @@ interface PreviewJob {
   drive_index: number;
   title_index: number;
   estimated_bytes: number | null;
+  duration_seconds: number | null;
   staging_destination: string;
   final_destination: string | null;
   collision_status: string;
@@ -355,6 +356,7 @@ interface PublicConfig {
   automatic_eject_after_rip?: boolean;
   automatic_gemini_ambiguity_fallback?: boolean;
   retained_source_ttl_days?: number;
+  short_title_review_seconds?: number;
   jellyfin_tv_root?: string;
   jellyfin_movie_root?: string;
 }
@@ -372,6 +374,9 @@ interface PipelineQueueItem {
   artifact_sha256: string;
   disc_fingerprint: string | null;
   title_index: number | null;
+  duration_seconds: number | null;
+  short_title: boolean;
+  short_title_review_threshold_seconds: number | null;
   series_name?: string | null;
   display_name: string | null;
   match_summary: string | null;
@@ -1736,6 +1741,85 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
     } finally {
       setControlling(false);
     }
+  };
+
+  const setShortTitleDisposition = async (
+    item: PipelineQueueItem,
+    action: 'ignore_matching' | 'mark_for_deletion' | 'match_normally',
+  ) => {
+    const title = typeof item.title_index === 'number' ? `title ${item.title_index}` : item.media_id;
+    const confirmation = action === 'ignore_matching'
+      ? `Keep the staged MKV for ${title}, exclude it from episode matching, and remember that choice for this exact disc title? No media will be deleted.`
+      : action === 'mark_for_deletion'
+        ? `Keep the staged MKV for ${title}, exclude it from matching, and mark it for deletion review? This step does not delete the file; permanent deletion requires a separate confirmation.`
+        : `Use ${title} for normal episode matching and remember that choice for this exact disc title? This may start identification when the queue is active.`;
+    if (!window.confirm(confirmation)) return;
+    setControlling(true);
+    setError('');
+    try {
+      const response = await fetch(`/rip/pipeline/items/${encodeURIComponent(item.media_id)}/short-title-disposition`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          expected_artifact_sha256: item.artifact_sha256,
+          action,
+          confirm_disposition: true,
+        }),
+      });
+      const payload = await responsePayload(response);
+      if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : 'The short-title choice could not be saved.');
+      if (!Array.isArray(payload.items) || typeof payload.paused !== 'boolean') {
+        throw new Error('The choice was handled, but the refreshed queue response was invalid. Refresh the page to confirm its state.');
+      }
+      setPipelineQueue(payload as unknown as PipelineQueue);
+      setReviewNotice(action === 'ignore_matching'
+        ? `Kept ${title} and excluded it from matching. No media was changed.`
+        : action === 'mark_for_deletion'
+          ? `Kept ${title} and moved it to deletion review. The MKV has not been deleted.`
+          : `Restored ${title} to normal matching.`);
+    } catch (requestError) {
+      const message = requestError instanceof Error ? requestError.message : 'The short-title choice could not be saved.';
+      setError(message);
+      window.alert(message);
+    } finally {
+      setControlling(false);
+    }
+  };
+
+  const renderShortTitleReview = (item: PipelineQueueItem) => {
+    if (!item.short_title || item.duration_seconds === null) return null;
+    const disposition = (pipelineQueue?.title_dispositions ?? []).find((candidate) => (
+      item.disc_fingerprint !== null
+      && item.title_index !== null
+      && candidate.disc_fingerprint === item.disc_fingerprint
+      && candidate.title_index === item.title_index
+    ));
+    const markedForDeletion = item.review_code === 'short_title_deletion_review';
+    const ignored = disposition?.disposition === 'skip' && !markedForDeletion;
+    const included = disposition?.disposition === 'include';
+    return (
+      <div className="max-w-2xl rounded-lg border border-amber-400/35 bg-amber-500/10 p-3 text-xs text-amber-100">
+        <div className="font-semibold text-amber-50">Short title · {formatCollisionDuration(item.duration_seconds)}</div>
+        <div className="mt-1">
+          This title is shorter than the saved {formatCollisionDuration(item.short_title_review_threshold_seconds || 150)} review cutoff.
+          {markedForDeletion
+            ? ' It is excluded from matching and marked for deletion review; the MKV still exists.'
+            : ignored
+              ? ' The MKV is being kept and excluded from episode matching.'
+              : included
+                ? ' It was explicitly restored to normal matching.'
+                : ' Choose what RipWeaver should do before matching it.'}
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button type="button" className="btn btn-secondary text-xs" disabled={controlling || ignored} onClick={() => setShortTitleDisposition(item, 'ignore_matching')}>Keep file · ignore matching</button>
+          <button type="button" className="btn btn-secondary text-xs" disabled={controlling || included} onClick={() => setShortTitleDisposition(item, 'match_normally')}>Use for matching</button>
+          <button type="button" className="btn text-xs border border-amber-400/50 bg-amber-500/15 text-amber-100 hover:bg-amber-500/25" disabled={controlling || markedForDeletion} onClick={() => setShortTitleDisposition(item, 'mark_for_deletion')}>Mark for deletion review</button>
+          {markedForDeletion && item.staged_source_available && (
+            <button type="button" className="btn text-xs border border-red-400/50 bg-red-500/15 text-red-100 hover:bg-red-500/25" disabled={controlling} onClick={() => deleteQueuedStagedSource(item)}>Delete staged rip permanently</button>
+          )}
+        </div>
+      </div>
+    );
   };
 
   const restoreSkippedDiscTitle = async (
@@ -4419,6 +4503,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                                   Matching ran, but could not assign this title safely. Best candidate: {selectedEpisodeId} at {(selectedScore * 100).toFixed(1)}%; automatic threshold: {(engineThreshold * 100).toFixed(0)}%{typeof selectedVoteCount === 'number' ? `; qualifying windows: ${selectedVoteCount}` : ''}. Review or retry identification—do not rerip the MKV.
                                 </div>
                               )}
+                              {item.short_title && <div className="mt-2">{renderShortTitleReview(item)}</div>}
                               {!skipped && item.state === 'review_required' && job && (
                                 <button type="button" className="btn btn-secondary mt-2 text-xs" onClick={() => selectDriveJob(job, pipelineItemElementId(item.media_id))}>Open review</button>
                               )}
@@ -4901,6 +4986,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                   </button>
                 </>
               )}
+              {visiblePipelineItems.some((item) => item.short_title && item.stage === 'identify') && (
+                <div>Short titles are paused for a keep/ignore, deletion-review, or normal-matching choice. Marking one for deletion does not delete its MKV.</div>
+              )}
               {visiblePipelineItems.some((item) => (item.review_code || '').includes('gemini') || (item.review_code || '').includes('special_feature')) && (
                 <>
                   <div>Held identification needs a Gemini retry, a manual name, or an explicit hold choice.</div>
@@ -5035,7 +5123,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                     </div>
                   )}
                   {['failed', 'review_required'].includes(item.state) && (
-                    item.stage === 'organize' && item.error_type === 'PipelineQueueError' && item.original_source_unavailable ? (
+                    item.short_title && item.stage === 'identify' ? (
+                      renderShortTitleReview(item)
+                    ) : item.stage === 'organize' && item.error_type === 'PipelineQueueError' && item.original_source_unavailable ? (
                       <div className="max-w-md rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-100">
                         <div>The verified encode is preserved, but the old ripped source is no longer in staging. Nothing needs to be archived before media-library placement.</div>
                         <div className="mt-2">After updating or restarting RipWeaver, retry this item to place the verified encode without reripping or retranscoding.</div>
@@ -5960,7 +6050,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                     <div className="text-sm text-[var(--text-muted)] truncate">
                       {job.final_destination || `Original collision-safe rip target: ${job.staging_destination}`}
                     </div>
-                    <div className="text-xs text-[var(--text-muted)] mt-1">{formatBytes(job.estimated_bytes)}</div>
+                    <div className="text-xs text-[var(--text-muted)] mt-1">
+                      {formatBytes(job.estimated_bytes)}{job.duration_seconds ? ` · ${formatCollisionDuration(job.duration_seconds)}` : ''}
+                    </div>
                     {job.prior_outcome_name && !pipelineQueue?.items.find((item) => item.media_id === job.job_id)?.display_name && (
                       <div className="mt-2 rounded-lg border border-blue-500/30 bg-blue-500/10 p-2 text-sm text-blue-100">
                         <div className="font-semibold">Previous result: {job.prior_outcome_name}</div>

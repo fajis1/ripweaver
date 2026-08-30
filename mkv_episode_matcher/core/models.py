@@ -99,6 +99,7 @@ class Config(BaseModel):
     transcode_output_root: Path | None = None
     deletion_staging_root: Path | None = None
     retained_source_ttl_days: int = 30
+    short_title_review_seconds: int = 150
     retained_source_cleanup_postponed_until: str | None = None
     jellyfin_tv_root: Path | None = None
     jellyfin_movie_root: Path | None = None
@@ -204,6 +205,13 @@ class Config(BaseModel):
     def validate_retained_source_ttl_days(cls, value: int) -> int:
         if isinstance(value, bool) or value < 1:
             raise ValueError("Retained-source TTL must be at least 1 day")
+        return value
+
+    @field_validator("short_title_review_seconds")
+    @classmethod
+    def validate_short_title_review_seconds(cls, value: int) -> int:
+        if isinstance(value, bool) or not 0 <= value <= 3600:
+            raise ValueError("Short-title review cutoff must be 0 to 3600 seconds")
         return value
 
     @field_validator("retained_source_cleanup_postponed_until")
