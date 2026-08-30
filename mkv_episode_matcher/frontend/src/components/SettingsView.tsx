@@ -17,6 +17,7 @@ interface Config {
     transcode_output_root?: string;
     deletion_staging_root?: string;
     retained_source_ttl_days: number;
+    short_title_review_seconds: number;
     jellyfin_tv_root?: string;
     jellyfin_movie_root?: string;
     makemkv_path?: string;
@@ -628,6 +629,19 @@ const SettingsView: React.FC = () => {
                             className="w-full bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-lg px-4 py-2 text-white"
                         />
                         <p className="text-xs text-[var(--text-muted)]">Retained originals stay available in cleanup staging for this many days before RipWeaver treats them as expired.</p>
+                    </div>
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium text-muted">Short-title review cutoff (seconds)</label>
+                        <input
+                            type="number"
+                            min="0"
+                            max="3600"
+                            step="15"
+                            value={config.short_title_review_seconds}
+                            onChange={(event) => handleChange('short_title_review_seconds', Number(event.target.value))}
+                            className="w-full bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-lg px-4 py-2 text-white"
+                        />
+                        <p className="text-xs text-[var(--text-muted)]">Default: 150 seconds (2 minutes 30 seconds). Newly ripped titles shorter than this pause before matching so you can keep and ignore them, mark them for deletion review, or match them normally. Set 0 to disable this review.</p>
                     </div>
                 </div>
 

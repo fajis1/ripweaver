@@ -57,6 +57,7 @@ def test_preview_is_redacted_non_executable_and_selects_single_open(tmp_path):
     assert preview.drives[0].strategy == "single-open"
     assert preview.drives[0].minimum_length_seconds == 0
     assert all(job.collision_status == "not-checked" for job in preview.jobs)
+    assert [job.duration_seconds for job in preview.jobs] == [1300, 1300, 1300]
     assert str(report) not in serialized
     assert report.name not in serialized
     assert "Private Disc Label" not in serialized
@@ -164,6 +165,7 @@ def test_preview_response_accepts_legacy_drive_without_selection_mode(tmp_path):
     response = RipPreviewResponse.model_validate(payload)
 
     assert response.drives[0].selection_mode == "episode"
+    assert response.jobs[0].duration_seconds == 1300
 
 
 def test_api_exposes_preview_without_execution_route(tmp_path):

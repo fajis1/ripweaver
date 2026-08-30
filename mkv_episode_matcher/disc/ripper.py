@@ -42,6 +42,15 @@ class RipJob:
     estimated_bytes: int | None = None
     output_basename: str | None = None
     final_relative_dir: str | None = None
+    duration_seconds: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.duration_seconds is not None and (
+            isinstance(self.duration_seconds, bool)
+            or not isinstance(self.duration_seconds, int)
+            or self.duration_seconds < 0
+        ):
+            raise RipError("Rip job duration is invalid")
 
 
 @dataclass(frozen=True)

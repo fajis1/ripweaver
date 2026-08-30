@@ -183,6 +183,7 @@ from mkv_episode_matcher.pipeline_adapters import (
     TranscodeStageAdapter,
 )
 from mkv_episode_matcher.pipeline_queue import (
+    DEFAULT_SHORT_TITLE_REVIEW_SECONDS,
     DownstreamDispatcher,
     PipelineQueueError,
     PipelineQueueStore,
@@ -643,6 +644,7 @@ class RipPreviewJobResponse(BaseModel):
     drive_index: int
     title_index: int
     estimated_bytes: int | None
+    duration_seconds: int | None = None
     staging_destination: str
     final_destination: str | None
     collision_status: str
@@ -1723,6 +1725,11 @@ def _auto_admit_staged_disc_if_complete(  # noqa: C901 - auto-admit verification
             job.job_id: _existing_rip_recovery_media_id(candidate)
             for job, candidate in zip(verified_jobs, verified_candidates, strict=True)
         },
+        short_title_review_seconds=getattr(
+            config,
+            "short_title_review_seconds",
+            DEFAULT_SHORT_TITLE_REVIEW_SECONDS,
+        ),
     )
     admit_preview = (
         replace(preview, requires_review=False) if preview.requires_review else preview
@@ -2796,6 +2803,9 @@ class PipelineItemResponse(BaseModel):
     artifact_sha256: str
     disc_fingerprint: str | None = None
     title_index: int | None = None
+    duration_seconds: int | None = None
+    short_title: bool = False
+    short_title_review_threshold_seconds: int | None = None
     series_name: str | None = None
     display_name: str | None = None
     match_summary: str | None = None
@@ -2874,6 +2884,12 @@ class CancelQueuedPipelineItemsRequest(BaseModel):
 class DeleteQueuedPipelineMediaRequest(BaseModel):
     confirm_delete: bool = False
     remember_future_skip: bool = False
+
+
+class ShortTitleDispositionRequest(BaseModel):
+    expected_artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    action: Literal["ignore_matching", "mark_for_deletion", "match_normally"]
+    confirm_disposition: bool = False
 
 
 class RestoreDiscTitleDispositionRequest(BaseModel):
@@ -3452,6 +3468,8 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
     gemini_series_proposal = None
     disc_fingerprint = None
     title_index = None
+    duration_seconds = None
+    short_title_review_threshold_seconds = None
     try:
         rip_payload = json.loads(
             item.artifact.contract_path.with_name(
@@ -3466,6 +3484,20 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
         rip_title_index = rip_payload.get("title_index")
         if isinstance(rip_title_index, int) and not isinstance(rip_title_index, bool):
             title_index = rip_title_index
+        rip_duration = rip_payload.get("duration_seconds")
+        if (
+            isinstance(rip_duration, int)
+            and not isinstance(rip_duration, bool)
+            and rip_duration >= 0
+        ):
+            duration_seconds = rip_duration
+        rip_threshold = rip_payload.get("short_title_review_threshold_seconds")
+        if (
+            isinstance(rip_threshold, int)
+            and not isinstance(rip_threshold, bool)
+            and 0 <= rip_threshold <= 3600
+        ):
+            short_title_review_threshold_seconds = rip_threshold
     except (OSError, json.JSONDecodeError):
         rip_payload = {}
     if item.review_code == "gemini_series_resolution_uncertain":
@@ -3517,6 +3549,22 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
                 payload_title_index, bool
             ):
                 title_index = payload_title_index
+        if duration_seconds is None:
+            payload_duration = payload.get("duration_seconds")
+            if (
+                isinstance(payload_duration, int)
+                and not isinstance(payload_duration, bool)
+                and payload_duration >= 0
+            ):
+                duration_seconds = payload_duration
+        if short_title_review_threshold_seconds is None:
+            payload_threshold = payload.get("short_title_review_threshold_seconds")
+            if (
+                isinstance(payload_threshold, int)
+                and not isinstance(payload_threshold, bool)
+                and 0 <= payload_threshold <= 3600
+            ):
+                short_title_review_threshold_seconds = payload_threshold
         source_value = payload.get("source_path")
         source_size = payload.get("source_size_bytes")
         if isinstance(source_value, str) and isinstance(source_size, int):
@@ -3583,6 +3631,13 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
         "artifact_sha256": item.artifact.contract_sha256,
         "disc_fingerprint": disc_fingerprint,
         "title_index": title_index,
+        "duration_seconds": duration_seconds,
+        "short_title": bool(
+            duration_seconds is not None
+            and short_title_review_threshold_seconds
+            and 0 < duration_seconds < short_title_review_threshold_seconds
+        ),
+        "short_title_review_threshold_seconds": (short_title_review_threshold_seconds),
         "series_name": series_name,
         "display_name": _pipeline_item_display_name(item, payload),
         "match_summary": _pipeline_item_match_summary(item, payload),
@@ -4530,6 +4585,13 @@ def _enqueue_completed_rip_results(  # noqa: C901
             "contract_root": contract_root,
             "media_contexts": contexts,
             "expected_title_indexes_by_disc": expected_title_indexes_by_disc,
+            "short_title_review_seconds": (
+                getattr(
+                    get_config_manager().load(),
+                    "short_title_review_seconds",
+                    DEFAULT_SHORT_TITLE_REVIEW_SECONDS,
+                )
+            ),
         }
         try:
             enqueue_verified_rip_results(pipeline_store, **enqueue_arguments)
@@ -5122,6 +5184,32 @@ def cancel_queued_pipeline_items(
         )
     try:
         store.cancel_queued_items(tuple(request.media_ids))
+    except PipelineQueueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return get_pipeline_items(store)
+
+
+@router.post(
+    "/pipeline/items/{media_id}/short-title-disposition",
+    response_model=PipelineQueueResponse,
+)
+def review_short_title_disposition(
+    media_id: str,
+    request: ShortTitleDispositionRequest,
+    store: Annotated[PipelineQueueStore, Depends(get_pipeline_queue_store)],
+) -> dict[str, object]:
+    """Apply a reviewed short-title matching choice without deleting media."""
+
+    if request.confirm_disposition is not True:
+        raise HTTPException(
+            status_code=400, detail="Short-title disposition confirmation is required"
+        )
+    try:
+        store.review_short_title_disposition(
+            media_id,
+            expected_artifact_sha256=request.expected_artifact_sha256,
+            action=request.action,
+        )
     except PipelineQueueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return get_pipeline_items(store)
@@ -6719,6 +6807,13 @@ def verify_existing_rip_candidates(  # noqa: C901 - per-file recovery isolation
                     verified_jobs, verified_candidates, strict=True
                 )
             },
+            short_title_review_seconds=(
+                getattr(
+                    get_config_manager().load(),
+                    "short_title_review_seconds",
+                    DEFAULT_SHORT_TITLE_REVIEW_SECONDS,
+                )
+            ),
         )
         return {
             "verified_count": len(queued),

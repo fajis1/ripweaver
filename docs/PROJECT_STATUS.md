@@ -4434,3 +4434,23 @@ for review rather than forcing a TV identity.
   capacity, unavailable-model, generic-error, descriptive, series-resolution,
   cache, redaction, archive-bound, and in-memory download behavior. No live
   Gemini/provider request, credential, media file, or optical disc was used.
+
+### Configurable short-title review (2026-08-29)
+
+- The non-secret `short_title_review_seconds` setting defaults to 150 seconds
+  (2 minutes 30 seconds), accepts 0 through 3600 seconds, and is editable in
+  System Configuration. Zero disables the automatic short-title hold.
+- New rip manifests retain the saved MakeMKV inventory duration for each title.
+  After verification, a title shorter than the configured cutoff is held before
+  identification. The exact duration and cutoff are stored in its private rip
+  contract so a later settings change cannot silently reclassify that item.
+- Review offers three reversible choices: keep the MKV and exclude it from
+  matching, mark it for deletion review, or explicitly include it in normal
+  matching. Exact include/skip decisions are remembered by disc fingerprint and
+  title index for future preparation and disc-aware matching scope.
+- Marking for deletion changes only durable review metadata. Permanent staged
+  MKV deletion remains a separate existing endpoint with a second confirmation,
+  exact contract/path validation, and no media-library mutation.
+- Focused tests use synthetic inventory and tiny dummy files only. Validation
+  does not access an optical disc, invoke MakeMKV/FFprobe/HandBrake, inspect real
+  media, delete user media, organize a library, or eject a drive.
