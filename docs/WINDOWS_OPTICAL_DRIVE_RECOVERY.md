@@ -29,6 +29,39 @@ The private map stores only identity hashes, sanitized model/connection
 descriptors, and trusted, ignored, or retired states. It does not store raw
 Plug-and-Play IDs, serial numbers, or drive letters.
 
+## RipWeaver shows no drives while Windows does
+
+The RipWeaver dashboard displays its cached drive-discovery result; normal
+dashboard polling does not repeatedly access the optical drives. A status of
+`error` with error code `no_drives` means that RipWeaver found and ran
+MakeMKVCLI, but MakeMKV returned no usable optical-drive records. This is
+different from a missing or incorrectly configured MakeMKVCLI executable.
+
+Windows recognizing a drive is necessary but not sufficient for ripping.
+RipWeaver requires MakeMKV to confirm the current command slot before it will
+prepare or rip a disc. Therefore a Windows-visible device may still be absent
+from the dashboard after a failed MakeMKV discovery.
+
+Use this safe recovery sequence:
+
+1. Close the MakeMKV desktop application and allow any current MakeMKV or
+   RipWeaver disc operation to finish.
+2. Confirm the MakeMKVCLI path on RipWeaver's **Settings** page.
+3. Power-cycle an external drive or its USB hub if it appears stuck, then wait
+   for Windows to finish detecting it. Reconnect multiple external drives one
+   at a time when isolating a failing enclosure or device.
+4. In RipWeaver, select **Refresh drives (read-only)**. This is an explicitly
+   confirmed MakeMKV slot enumeration; it does not inventory titles, rip,
+   transcode, move, or delete media.
+5. If discovery times out repeatedly, restart Windows to reset the optical
+   driver stack before retrying.
+
+If MakeMKV still reports no drives, test whether the MakeMKV desktop
+application itself can see the devices after recovery. Do not start a rip for
+this check. A device that Windows sees but MakeMKV does not see is a MakeMKV,
+driver, firmware, USB/SATA bridge, or enclosure discovery issue rather than a
+RipWeaver rendering problem.
+
 ## Loaded, unreadable, and empty are different states
 
 Windows may detect an optical device and even obtain a volume label while File
