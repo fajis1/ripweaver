@@ -4,6 +4,8 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from mkv_episode_matcher.core.credentials import CREDENTIAL_SPECS, CredentialName
+
 TOOL_DOWNLOAD_URLS = {
     "makemkv_path": "https://www.makemkv.com/download/",
     "handbrake_path": "https://handbrake.fr/downloads2.php",
@@ -137,6 +139,41 @@ def _directory_item(
     }
 
 
+def _provider_item(
+    credential_is_configured: Callable[[str], bool] | None,
+    *,
+    credential: CredentialName,
+    item_id: str,
+    field: str,
+    label: str,
+    feature: str,
+    required: bool,
+) -> dict[str, Any]:
+    configured = bool(
+        credential_is_configured and credential_is_configured(credential)
+    )
+    if configured:
+        status = "ready"
+        message = f"The {label} is configured."
+    elif required:
+        status = "missing"
+        message = f"Add a {label} in Settings."
+    else:
+        status = "optional"
+        message = f"The {label} is optional and is not configured."
+    return {
+        "id": item_id,
+        "field": field,
+        "category": "provider",
+        "label": label,
+        "feature": feature,
+        "status": status,
+        "required": required,
+        "message": message,
+        "download_url": CREDENTIAL_SPECS[credential].management_url,
+    }
+
+
 def build_system_health(
     config: Any,
     *,
@@ -209,27 +246,50 @@ def build_system_health(
     })
     storage_status = {item["id"]: item["status"] for item in storage}
 
-    provider_items: list[dict[str, Any]] = []
-    provider_ready = True
-    if getattr(config, "sub_provider", "opensubtitles") == "opensubtitles":
-        provider_ready = bool(
-            credential_is_configured and credential_is_configured("opensubtitles-api")
-        )
-        provider_items.append({
-            "id": "opensubtitles_api",
-            "field": "open_subtitles_api_key",
-            "category": "provider",
-            "label": "OpenSubtitles API key",
-            "feature": "Subtitle-based episode identification",
-            "status": "ready" if provider_ready else "missing",
-            "required": True,
-            "message": (
-                "The OpenSubtitles API key is configured."
-                if provider_ready
-                else "Add an OpenSubtitles API key in Settings, or select the local provider."
-            ),
-            "download_url": "https://www.opensubtitles.com/en/consumers",
-        })
+    opensubtitles_required = (
+        getattr(config, "sub_provider", "opensubtitles") == "opensubtitles"
+    )
+    provider_items = [
+        _provider_item(
+            credential_is_configured,
+            credential="opensubtitles-api",
+            item_id="opensubtitles_api",
+            field="open_subtitles_api_key",
+            label="OpenSubtitles API key",
+            feature="Subtitle-based episode identification",
+            required=opensubtitles_required,
+        ),
+        _provider_item(
+            credential_is_configured,
+            credential="tmdb",
+            item_id="tmdb_api",
+            field="tmdb_api_key",
+            label="TMDb API key",
+            feature="Series, movie, and episode metadata",
+            required=False,
+        ),
+        _provider_item(
+            credential_is_configured,
+            credential="gemini-primary",
+            item_id="gemini_primary_api",
+            field="gemini_primary_api_key",
+            label="Gemini primary API key",
+            feature="Optional AI-assisted identification",
+            required=False,
+        ),
+        _provider_item(
+            credential_is_configured,
+            credential="gemini-paid",
+            item_id="gemini_fallback_api",
+            field="gemini_paid_api_key",
+            label="Gemini backup API key",
+            feature="Optional Gemini quota fallback",
+            required=False,
+        ),
+    ]
+    provider_ready = not opensubtitles_required or (
+        provider_items[0]["status"] == "ready"
+    )
 
     ready_for = {
         "launch": True,
