@@ -7,6 +7,21 @@ All notable changes to MKV Episode Matcher are documented here.
 
 ## Unreleased - 2026-08-11
 
+- Added a local **Support & Bug Reports** page that downloads a bounded,
+  privacy-redacted diagnostic ZIP and opens a prefilled GitHub issue or email
+  draft without uploading anything automatically.
+- Added ordered Gemini model fallbacks in Settings. RipWeaver now tries both
+  configured keys for a model, then advances through up to two backup models
+  after HTTP 429 capacity exhaustion, sustained HTTP 503 overload, or a
+  definite unavailable-model response.
+- Made every credential-status card an action button that jumps to and focuses
+  its local replacement field. OpenSubtitles fields are revealed automatically,
+  while the generated RipWeaver Catalogue credential jumps to its connection
+  controls.
+- Expanded the Gemini model panel with clearly numbered primary, first-fallback,
+  and second-fallback selectors plus the labeled model presets offered by the
+  OpenReader-style setup.
+
 - Added bounded alternate-release subtitle failover for confidently resolved TV
   series and seasons. When usable Whisper evidence fails against every normal
   reference, RipWeaver now searches previously untested Superfan, extended,
