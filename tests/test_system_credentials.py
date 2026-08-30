@@ -58,6 +58,10 @@ def test_web_config_stores_submitted_secrets_without_returning_them(
         "jellyfin_movie_root": "D:/library/movies",
         "automatic_processing_enabled": True,
         "gemini_model": "gemini-custom-preview",
+        "gemini_fallback_models": [
+            "gemini-backup-one",
+            "gemini-backup-two",
+        ],
         "retained_source_ttl_days": 45,
     })
     serialized = json.dumps(result, default=str)
@@ -80,6 +84,10 @@ def test_web_config_stores_submitted_secrets_without_returning_them(
     assert saved.automatic_processing_enabled is True
     assert saved.rip_output_root.as_posix() == "D:/staging/rips"
     assert saved.gemini_model == "gemini-custom-preview"
+    assert saved.gemini_fallback_models == [
+        "gemini-backup-one",
+        "gemini-backup-two",
+    ]
     assert saved.retained_source_ttl_days == 45
 
 

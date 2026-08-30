@@ -12,6 +12,7 @@ import JellyfinCleanupPanel from './components/JellyfinCleanupPanel';
 import ExpiredSourceCleanupModal from './components/ExpiredSourceCleanupModal';
 import LibraryEpisodeRepairView from './components/LibraryEpisodeRepairView';
 import SetupHealthView from './components/SetupHealthView';
+import SupportView from './components/SupportView';
 
 interface ScannedFile {
   path: string;
@@ -348,6 +349,10 @@ function App() {
 
     if (currentView === 'logs') {
       return <LogsView />;
+    }
+
+    if (currentView === 'support') {
+      return <SupportView version={systemStatus.version} onOpenSettings={() => setCurrentView('settings')} />;
     }
 
     if (currentView === 'system-cleanup') {

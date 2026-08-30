@@ -115,6 +115,9 @@ class Config(BaseModel):
     default_handbrake_profile_2160p: str | None = None
     remember_last_handbrake_profile: bool = True
     gemini_model: str = "gemini-3.6-flash"
+    gemini_fallback_models: list[str] = Field(
+        default_factory=lambda: ["gemini-3.5-flash", "gemini-2.5-flash"]
+    )
     automatic_processing_enabled: bool = False
     automatic_eject_after_rip: bool = False
     automatic_gemini_ambiguity_fallback: bool = False
@@ -228,4 +231,16 @@ class Config(BaseModel):
             )
         ):
             raise ValueError("Gemini model ID is invalid")
+        return cleaned
+
+    @field_validator("gemini_fallback_models")
+    @classmethod
+    def validate_gemini_fallback_models(cls, values: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for value in values:
+            model = cls.validate_gemini_model(value)
+            if model not in cleaned:
+                cleaned.append(model)
+        if len(cleaned) > 2:
+            raise ValueError("At most two Gemini fallback models may be configured")
         return cleaned

@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import re
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import requests
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from mkv_episode_matcher.core.credentials import (
@@ -16,6 +18,12 @@ from mkv_episode_matcher.core.credentials import (
     CredentialName,
 )
 from mkv_episode_matcher.core.environment import load_environment_settings
+from mkv_episode_matcher.media.gemini_failover import (
+    GeminiModelUnavailableError,
+    is_gemini_model_unavailable_response,
+    ordered_gemini_models,
+    permits_gemini_model_fallback,
+)
 from mkv_episode_matcher.media.gemini_matcher import (
     GeminiResponseError,
     GeminiTransport,
@@ -146,11 +154,13 @@ class GeminiSeriesResolver:
         self,
         *,
         model: str,
+        fallback_models: Sequence[str] | None = None,
         transport: GeminiTransport | None = None,
         timeout_seconds: float = 45.0,
         max_retries: int = 2,
     ):
         self.model = model
+        self.models = ordered_gemini_models(model, fallback_models)
         self.transport = transport or RequestsGeminiTransport()
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
@@ -162,10 +172,12 @@ class GeminiSeriesResolver:
         *,
         api_key: str,
         credential: CredentialName,
+        model: str | None = None,
     ) -> GeminiSeriesResolution:
         if credential not in ("gemini-primary", "gemini-paid") or not api_key:
             raise ApiCredentialError(credential, "not configured")
-        body = build_series_resolution_request(self.model, series_hint, candidates)
+        active_model = model or self.model
+        body = build_series_resolution_request(active_model, series_hint, candidates)
         allowed = {item.tmdb_id: item for item in candidates}
         for attempt in range(self.max_retries + 1):
             try:
@@ -183,14 +195,26 @@ class GeminiSeriesResolver:
                 continue
             if response.status_code in (401, 403):
                 raise ApiCredentialError(
-                    credential, "rejected by the provider", response.status_code
+                    credential,
+                    "rejected by the provider",
+                    status_code=response.status_code,
                 )
             if response.status_code == 429 or response.status_code >= 500:
                 if attempt < self.max_retries:
                     time.sleep(2**attempt)
                     continue
                 raise ApiServiceError(
-                    "Gemini", response.status_code, "provider is temporarily unavailable"
+                    "Gemini",
+                    response.status_code,
+                    "provider is temporarily unavailable",
+                )
+            if is_gemini_model_unavailable_response(
+                response.status_code, response.payload, response.raw_text
+            ):
+                raise GeminiModelUnavailableError(
+                    "Gemini",
+                    response.status_code,
+                    "configured model is unavailable",
                 )
             if response.status_code >= 400:
                 raise ApiServiceError(
@@ -223,22 +247,50 @@ class GeminiSeriesResolver:
         self, series_hint: str, candidates: tuple[TvShowCandidate, ...]
     ) -> GeminiSeriesResolution:
         errors = []
-        for credential, field in (
-            ("gemini-primary", "gemini_primary_api_key"),
-            ("gemini-paid", "gemini_paid_api_key"),
-        ):
-            api_key = getattr(load_environment_settings(), field)
-            if not api_key:
-                continue
-            try:
-                return self.resolve_with_key(
-                    series_hint,
-                    candidates,
-                    api_key=api_key,
-                    credential=credential,
+        for model_index, active_model in enumerate(self.models):
+            model_error: ApiServiceError | GeminiResponseError | None = None
+            for credential, field in (
+                ("gemini-primary", "gemini_primary_api_key"),
+                ("gemini-paid", "gemini_paid_api_key"),
+            ):
+                api_key = getattr(load_environment_settings(), field)
+                if not api_key:
+                    continue
+                try:
+                    return self.resolve_with_key(
+                        series_hint,
+                        candidates,
+                        api_key=api_key,
+                        credential=credential,
+                        model=active_model,
+                    )
+                except ApiCredentialError as exc:
+                    errors.append(exc)
+                except GeminiModelUnavailableError as exc:
+                    errors.append(exc)
+                    model_error = exc
+                    break
+                except (ApiServiceError, GeminiResponseError) as exc:
+                    errors.append(exc)
+                    model_error = exc
+            next_model = (
+                self.models[model_index + 1]
+                if model_index + 1 < len(self.models)
+                else None
+            )
+            if (
+                model_error is not None
+                and next_model is not None
+                and permits_gemini_model_fallback(model_error)
+            ):
+                logger.warning(
+                    "Gemini model {} exhausted or unavailable; trying configured fallback {}",
+                    active_model,
+                    next_model,
                 )
-            except (ApiCredentialError, ApiServiceError, GeminiResponseError) as exc:
-                errors.append(exc)
+                continue
+            if model_error is not None:
+                raise model_error
         if errors:
             raise errors[-1]
         raise ApiCredentialError("gemini-primary", "not configured or accepted")

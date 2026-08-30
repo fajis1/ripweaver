@@ -6,10 +6,11 @@ import threading
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from loguru import logger
 
 from mkv_episode_matcher import __version__
+from mkv_episode_matcher.backend.control_access import require_local_control
 
 router = APIRouter(prefix="/system", tags=["System"])
 
@@ -120,9 +121,10 @@ def discover_tools():
                     program_files / "MakeMKV" / "makemkvcon64.exe",
                 ),
             ),
-            "disc_image_creator_path": _find_executable(
-                ("DiscImageCreator.exe", "DiscImageCreator")
-            )
+            "disc_image_creator_path": _find_executable((
+                "DiscImageCreator.exe",
+                "DiscImageCreator",
+            ))
             or _find_portable_executable(
                 "DiscImageCreator.exe", _portable_download_roots()
             ),
@@ -350,6 +352,84 @@ def get_system_health():
         config,
         discovered=discovered,
         credential_is_configured=credential_is_configured,
+    )
+
+
+@router.post(
+    "/support-bundle",
+    dependencies=[Depends(require_local_control)],
+)
+def export_support_bundle() -> Response:
+    """Download a bounded, path- and credential-redacted diagnostic ZIP."""
+
+    from mkv_episode_matcher.backend.dependencies import get_pipeline_queue_store
+    from mkv_episode_matcher.backend.support_bundle import build_support_bundle
+    from mkv_episode_matcher.backend.system_health import build_system_health
+    from mkv_episode_matcher.core.config_manager import get_config_manager
+    from mkv_episode_matcher.core.credentials import credential_is_configured
+
+    config = get_config_manager().load()
+    collection_errors = []
+    try:
+        system_health = build_system_health(
+            config,
+            discovered=discover_tools()["tools"],
+            credential_is_configured=credential_is_configured,
+        )
+    except Exception as error:
+        logger.warning(
+            "Support bundle health collection stopped safely: {}",
+            type(error).__name__,
+        )
+        system_health = {
+            "status": "unavailable",
+            "error_type": type(error).__name__,
+            "path_redacted": True,
+        }
+        collection_errors.append({
+            "source": "system_health",
+            "error_type": type(error).__name__,
+        })
+
+    try:
+        pipeline_events = get_pipeline_queue_store().list_events()
+    except Exception as error:
+        logger.warning(
+            "Support bundle pipeline-event collection stopped safely: {}",
+            type(error).__name__,
+        )
+        pipeline_events = ()
+        collection_errors.append({
+            "source": "pipeline_events",
+            "error_type": type(error).__name__,
+        })
+
+    try:
+        bundle = build_support_bundle(
+            app_version=__version__,
+            config=config,
+            system_health=system_health,
+            pipeline_events=pipeline_events,
+            log_dir=config.cache_dir.parent / "logs",
+            collection_errors=collection_errors,
+        )
+    except Exception as error:
+        logger.error("Support bundle creation failed safely: {}", type(error).__name__)
+        raise HTTPException(
+            status_code=500,
+            detail="The support bundle could not be created safely",
+        ) from None
+
+    return Response(
+        content=bundle.content,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{bundle.filename}"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "X-RipWeaver-Support-ID": bundle.support_id,
+            "X-RipWeaver-Support-SHA256": bundle.sha256,
+        },
     )
 
 

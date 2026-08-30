@@ -4402,3 +4402,31 @@ for review rather than forcing a TV identity.
   with the corrected code, the startup read-only drive refresh settled, and all
   three validated disc outcomes remained durable while the downstream queue
   stayed paused.
+
+### Privacy-redacted support export and Gemini capacity fallback (2026-08-29)
+
+- The sidebar now exposes **Support & Bug Reports**. Its loopback/same-origin
+  `POST /system/support-bundle` boundary creates a bounded ZIP in memory and
+  returns it as a download; no archive is retained or uploaded automatically.
+  The bundle contains non-secret runtime/setup status, recent path-redacted
+  pipeline events, and bounded tails of direct RipWeaver application logs.
+  Credentials, `.env` values, paths, media names/files, transcript dialogue,
+  private provider transactions, and unrelated files are excluded or redacted.
+- The report page can prepare a GitHub issue or blank-recipient email draft and
+  use the operating-system share sheet where supported. Browsers still require
+  the user to approve and attach the downloaded ZIP.
+- System Configuration already accepts write-only TMDb, OpenSubtitles, and
+  Gemini credentials. It now also persists a non-secret primary Gemini model
+  plus at most two ordered fallback model IDs. Full credential values remain
+  unavailable to browser responses and support exports.
+- Episode ranking, descriptive bonus analysis, and canonical-series resolution
+  now use one bounded key/model order: both configured keys are tried for the
+  current model, then a fallback model is allowed after HTTP 429 capacity
+  exhaustion, sustained HTTP 503 overload, or an explicit unavailable-model
+  response. Ordinary bad requests, invalid structured output, credential
+  rejection, and network errors do not silently change models.
+- Fallback results retain the model actually used, and private exact-request
+  caching keys the response to that actual model. Synthetic tests exercise
+  capacity, unavailable-model, generic-error, descriptive, series-resolution,
+  cache, redaction, archive-bound, and in-memory download behavior. No live
+  Gemini/provider request, credential, media file, or optical disc was used.

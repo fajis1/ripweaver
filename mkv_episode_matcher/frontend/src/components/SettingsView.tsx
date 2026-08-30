@@ -4,6 +4,7 @@ interface Config {
     cache_dir: string;
     min_confidence: number;
     gemini_model: string;
+    gemini_fallback_models: string[];
     asr_provider: string;
     sub_provider: 'local' | 'opensubtitles';
     open_subtitles_username?: string;
@@ -80,7 +81,7 @@ const CREDENTIAL_LABELS: Record<string, string> = {
     'opensubtitles-username': 'OpenSubtitles username',
     'opensubtitles-password': 'OpenSubtitles password',
     'gemini-primary': 'Gemini primary API key',
-    'gemini-paid': 'Gemini paid/fallback API key',
+    'gemini-paid': 'Gemini backup API key',
     'ripweaver-catalogue': 'RipWeaver Catalogue installation',
 };
 
@@ -139,6 +140,16 @@ const AUDIO_LANGUAGE_OPTIONS = [
     ['heb', 'Hebrew'], ['ces', 'Czech'], ['hun', 'Hungarian'], ['ron', 'Romanian'], ['ukr', 'Ukrainian'],
     ['gre', 'Greek'], ['tha', 'Thai'], ['vie', 'Vietnamese'], ['ind', 'Indonesian'], ['may', 'Malay'],
     ['ell', 'Modern Greek'], ['lat', 'Latin'], ['und', 'Unknown / undefined'],
+];
+
+const GEMINI_MODEL_OPTIONS = [
+    { value: 'gemini-3.7-flash', label: 'Gemini 3.7 Flash' },
+    { value: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash' },
+    { value: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash' },
+    { value: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash-Lite' },
+    { value: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash-Lite' },
+    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+    { value: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite' },
 ];
 
 const SettingsView: React.FC = () => {
@@ -389,6 +400,16 @@ const SettingsView: React.FC = () => {
         setConfig({ ...config, [field]: value });
     };
 
+    const handleGeminiFallbackChange = (index: number, value: string) => {
+        if (!config) return;
+        const models = [...(config.gemini_fallback_models || [])];
+        models[index] = value;
+        setConfig({
+            ...config,
+            gemini_fallback_models: models.filter((model) => model.trim()),
+        });
+    };
+
     if (loading) return <div className="p-8 text-center text-muted">Loading settings...</div>;
     if (!config) return <div className="p-8 text-center text-red-400">Error loading settings</div>;
 
@@ -478,7 +499,7 @@ const SettingsView: React.FC = () => {
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4 bg-[var(--bg-tertiary)]/50 rounded-xl border border-[var(--border-color)]">
                             {[
                                 ['gemini_primary_api_key', 'gemini-primary', 'Gemini primary API key'],
-                                ['gemini_paid_api_key', 'gemini-paid', 'Gemini paid/fallback API key'],
+                                ['gemini_paid_api_key', 'gemini-paid', 'Gemini backup API key'],
                             ].map(([field, credential, label]) => (
                                 <label key={field} className="space-y-2">
                                     <span className="text-sm font-medium text-muted">{label}</span>
@@ -501,12 +522,34 @@ const SettingsView: React.FC = () => {
                             />
                         </div>
                     </div>
-                    <label className="block space-y-2">
-                        <span className="text-sm font-medium text-muted">Gemini model</span>
-                        <input type="text" list="gemini-model-options" value={config.gemini_model} onChange={(event) => handleChange('gemini_model', event.target.value)} className="w-full bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-lg px-4 py-2 text-white" placeholder="Gemini model ID" />
-                        <datalist id="gemini-model-options"><option value="gemini-3.6-flash" /></datalist>
-                        <span className="block text-xs text-[var(--text-muted)]">Choose a suggested model or type another valid Gemini model ID. This is non-secret; API keys remain protected in the local environment file.</span>
-                    </label>
+                    <div className="space-y-3">
+                        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                            <label className="space-y-2">
+                                <span className="text-sm font-medium text-muted">Primary Gemini model</span>
+                                <select value={config.gemini_model} onChange={(event) => handleChange('gemini_model', event.target.value)} className="w-full bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-lg px-4 py-2 text-white">
+                                    {!GEMINI_MODEL_OPTIONS.some((option) => option.value === config.gemini_model) && (
+                                        <option value={config.gemini_model}>{config.gemini_model} (saved custom model)</option>
+                                    )}
+                                    {GEMINI_MODEL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                                </select>
+                            </label>
+                            {[0, 1].map((index) => (
+                                <label key={index} className="space-y-2">
+                                    <span className="text-sm font-medium text-muted">Backup model {index + 1}</span>
+                                    <select value={config.gemini_fallback_models?.[index] || ''} onChange={(event) => handleGeminiFallbackChange(index, event.target.value)} className="w-full bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-lg px-4 py-2 text-white">
+                                        <option value="">None</option>
+                                        {config.gemini_fallback_models?.[index] && !GEMINI_MODEL_OPTIONS.some((option) => option.value === config.gemini_fallback_models[index]) && (
+                                            <option value={config.gemini_fallback_models[index]}>{config.gemini_fallback_models[index]} (saved custom model)</option>
+                                        )}
+                                        {GEMINI_MODEL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                                    </select>
+                                </label>
+                            ))}
+                        </div>
+                        <p className="text-xs text-[var(--text-muted)]">
+                            RipWeaver tries both configured API keys for a model, then moves through these backup models after HTTP 429 capacity exhaustion, sustained HTTP 503 overload, or a definite unavailable-model response. Model IDs are non-secret; API keys remain protected in the local credential file.
+                        </p>
+                    </div>
                 </div>
 
                 <div className="space-y-4">

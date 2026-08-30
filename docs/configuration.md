@@ -78,6 +78,12 @@ Example configuration file (`config.json`):
 
 ## API Keys Setup
 
+The current Web UI provides write-only credential fields under **Settings →
+Core Settings** for TMDb, OpenSubtitles username/password/API key, and Gemini
+primary/backup API keys. Saving writes credentials to the local ignored
+`.env`; the server returns only configured status and the final four
+characters, never the complete value.
+
 ### 🎬 TMDb API Key (Optional)
 
 TMDb integration provides enhanced episode metadata:
@@ -104,6 +110,30 @@ OpenSubtitles integration provides subtitle downloads:
 - Higher API rate limits
 - Better download quotas
 - Priority support
+
+### Google Gemini keys and models (optional)
+
+Use the Gemini primary API-key field and, if available, a distinct backup key.
+Use the dropdowns to select one primary model and up to two ordered backup
+models. RipWeaver stays on
+the current model while it tries both keys, then changes models only after HTTP
+429 capacity exhaustion, sustained HTTP 503 overload, or a definite
+unavailable-model response. The model list is non-secret and is stored in the
+normal JSON configuration; API keys remain in `.env`.
+
+Two useful chains are:
+
+- Flash: `gemini-3.6-flash` → `gemini-3.5-flash` → `gemini-2.5-flash`
+- Flash-Lite: `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite` →
+  `gemini-2.5-flash-lite`
+
+### Exporting a support bundle
+
+Open **Support & Bug Reports** and select **Create & download support ZIP**.
+The local-only endpoint includes bounded, redacted application logs and public
+pipeline/setup state. It never includes `.env`, complete credentials, media,
+paths, transcript dialogue, or private provider transactions. Review the ZIP
+before attaching it to a GitHub issue or email draft.
 
 ## Advanced Settings
 
