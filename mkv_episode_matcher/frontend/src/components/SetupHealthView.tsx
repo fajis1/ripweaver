@@ -124,12 +124,14 @@ const SetupHealthView = ({ onOpenSettings }: SetupHealthViewProps) => {
                       </div>
                       <p className="mt-3 text-sm leading-relaxed">{item.message}</p>
                       <div className="mt-4 flex flex-wrap gap-2">
-                        {(item.status === 'missing' || item.status === 'invalid' || item.status === 'available') && (
-                          <button type="button" className="btn btn-secondary text-xs" onClick={onOpenSettings}>Fix in Settings</button>
+                        {(item.category === 'provider' || item.status === 'missing' || item.status === 'invalid' || item.status === 'available') && (
+                          <button type="button" className="btn btn-secondary text-xs" onClick={onOpenSettings}>
+                            {item.category === 'provider' ? 'Open credential settings' : 'Fix in Settings'}
+                          </button>
                         )}
-                        {item.download_url && item.status !== 'ready' && (
-                          <a className="btn btn-secondary text-xs" href={item.download_url} target="_blank" rel="noopener noreferrer">
-                            Official installation page
+                        {item.download_url && (
+                          <a className="btn btn-primary text-xs" href={item.download_url} target="_blank" rel="noopener noreferrer">
+                            {item.category === 'provider' ? 'Get or manage API key' : 'Official download page'}
                           </a>
                         )}
                       </div>
