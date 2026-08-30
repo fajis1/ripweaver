@@ -69,3 +69,5 @@ def test_release_workflow_preserves_reviewed_recovery_frontend():
     assert "npm run build" not in workflow
     assert 'grep -R -F -q "Current recovery status"' in workflow
     assert "--portable-smoke-test" in workflow
+    assert "branches:\n      - '**'" in workflow
+    assert "if: startsWith(github.ref, 'refs/tags/')" in workflow
