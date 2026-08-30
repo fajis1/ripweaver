@@ -18,6 +18,9 @@ All notable changes to MKV Episode Matcher are documented here.
   its local replacement field. OpenSubtitles fields are revealed automatically,
   while the generated RipWeaver Catalogue credential jumps to its connection
   controls.
+- Fixed source test worktrees so credential reads and replacements both honor
+  `MKV_MATCH_ENV_FILE`; test code can reuse an existing ignored credential file
+  without copying or exposing it.
 - Expanded the Gemini model panel with clearly numbered primary, first-fallback,
   and second-fallback selectors plus the labeled model presets offered by the
   OpenReader-style setup.

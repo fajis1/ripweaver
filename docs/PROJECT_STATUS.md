@@ -4419,6 +4419,10 @@ for review rather than forcing a TV identity.
   Gemini credentials. It now also persists a non-secret primary Gemini model
   plus at most two ordered fallback model IDs. Full credential values remain
   unavailable to browser responses and support exports.
+- Credential reads and write-only replacements now honor the same explicit
+  `MKV_MATCH_ENV_FILE` location. A source test worktree can therefore use an
+  existing ignored credential file without copying, displaying, or committing
+  its contents; an explicitly disabled credential file remains non-writable.
 - Episode ranking, descriptive bonus analysis, and canonical-series resolution
   now use one bounded key/model order: both configured keys are tried for the
   current model, then a fallback model is allowed after HTTP 429 capacity
