@@ -3544,6 +3544,22 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
                 payload_title_index, bool
             ):
                 title_index = payload_title_index
+        if duration_seconds is None:
+            payload_duration = payload.get("duration_seconds")
+            if (
+                isinstance(payload_duration, int)
+                and not isinstance(payload_duration, bool)
+                and payload_duration >= 0
+            ):
+                duration_seconds = payload_duration
+        if short_title_review_threshold_seconds is None:
+            payload_threshold = payload.get("short_title_review_threshold_seconds")
+            if (
+                isinstance(payload_threshold, int)
+                and not isinstance(payload_threshold, bool)
+                and 0 <= payload_threshold <= 3600
+            ):
+                short_title_review_threshold_seconds = payload_threshold
         source_value = payload.get("source_path")
         source_size = payload.get("source_size_bytes")
         if isinstance(source_value, str) and isinstance(source_size, int):
