@@ -139,6 +139,11 @@ def test_drive_preparation_guard_refuses_duplicate_scan_and_releases():
             "MakeMKV returned no optical-drive records",
             "did not report any optical drives",
         ),
+        (
+            "MakeMKV returned no optical-drive records; "
+            "Windows-only drives remain provisional",
+            "visible and safely locked",
+        ),
     ],
 )
 def test_drive_refresh_errors_are_actionable_and_path_free(message, expected):
@@ -371,12 +376,13 @@ def test_safe_pipeline_titles_include_verified_encoded_staging(tmp_path):
     )
 
     assert store.get(media_id).stage == "organize"
-    assert rip._safely_present_pipeline_title_indexes(store, fingerprint) == frozenset(
-        {1}
+    assert rip._safely_present_pipeline_title_indexes(store, fingerprint) == frozenset({
+        1
+    })
+    assert (
+        rip._pipeline_item_response(store.get(media_id))["pipeline_media_available"]
+        is True
     )
-    assert rip._pipeline_item_response(store.get(media_id))[
-        "pipeline_media_available"
-    ] is True
 
 
 def test_gemini_retry_starts_only_the_exact_requested_item(tmp_path, monkeypatch):

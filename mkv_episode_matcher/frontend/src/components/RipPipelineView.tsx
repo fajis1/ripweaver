@@ -313,7 +313,7 @@ interface DriveDashboard {
   status: 'not_scanned' | 'ready' | 'error';
   refreshed_at: string | null;
   error_type: string | null;
-  error_code?: 'timeout' | 'executable_missing' | 'no_drives' | 'discovery_failed' | null;
+  error_code?: 'timeout' | 'executable_missing' | 'makemkv_unconfirmed' | 'no_drives' | 'discovery_failed' | null;
   refresh_in_progress?: boolean;
   refresh_deferred?: boolean;
   automatic_discovery_paused?: boolean;
@@ -3660,6 +3660,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
   };
   const mappingNeedsReview = mappingDevices.some((drive) => drive.mapping_status === 'unmapped');
   const identityUnavailableDrives = mappingDevices.filter((drive) => drive.mapping_warning === 'identity_unavailable');
+  const windowsDetectedDriveCount = driveDashboard?.drives.length ?? 0;
   const mappedLoadedDiscWillContinue = Boolean(
     continueAfterMapping
     && jobDashboard?.automatic_processing_enabled
@@ -3805,7 +3806,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
             <div>
               <div className="font-bold text-white">Optical drives</div>
               <div className="text-sm text-[var(--text-muted)]">
-                {jobDashboard.automatic_processing_enabled ? 'Automatic processing requested' : 'Automatic processing disabled'} · {driveDashboard?.automatic_discovery_paused ? 'automatic drive discovery paused' : driveDashboard?.status === 'ready' ? 'drive status refreshed' : 'waiting for read-only refresh'}
+                {jobDashboard.automatic_processing_enabled ? 'Automatic processing requested' : 'Automatic processing disabled'} · {driveDashboard?.automatic_discovery_paused ? 'automatic drive discovery paused' : driveDashboard?.error_code === 'makemkv_unconfirmed' ? 'Windows drives detected · awaiting MakeMKV confirmation' : driveDashboard?.status === 'ready' ? 'drive status refreshed' : 'waiting for read-only refresh'}
               </div>
             </div>
             <button
@@ -3845,7 +3846,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                   : driveDashboard?.automatic_discovery_paused
                     ? `MakeMKV timed out ${driveDashboard.automatic_discovery_timeout_count ?? 2} consecutive times. Automatic retries are suspended so RipWeaver does not repeatedly probe the optical drives.`
                   : driveDashboard?.status === 'error'
-                  ? driveDashboard.error_code === 'timeout'
+                  ? driveDashboard.error_code === 'makemkv_unconfirmed'
+                    ? `Windows detected ${windowsDetectedDriveCount} optical ${windowsDetectedDriveCount === 1 ? 'drive' : 'drives'}, but MakeMKV did not confirm any current slots. The drives remain visible and safely locked until a read-only refresh succeeds.`
+                    : driveDashboard.error_code === 'timeout'
                     ? 'MakeMKV starts, but it could not enumerate the optical drives. This usually means one drive, USB/SATA enclosure, or Windows optical-device query is not responding.'
                     : 'Drive discovery did not complete. Wait for active MakeMKV work to finish, close any separate MakeMKV window, and verify the MakeMKVCLI path in Settings.'
                   : 'Select “Refresh drives” to perform one read-only MakeMKV slot discovery. It enumerates loaded and empty trays but does not inventory titles or start ripping.'}
@@ -3861,9 +3864,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
               {!driveDashboard?.refresh_in_progress && driveDashboard?.status === 'error' && (
                 <div className="mt-3 flex flex-wrap gap-2">
                   <button type="button" className="btn btn-secondary text-xs" onClick={() => void refreshDrives(120)} disabled={refreshingDrives || driveDashboard?.refresh_in_progress || driveDashboard?.refresh_deferred || Boolean(driveDashboard?.busy_drive_indexes?.length)}>
-                    {driveDashboard.error_code === 'timeout' ? 'Retry after checking drives' : 'Retry drive refresh'}
+                    {driveDashboard.error_code === 'timeout' ? 'Retry after checking drives' : driveDashboard.error_code === 'makemkv_unconfirmed' ? 'Retry read-only confirmation' : 'Retry drive refresh'}
                   </button>
-                  {driveDashboard.error_code !== 'timeout' && (
+                  {!['timeout', 'makemkv_unconfirmed'].includes(driveDashboard.error_code ?? '') && (
                     <button type="button" className="btn btn-secondary text-xs" onClick={onOpenSettings}>
                       Repair MakeMKVCLI path
                     </button>
@@ -3907,6 +3910,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
             ) : driveDashboard.drives.map((drive) => {
               const driveKey = driveSetupKey(drive);
               const setup = getDiscSetup(driveKey);
+              const makemkvUnconfirmed = drive.makemkv_confirmed === false;
               const driveTrusted = !drive.mapping_status || drive.mapping_status === 'trusted';
               if (!driveTrusted) {
                 const identityUnavailable = drive.mapping_warning === 'identity_unavailable';
@@ -3930,7 +3934,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                     <div className={`rounded-lg border p-3 text-sm ${ignored ? 'border-slate-400/25 bg-slate-500/10 text-slate-200' : 'border-amber-400/30 bg-amber-500/10 text-amber-100'}`}>
                       {ignored
                         ? 'This optical device is ignored. Manage drive mapping to approve it before RipWeaver can use it.'
-                        : identityUnavailable
+                        : makemkvUnconfirmed
+                          ? 'Windows detected this optical drive, but MakeMKV did not confirm its current slot. The drive remains visible and safely locked; retry read-only confirmation before RipWeaver can read, rip, or control it.'
+                          : identityUnavailable
                           ? 'MakeMKV detected this slot, but Windows did not return its hardware identity in time. The drive remains visible and safely locked; a read-only refresh retries the identity lookup.'
                           : 'This device was detected but has not been approved. Open drive setup and choose Use before RipWeaver can read or rip it.'}
                     </div>
@@ -3939,6 +3945,27 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                         {ignored ? 'Manage drive mapping' : 'Set up this drive'}
                       </button>
                     )}
+                  </div>
+                );
+              }
+              if (makemkvUnconfirmed) {
+                return (
+                  <div key={driveKey} className="rounded-xl border border-amber-400/50 bg-amber-500/10 p-4 space-y-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className={`text-4xl ${drive.has_disc ? 'text-amber-300' : 'text-slate-600'}`} aria-label={drive.has_disc ? 'Disc inserted' : 'Empty tray'}>{drive.has_disc ? '●' : '▱'}</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-semibold text-white">Optical drive {opticalDriveNumber(drive)}{drive.display_name ? ` · ${drive.display_name}` : ''}{drive.disc_label ? ` — ${drive.disc_label}` : ''}</div>
+                        <div className="text-xs font-bold uppercase text-amber-200">
+                          {drive.has_disc ? 'disc visible in Windows' : 'drive visible in Windows'} · MakeMKV confirmation required
+                        </div>
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-amber-400/30 bg-amber-500/10 p-3 text-sm text-amber-100">
+                      Windows detected this drive, but MakeMKV did not confirm its current slot. RipWeaver will not read, rip, eject, or otherwise control it until confirmation succeeds.
+                    </div>
+                    <button type="button" className="btn btn-secondary w-full" onClick={() => void refreshDrives(120)} disabled={refreshingDrives || driveDashboard?.refresh_in_progress || driveDashboard?.refresh_deferred || Boolean(driveDashboard?.busy_drive_indexes?.length)}>
+                      Retry read-only confirmation
+                    </button>
                   </div>
                 );
               }

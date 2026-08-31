@@ -1042,6 +1042,13 @@ def _safe_drive_refresh_error(exc: PreflightError) -> str:
             "A read-only MakeMKV drive discovery is already running. Wait for the "
             "current refresh to finish; another refresh was not queued."
         )
+    if "windows-only drives remain provisional" in message:
+        return (
+            "Windows detected one or more optical drives, but MakeMKV did not "
+            "confirm their current slots. The drives remain visible and safely "
+            "locked. Close any separate MakeMKV work, then retry the read-only "
+            "refresh."
+        )
     if "no optical-drive records" in message:
         return (
             "MakeMKV did not report any optical drives. Confirm the drives appear "
@@ -1464,6 +1471,14 @@ def eject_drive(  # noqa: C901
         raise HTTPException(
             status_code=409,
             detail="Map this Windows optical device as trusted before controlling its tray",
+        )
+    if selected_drive is not None and not selected_drive.makemkv_confirmed:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "MakeMKV has not confirmed this optical drive's current slot; "
+                "retry the read-only drive refresh before controlling its tray"
+            ),
         )
     drive_jobs = [
         job
