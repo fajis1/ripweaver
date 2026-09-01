@@ -65,6 +65,9 @@ interface CatalogueStatus {
         provisional_help: boolean;
         independent_quorum: number;
         support_checkout: boolean;
+        human_moderation_required: boolean;
+        submissions_quarantined: boolean;
+        quarantine_publication_enabled: boolean;
     } | null;
     usage: {
         monthly_limit: number;
@@ -695,7 +698,7 @@ const SettingsView: React.FC = () => {
                         </label>
                         <label className="block rounded-lg border border-violet-300/20 bg-black/10 p-3">
                             <input type="checkbox" className="mr-3" checked={config.ripweaver_catalogue_contributions_enabled} onChange={(event) => handleChange('ripweaver_catalogue_contributions_enabled', event.target.checked)} />
-                            Automatically contribute cumulative, durably matched title layouts from eligible discs. This is one-time consent for future eligible discs; unresolved titles are omitted until matched. Uploads contain only the disc identifier, playlist/segment structure, runtimes, sizes, match provenance, and canonical media names. No media, local paths, drive identity, media-library location, transcript, or credential is uploaded.
+                            Automatically submit cumulative, durably matched title layouts from eligible discs to the server's strict pending quarantine. This is one-time consent for future eligible discs; unresolved titles are omitted until matched. Uploads contain only the disc identifier, playlist/segment structure, runtimes, sizes, match provenance, and canonical media names. No media, local paths, drive identity, media-library location, transcript, or credential is uploaded. Quarantined submissions cannot update the public catalogue, create consensus, or earn contribution credit.
                         </label>
                         <label className="block space-y-1">
                             <span className="text-xs font-semibold">Catalogue server</span>
@@ -716,7 +719,7 @@ const SettingsView: React.FC = () => {
                                                 : catalogueStatus.compatible === false
                                                   ? 'The server is reachable, but its protocol is not compatible with this desktop version.'
                                                   : catalogueStatus.registered
-                                                    ? `Connected and registered${catalogueStatus.capabilities ? ` · schema ${catalogueStatus.capabilities.schema_version}` : ''}`
+                                                    ? `Connected and registered${catalogueStatus.capabilities ? ` · schema ${catalogueStatus.capabilities.schema_version}${catalogueStatus.capabilities.submissions_quarantined ? ' · strict quarantine' : ''}` : ''}`
                                                     : 'Server is reachable and compatible; this installation is not registered yet.'}
                                     </div>
                                 </div>
@@ -737,10 +740,15 @@ const SettingsView: React.FC = () => {
                                     </div>
                                     {catalogueStatus.contribution_outbox && (
                                         <div className="rounded border border-violet-300/15 p-2">
-                                            Contributions: <span className="font-semibold text-white">{catalogueStatus.contribution_outbox.sent} sent</span>
+                                            Submissions: <span className="font-semibold text-white">{catalogueStatus.contribution_outbox.sent} sent to quarantine</span>
                                             <span className="block text-violet-100/60">{catalogueStatus.contribution_outbox.pending} waiting · {catalogueStatus.contribution_outbox.snapshots} disc snapshots</span>
                                         </div>
                                     )}
+                                </div>
+                            )}
+                            {catalogueStatus?.capabilities?.submissions_quarantined && !catalogueStatus.capabilities.quarantine_publication_enabled && (
+                                <div className="rounded border border-emerald-300/20 bg-emerald-500/10 p-2 text-xs text-emerald-100">
+                                    New submissions pass strict validation and enter a pending-only quarantine with no route into public catalogue results. Historical reviewed and independently confirmed catalogue records remain read-only.
                                 </div>
                             )}
                             {catalogueStatus?.capabilities?.automatic_piecewise_consensus && (

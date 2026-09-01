@@ -19,19 +19,21 @@ CONTENT_HASH = "8B6FCE0775F77E41B1EB2E293BA9BA80"
 
 def capabilities_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
-        "schema_version": 3,
+        "schema_version": 4,
         "service_version": "0.1.0",
         "public_lookup": False,
         "installation_registration": True,
         "metered_lookup": True,
         "manual_lookup_after_prompt": True,
-        "contribution_credits": True,
+        "contribution_credits": False,
         "support_checkout": False,
         "authenticated_submissions": True,
-        "automatic_piecewise_consensus": True,
+        "automatic_piecewise_consensus": False,
         "provisional_help": True,
         "independent_quorum": 2,
-        "human_moderation_required": False,
+        "human_moderation_required": True,
+        "submissions_quarantined": True,
+        "quarantine_publication_enabled": False,
         "attachments_accepted": False,
         "media_accepted": False,
     }
@@ -108,7 +110,7 @@ class Response:
         return self._payload
 
 
-def test_schema_v3_capabilities_are_validated_before_registration() -> None:
+def test_schema_v4_quarantine_capabilities_are_validated_before_registration() -> None:
     calls: list[tuple[str, str]] = []
 
     def request(method, url, **_kwargs):
@@ -132,12 +134,38 @@ def test_schema_v3_capabilities_are_validated_before_registration() -> None:
     ]
 
 
-def test_registration_stops_on_an_incompatible_or_unsafe_server_schema() -> None:
+@pytest.mark.parametrize(
+    "unsafe_overrides",
+    [
+        {"media_accepted": True},
+        {"submissions_quarantined": False},
+        {"quarantine_publication_enabled": True},
+        {"automatic_piecewise_consensus": True},
+        {"contribution_credits": True},
+        {"human_moderation_required": False},
+    ],
+)
+def test_registration_stops_on_an_incompatible_or_unsafe_server_schema(
+    unsafe_overrides: dict[str, object],
+) -> None:
     calls: list[str] = []
 
     def request(_method, url, **_kwargs):
         calls.append(url)
-        return Response(200, capabilities_payload(media_accepted=True))
+        return Response(200, capabilities_payload(**unsafe_overrides))
+
+    with pytest.raises(RipWeaverCatalogueError, match="not compatible"):
+        RipWeaverCatalogueClient(request=request).register()
+
+    assert calls == ["https://api.ripweaver.com/v1/schema"]
+
+
+def test_registration_stops_on_legacy_consensus_submission_schema() -> None:
+    calls: list[str] = []
+
+    def request(_method, url, **_kwargs):
+        calls.append(url)
+        return Response(200, capabilities_payload(schema_version=3))
 
     with pytest.raises(RipWeaverCatalogueError, match="not compatible"):
         RipWeaverCatalogueClient(request=request).register()
@@ -257,7 +285,7 @@ def test_catalogue_url_requires_https_except_loopback() -> None:
     assert validate_catalogue_url("http://127.0.0.1:8080") == ("http://127.0.0.1:8080")
 
 
-def test_piecewise_consensus_metadata_and_contribution_protocol() -> None:
+def test_historical_consensus_lookup_and_quarantined_submission_protocol() -> None:
     calls: list[tuple[str, str, dict[str, object]]] = []
     payload = lookup_payload()
     payload["disc"]["schema_version"] = 2
@@ -296,11 +324,9 @@ def test_piecewise_consensus_metadata_and_contribution_protocol() -> None:
                     "submission_id": "synthetic-submission",
                     "content_hash": CONTENT_HASH,
                     "payload_sha256": "b" * 64,
-                    "status": "accepted",
-                    "consensus": {
-                        "confirmed_items": 1,
-                        "unresolved_items": 1,
-                    },
+                    "status": "pending",
+                    "validation_version": 1,
+                    "publication_eligible": False,
                 },
             )
         return Response(200, payload)
@@ -327,10 +353,47 @@ def test_piecewise_consensus_metadata_and_contribution_protocol() -> None:
         idempotency_key="contribution-key-0001",
         client_version="test",
     )
-    assert receipt.status == "accepted"
+    assert receipt.status == "pending"
+    assert receipt.validation_version == 1
+    assert receipt.publication_eligible is False
     assert calls[-1][1].endswith("/v1/submissions")
     assert calls[-1][2]["json"] is contribution
     assert calls[-1][2]["headers"]["X-RipWeaver-Version"] == "test"
+
+
+@pytest.mark.parametrize(
+    ("unsafe_overrides", "expected"),
+    [
+        ({"publication_eligible": True}, "publication-eligible"),
+        ({"consensus": {"confirmed_items": 1}}, "forbidden consensus"),
+        ({"status": "accepted"}, "not quarantined"),
+    ],
+)
+def test_submission_rejects_an_unsafe_server_receipt(
+    unsafe_overrides: dict[str, object], expected: str
+) -> None:
+    def request(_method, _url, **_kwargs):
+        receipt = {
+            "submission_id": "synthetic-submission",
+            "content_hash": CONTENT_HASH,
+            "payload_sha256": "b" * 64,
+            "status": "pending",
+            "validation_version": 1,
+            "publication_eligible": False,
+        }
+        receipt.update(unsafe_overrides)
+        return Response(
+            202,
+            receipt,
+        )
+
+    with pytest.raises(RipWeaverCatalogueError, match=expected):
+        RipWeaverCatalogueClient(request=request).contribute(
+            {"schema_version": 2, "content_hash": CONTENT_HASH, "titles": []},
+            token="private-token",
+            idempotency_key="contribution-key-0001",
+            client_version="test",
+        )
 
 
 def test_single_candidate_help_is_returned_only_as_a_non_consensus_hint() -> None:

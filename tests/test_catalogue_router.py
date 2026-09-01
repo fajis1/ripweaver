@@ -50,19 +50,21 @@ def _usage() -> CatalogueUsage:
 
 def _capabilities(**overrides) -> CatalogueCapabilities:
     values = {
-        "schema_version": 3,
+        "schema_version": 4,
         "service_version": "0.1.0",
         "public_lookup": False,
         "installation_registration": True,
         "metered_lookup": True,
         "manual_lookup_after_prompt": True,
-        "contribution_credits": True,
+        "contribution_credits": False,
         "support_checkout": False,
         "authenticated_submissions": True,
-        "automatic_piecewise_consensus": True,
+        "automatic_piecewise_consensus": False,
         "provisional_help": True,
         "independent_quorum": 2,
-        "human_moderation_required": False,
+        "human_moderation_required": True,
+        "submissions_quarantined": True,
+        "quarantine_publication_enabled": False,
         "attachments_accepted": False,
         "media_accepted": False,
     }
@@ -173,6 +175,8 @@ def test_status_returns_policy_and_usage_without_exposing_token(monkeypatch) -> 
     assert result["registered"] is True
     assert result["contributions_enabled"] is False
     assert result["contribution_outbox"]["pending"] == 1
+    assert result["capabilities"]["submissions_quarantined"] is True
+    assert result["capabilities"]["quarantine_publication_enabled"] is False
     assert result["usage"] == _usage().__dict__
     assert "synthetic-private-token" not in repr(result)
 
@@ -182,7 +186,7 @@ def test_status_reports_reachable_but_incompatible_schema_without_account_calls(
 ) -> None:
     class _Client:
         def capabilities(self) -> CatalogueCapabilities:
-            return _capabilities(schema_version=4)
+            return _capabilities(schema_version=3)
 
         def support_policy(self) -> SupportPolicy:
             pytest.fail("incompatible schema must not continue to account metadata")
