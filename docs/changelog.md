@@ -1,5 +1,7 @@
 # Changelog
 
+- Fixed completed-disc automatic eject after a stale or early dashboard settings read by synchronizing the saved eject preference through the recurring job dashboard response.
+
 All notable changes to MKV Episode Matcher are documented here.
 
 > [!TIP]

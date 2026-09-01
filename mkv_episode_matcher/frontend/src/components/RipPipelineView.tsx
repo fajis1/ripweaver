@@ -247,6 +247,7 @@ interface OrchestrationJob {
 
 interface JobDashboard {
   automatic_processing_enabled: boolean;
+  automatic_eject_after_rip: boolean;
   watcher_attached: boolean;
   jobs: OrchestrationJob[];
 }
@@ -1095,6 +1096,11 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
   useEffect(() => {
     jobDashboardRef.current = jobDashboard;
   }, [jobDashboard]);
+
+  useEffect(() => {
+    if (typeof jobDashboard?.automatic_eject_after_rip !== 'boolean') return;
+    setAutomaticEjectAfterCompletion(jobDashboard.automatic_eject_after_rip);
+  }, [jobDashboard?.automatic_eject_after_rip]);
 
   useEffect(() => {
     driveDashboardRef.current = driveDashboard;

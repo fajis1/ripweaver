@@ -752,6 +752,7 @@ class OrchestrationEventResponse(BaseModel):
 
 class OrchestrationJobListResponse(BaseModel):
     automatic_processing_enabled: bool
+    automatic_eject_after_rip: bool
     watcher_attached: bool
     jobs: list[OrchestrationJobResponse]
 
@@ -4334,7 +4335,7 @@ def list_rip_jobs(
 
     from mkv_episode_matcher.core.config_manager import get_config_manager
 
-    automatic = get_config_manager().load().automatic_processing_enabled
+    config = get_config_manager().load()
     fingerprints = _parse_dashboard_disc_fingerprints(disc_fingerprints)
     jobs = _filter_dashboard_jobs(
         store.list_jobs(),
@@ -4342,7 +4343,10 @@ def list_rip_jobs(
         disc_fingerprints=fingerprints,
     )
     return {
-        "automatic_processing_enabled": automatic,
+        "automatic_processing_enabled": config.automatic_processing_enabled,
+        "automatic_eject_after_rip": getattr(
+            config, "automatic_eject_after_rip", False
+        ),
         "watcher_attached": False,
         "jobs": [_job_response(job, store) for job in jobs],
     }

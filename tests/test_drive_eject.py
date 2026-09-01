@@ -32,6 +32,23 @@ def _rejected(method: str, stage: str, error_code: int) -> eject.EjectMethodResu
     )
 
 
+def test_job_dashboard_reports_current_automatic_eject_preference(monkeypatch):
+    monkeypatch.setattr(
+        "mkv_episode_matcher.core.config_manager.get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                automatic_processing_enabled=True,
+                automatic_eject_after_rip=True,
+            )
+        ),
+    )
+
+    response = rip.list_rip_jobs(SimpleNamespace(list_jobs=lambda: []))
+
+    assert response["automatic_processing_enabled"] is True
+    assert response["automatic_eject_after_rip"] is True
+
+
 def test_eject_rejects_non_drive_letter_without_opening_device(monkeypatch):
     monkeypatch.setattr(eject.sys, "platform", "win32")
 
