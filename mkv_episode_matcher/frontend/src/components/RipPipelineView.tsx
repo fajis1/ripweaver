@@ -295,8 +295,8 @@ interface DriveSlot {
   makemkv_confirmed?: boolean;
 }
 
-const completeDiscAutoEjectKey = (drive: DriveSlot, job: OrchestrationJob): string => (
-  `${job.job_id}:${drive.current_disc_fingerprint ?? 'unknown-disc'}`
+const completeDiscAutoEjectKey = (drive: DriveSlot, job?: OrchestrationJob): string => (
+  `${job?.job_id ?? 'restored-complete'}:${drive.current_disc_fingerprint ?? 'unknown-disc'}`
 );
 
 interface EjectAttemptResult {
@@ -3015,11 +3015,12 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
     const candidates = (driveDashboard?.drives ?? []).flatMap((drive) => {
       if (!drive.has_disc || drive.mapping_status === 'ignored') return [];
       const job = latestJobForDrive(drive.drive_index);
-      if (!job || !['awaiting_review', 'completed'].includes(job.state) || !job.preview) return [];
+      if (job && (!['awaiting_review', 'completed'].includes(job.state) || !job.preview)) return [];
       const discFingerprint = drive.current_disc_fingerprint
-        ?? job.preview.jobs
+        ?? job?.preview?.jobs
           .map((item) => item.staging_destination.match(/(?:^|\/)([0-9a-f]{16})(?:\/|$)/)?.[1])
           .find((value): value is string => Boolean(value));
+      if (!discFingerprint) return [];
       const preparedRecoveryScope = pipelineQueue?.disc_recovery_scopes?.find((scope) => (
         discFingerprint && scope.disc_fingerprint === discFingerprint
       ));
@@ -3029,12 +3030,13 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
       const expectedTitleIndexes = new Set(
         preparedRecoveryScope?.required_title_indexes
         ?? preparedMatchingScope?.relevant_title_indexes
-        ?? job.preview.jobs
+        ?? job?.preview?.jobs
           .filter((item) => item.drive_index === drive.drive_index)
-          .map((item) => item.title_index),
+          .map((item) => item.title_index)
+        ?? [],
       );
       const safelyPresentTitleIndexes = new Set([
-        ...job.preview.jobs
+        ...(job?.preview?.jobs ?? [])
           .filter((item) => item.drive_index === drive.drive_index && item.prior_library_status === 'present')
           .map((item) => item.title_index),
         ...(pipelineQueue?.items ?? [])
@@ -3057,9 +3059,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
         && [...expectedTitleIndexes].every((titleIndex) => (
           safelyPresentTitleIndexes.has(titleIndex) || skippedTitleIndexes.has(titleIndex)
         ));
-      if (!allKnownTitlesAlreadyInLibrary(job.preview) && !relevantRipComplete) return [];
+      if (!(job?.preview && allKnownTitlesAlreadyInLibrary(job.preview)) && !relevantRipComplete) return [];
       const competingWork = (jobDashboard?.jobs ?? []).some((candidate) => (
-        candidate.job_id !== job.job_id
+        (!job || candidate.job_id !== job.job_id)
         && ['authorized', 'queued', 'running', 'pause_requested'].includes(candidate.state)
         && candidate.preview?.drives.some((item) => item.drive_index === drive.drive_index)
       ));
@@ -3099,7 +3101,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
       if (completeDiscAutoEjectAttemptedRef.current.has(key)) continue;
       const drive = driveDashboard?.drives.find((candidate) => {
         const job = latestJobForDrive(candidate.drive_index);
-        return Boolean(job && completeDiscAutoEjectKey(candidate, job) === key);
+        return completeDiscAutoEjectKey(candidate, job) === key;
       });
       if (!drive) continue;
       completeDiscAutoEjectAttemptedRef.current.add(key);
@@ -4187,7 +4189,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                         ? 'ripping'
                         : job?.state.replaceAll('_', ' ') ?? physicalDriveOperation ?? (drivePreparing ? 'MakeMKV is reading disc' : 'disc inserted');
               const selectedDriveJob = savedJob?.job_id === job?.job_id;
-              const completeAutoEjectKey = job && driveRipComplete ? completeDiscAutoEjectKey(drive, job) : null;
+              const completeAutoEjectKey = driveRipComplete ? completeDiscAutoEjectKey(drive, job) : null;
               const completeAutoEjectDeadline = completeAutoEjectKey ? completeDiscAutoEjectDeadlines[completeAutoEjectKey] : undefined;
               const completeAutoEjectSeconds = completeAutoEjectDeadline === undefined
                 ? null

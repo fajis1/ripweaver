@@ -1,6 +1,6 @@
 # Changelog
 
-- Fixed completed-disc automatic eject after a stale or early dashboard settings read by synchronizing the saved eject preference through the recurring job dashboard response.
+- Fixed completed-disc automatic eject after a stale or early dashboard settings read by synchronizing the saved eject preference through the recurring job dashboard response. Restored completed discs can now enter the same countdown when their exact fingerprint scope proves every relevant title safely present, even when no old orchestration job remains in the bounded dashboard response.
 
 All notable changes to MKV Episode Matcher are documented here.
 
