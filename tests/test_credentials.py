@@ -40,6 +40,29 @@ def test_store_credential_writes_dotenv_without_status_exposure(
     os.environ.pop("TMDB_API_KEY", None)
 
 
+def test_store_credential_honors_configured_dotenv_file(tmp_path, monkeypatch):
+    shared_dotenv = tmp_path / "shared-credentials" / ".env"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MKV_MATCH_ENV_FILE", str(shared_dotenv))
+    monkeypatch.delenv("TMDB_API_KEY", raising=False)
+
+    store_credential("tmdb", "fake-shared-key")
+
+    assert dotenv_values(shared_dotenv)["TMDB_API_KEY"] == "fake-shared-key"
+    assert not (tmp_path / ".env").exists()
+    os.environ.pop("TMDB_API_KEY", None)
+
+
+def test_store_credential_refuses_explicitly_disabled_dotenv(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MKV_MATCH_ENV_FILE", "")
+
+    with pytest.raises(RuntimeError, match="storage is disabled"):
+        store_credential("tmdb", "fake-disabled-key")
+
+    assert not (tmp_path / ".env").exists()
+
+
 def test_store_credential_rejects_empty_value(tmp_path):
     with pytest.raises(ValueError, match="cannot be empty"):
         store_credential("tmdb", "   ", dotenv_path=tmp_path / ".env")

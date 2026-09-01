@@ -257,7 +257,10 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
             summary={"catalogue_available": catalogue is not None},
         )
     if descriptive and comparison_evidence:
-        ranker = GeminiDescriptiveRanker(model=config.gemini_model)
+        ranker = GeminiDescriptiveRanker(
+            model=config.gemini_model,
+            fallback_models=getattr(config, "gemini_fallback_models", ()),
+        )
         ranker_kwargs = {
             "release_hint": release_hint,
             "prior_attempts": {
@@ -279,7 +282,10 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
         )
         results.update({item.file_id: item for item in review.matches})
     elif not descriptive:
-        ranker = GeminiEpisodeRanker(model=config.gemini_model)
+        ranker = GeminiEpisodeRanker(
+            model=config.gemini_model,
+            fallback_models=getattr(config, "gemini_fallback_models", ()),
+        )
         ranker_kwargs = {
             "prior_attempts": {
                 media_id: dossier.safe_attempts(media_id) for media_id in comparison_ids

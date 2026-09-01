@@ -467,6 +467,7 @@ class DriveWatcher:
                 device.upper().rstrip("\\/"): index
                 for index, device in self._device_names.items()
             }
+            updated = False
             for device_name, (has_disc, label) in native_media.items():
                 drive_index = reverse_devices.get(device_name)
                 if drive_index is None:
@@ -490,10 +491,22 @@ class DriveWatcher:
                         previous.current_disc_fingerprint if same_disc else None
                     ),
                 )
+                updated = True
+            if not updated:
+                return self._snapshot
+            preserve_unconfirmed_error = (
+                self._snapshot.error_code == "makemkv_unconfirmed"
+            )
             self._snapshot = DriveStatusSnapshot(
                 drives=tuple(by_index[index] for index in sorted(by_index)),
                 refreshed_at=datetime.now(UTC).isoformat(),
-                status="ready",
+                status="error" if preserve_unconfirmed_error else "ready",
+                error_type=(
+                    self._snapshot.error_type if preserve_unconfirmed_error else None
+                ),
+                error_code=(
+                    self._snapshot.error_code if preserve_unconfirmed_error else None
+                ),
             )
             return self._snapshot
 
@@ -605,7 +618,8 @@ class DriveWatcher:
                         **mapping_fields,
                     )
                     parsed_device_names[drive.index] = device_name
-                if not refreshed:
+                makemkv_records_found = bool(refreshed)
+                if not makemkv_records_found and not native_names:
                     raise PreflightError("MakeMKV returned no optical-drive records")
                 native_positions = {
                     device_name: ordinal
@@ -766,6 +780,11 @@ class DriveWatcher:
                     refreshed_at=datetime.now(UTC).isoformat(),
                     status="ready",
                 )
+                if not makemkv_records_found:
+                    raise PreflightError(
+                        "MakeMKV returned no optical-drive records; "
+                        "Windows-only drives remain provisional"
+                    )
                 return self._snapshot
         except PreflightError as error:
             message = str(error).casefold()
@@ -774,6 +793,8 @@ class DriveWatcher:
                 if "timed out" in message
                 else "executable_missing"
                 if "executable not found" in message
+                else "makemkv_unconfirmed"
+                if "windows-only drives remain provisional" in message
                 else "no_drives"
                 if "no optical-drive records" in message
                 else "discovery_failed"

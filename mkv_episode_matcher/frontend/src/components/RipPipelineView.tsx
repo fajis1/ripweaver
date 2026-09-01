@@ -19,6 +19,7 @@ interface PreviewJob {
   drive_index: number;
   title_index: number;
   estimated_bytes: number | null;
+  duration_seconds: number | null;
   staging_destination: string;
   final_destination: string | null;
   collision_status: string;
@@ -246,6 +247,7 @@ interface OrchestrationJob {
 
 interface JobDashboard {
   automatic_processing_enabled: boolean;
+  automatic_eject_after_rip: boolean;
   watcher_attached: boolean;
   jobs: OrchestrationJob[];
 }
@@ -293,8 +295,8 @@ interface DriveSlot {
   makemkv_confirmed?: boolean;
 }
 
-const completeDiscAutoEjectKey = (drive: DriveSlot, job: OrchestrationJob): string => (
-  `${job.job_id}:${drive.current_disc_fingerprint ?? 'unknown-disc'}`
+const completeDiscAutoEjectKey = (drive: DriveSlot, job?: OrchestrationJob): string => (
+  `${job?.job_id ?? 'restored-complete'}:${drive.current_disc_fingerprint ?? 'unknown-disc'}`
 );
 
 interface EjectAttemptResult {
@@ -312,7 +314,7 @@ interface DriveDashboard {
   status: 'not_scanned' | 'ready' | 'error';
   refreshed_at: string | null;
   error_type: string | null;
-  error_code?: 'timeout' | 'executable_missing' | 'no_drives' | 'discovery_failed' | null;
+  error_code?: 'timeout' | 'executable_missing' | 'makemkv_unconfirmed' | 'no_drives' | 'discovery_failed' | null;
   refresh_in_progress?: boolean;
   refresh_deferred?: boolean;
   automatic_discovery_paused?: boolean;
@@ -355,6 +357,7 @@ interface PublicConfig {
   automatic_eject_after_rip?: boolean;
   automatic_gemini_ambiguity_fallback?: boolean;
   retained_source_ttl_days?: number;
+  short_title_review_seconds?: number;
   jellyfin_tv_root?: string;
   jellyfin_movie_root?: string;
 }
@@ -372,6 +375,9 @@ interface PipelineQueueItem {
   artifact_sha256: string;
   disc_fingerprint: string | null;
   title_index: number | null;
+  duration_seconds: number | null;
+  short_title: boolean;
+  short_title_review_threshold_seconds: number | null;
   series_name?: string | null;
   display_name: string | null;
   match_summary: string | null;
@@ -1092,6 +1098,11 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
   }, [jobDashboard]);
 
   useEffect(() => {
+    if (typeof jobDashboard?.automatic_eject_after_rip !== 'boolean') return;
+    setAutomaticEjectAfterCompletion(jobDashboard.automatic_eject_after_rip);
+  }, [jobDashboard?.automatic_eject_after_rip]);
+
+  useEffect(() => {
     driveDashboardRef.current = driveDashboard;
   }, [driveDashboard]);
 
@@ -1736,6 +1747,85 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
     } finally {
       setControlling(false);
     }
+  };
+
+  const setShortTitleDisposition = async (
+    item: PipelineQueueItem,
+    action: 'ignore_matching' | 'mark_for_deletion' | 'match_normally',
+  ) => {
+    const title = typeof item.title_index === 'number' ? `title ${item.title_index}` : item.media_id;
+    const confirmation = action === 'ignore_matching'
+      ? `Keep the staged MKV for ${title}, exclude it from episode matching, and remember that choice for this exact disc title? No media will be deleted.`
+      : action === 'mark_for_deletion'
+        ? `Keep the staged MKV for ${title}, exclude it from matching, and mark it for deletion review? This step does not delete the file; permanent deletion requires a separate confirmation.`
+        : `Use ${title} for normal episode matching and remember that choice for this exact disc title? This may start identification when the queue is active.`;
+    if (!window.confirm(confirmation)) return;
+    setControlling(true);
+    setError('');
+    try {
+      const response = await fetch(`/rip/pipeline/items/${encodeURIComponent(item.media_id)}/short-title-disposition`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          expected_artifact_sha256: item.artifact_sha256,
+          action,
+          confirm_disposition: true,
+        }),
+      });
+      const payload = await responsePayload(response);
+      if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : 'The short-title choice could not be saved.');
+      if (!Array.isArray(payload.items) || typeof payload.paused !== 'boolean') {
+        throw new Error('The choice was handled, but the refreshed queue response was invalid. Refresh the page to confirm its state.');
+      }
+      setPipelineQueue(payload as unknown as PipelineQueue);
+      setReviewNotice(action === 'ignore_matching'
+        ? `Kept ${title} and excluded it from matching. No media was changed.`
+        : action === 'mark_for_deletion'
+          ? `Kept ${title} and moved it to deletion review. The MKV has not been deleted.`
+          : `Restored ${title} to normal matching.`);
+    } catch (requestError) {
+      const message = requestError instanceof Error ? requestError.message : 'The short-title choice could not be saved.';
+      setError(message);
+      window.alert(message);
+    } finally {
+      setControlling(false);
+    }
+  };
+
+  const renderShortTitleReview = (item: PipelineQueueItem) => {
+    if (!item.short_title || item.duration_seconds === null) return null;
+    const disposition = (pipelineQueue?.title_dispositions ?? []).find((candidate) => (
+      item.disc_fingerprint !== null
+      && item.title_index !== null
+      && candidate.disc_fingerprint === item.disc_fingerprint
+      && candidate.title_index === item.title_index
+    ));
+    const markedForDeletion = item.review_code === 'short_title_deletion_review';
+    const ignored = disposition?.disposition === 'skip' && !markedForDeletion;
+    const included = disposition?.disposition === 'include';
+    return (
+      <div className="max-w-2xl rounded-lg border border-amber-400/35 bg-amber-500/10 p-3 text-xs text-amber-100">
+        <div className="font-semibold text-amber-50">Short title · {formatCollisionDuration(item.duration_seconds)}</div>
+        <div className="mt-1">
+          This title is shorter than the saved {formatCollisionDuration(item.short_title_review_threshold_seconds || 150)} review cutoff.
+          {markedForDeletion
+            ? ' It is excluded from matching and marked for deletion review; the MKV still exists.'
+            : ignored
+              ? ' The MKV is being kept and excluded from episode matching.'
+              : included
+                ? ' It was explicitly restored to normal matching.'
+                : ' Choose what RipWeaver should do before matching it.'}
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button type="button" className="btn btn-secondary text-xs" disabled={controlling || ignored} onClick={() => setShortTitleDisposition(item, 'ignore_matching')}>Keep file · ignore matching</button>
+          <button type="button" className="btn btn-secondary text-xs" disabled={controlling || included} onClick={() => setShortTitleDisposition(item, 'match_normally')}>Use for matching</button>
+          <button type="button" className="btn text-xs border border-amber-400/50 bg-amber-500/15 text-amber-100 hover:bg-amber-500/25" disabled={controlling || markedForDeletion} onClick={() => setShortTitleDisposition(item, 'mark_for_deletion')}>Mark for deletion review</button>
+          {markedForDeletion && item.staged_source_available && (
+            <button type="button" className="btn text-xs border border-red-400/50 bg-red-500/15 text-red-100 hover:bg-red-500/25" disabled={controlling} onClick={() => deleteQueuedStagedSource(item)}>Delete staged rip permanently</button>
+          )}
+        </div>
+      </div>
+    );
   };
 
   const restoreSkippedDiscTitle = async (
@@ -2925,11 +3015,12 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
     const candidates = (driveDashboard?.drives ?? []).flatMap((drive) => {
       if (!drive.has_disc || drive.mapping_status === 'ignored') return [];
       const job = latestJobForDrive(drive.drive_index);
-      if (!job || !['awaiting_review', 'completed'].includes(job.state) || !job.preview) return [];
+      if (job && (!['awaiting_review', 'completed'].includes(job.state) || !job.preview)) return [];
       const discFingerprint = drive.current_disc_fingerprint
-        ?? job.preview.jobs
+        ?? job?.preview?.jobs
           .map((item) => item.staging_destination.match(/(?:^|\/)([0-9a-f]{16})(?:\/|$)/)?.[1])
           .find((value): value is string => Boolean(value));
+      if (!discFingerprint) return [];
       const preparedRecoveryScope = pipelineQueue?.disc_recovery_scopes?.find((scope) => (
         discFingerprint && scope.disc_fingerprint === discFingerprint
       ));
@@ -2939,12 +3030,13 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
       const expectedTitleIndexes = new Set(
         preparedRecoveryScope?.required_title_indexes
         ?? preparedMatchingScope?.relevant_title_indexes
-        ?? job.preview.jobs
+        ?? job?.preview?.jobs
           .filter((item) => item.drive_index === drive.drive_index)
-          .map((item) => item.title_index),
+          .map((item) => item.title_index)
+        ?? [],
       );
       const safelyPresentTitleIndexes = new Set([
-        ...job.preview.jobs
+        ...(job?.preview?.jobs ?? [])
           .filter((item) => item.drive_index === drive.drive_index && item.prior_library_status === 'present')
           .map((item) => item.title_index),
         ...(pipelineQueue?.items ?? [])
@@ -2967,9 +3059,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
         && [...expectedTitleIndexes].every((titleIndex) => (
           safelyPresentTitleIndexes.has(titleIndex) || skippedTitleIndexes.has(titleIndex)
         ));
-      if (!allKnownTitlesAlreadyInLibrary(job.preview) && !relevantRipComplete) return [];
+      if (!(job?.preview && allKnownTitlesAlreadyInLibrary(job.preview)) && !relevantRipComplete) return [];
       const competingWork = (jobDashboard?.jobs ?? []).some((candidate) => (
-        candidate.job_id !== job.job_id
+        (!job || candidate.job_id !== job.job_id)
         && ['authorized', 'queued', 'running', 'pause_requested'].includes(candidate.state)
         && candidate.preview?.drives.some((item) => item.drive_index === drive.drive_index)
       ));
@@ -3009,7 +3101,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
       if (completeDiscAutoEjectAttemptedRef.current.has(key)) continue;
       const drive = driveDashboard?.drives.find((candidate) => {
         const job = latestJobForDrive(candidate.drive_index);
-        return Boolean(job && completeDiscAutoEjectKey(candidate, job) === key);
+        return completeDiscAutoEjectKey(candidate, job) === key;
       });
       if (!drive) continue;
       completeDiscAutoEjectAttemptedRef.current.add(key);
@@ -3576,6 +3668,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
   };
   const mappingNeedsReview = mappingDevices.some((drive) => drive.mapping_status === 'unmapped');
   const identityUnavailableDrives = mappingDevices.filter((drive) => drive.mapping_warning === 'identity_unavailable');
+  const windowsDetectedDriveCount = driveDashboard?.drives.length ?? 0;
   const mappedLoadedDiscWillContinue = Boolean(
     continueAfterMapping
     && jobDashboard?.automatic_processing_enabled
@@ -3721,7 +3814,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
             <div>
               <div className="font-bold text-white">Optical drives</div>
               <div className="text-sm text-[var(--text-muted)]">
-                {jobDashboard.automatic_processing_enabled ? 'Automatic processing requested' : 'Automatic processing disabled'} · {driveDashboard?.automatic_discovery_paused ? 'automatic drive discovery paused' : driveDashboard?.status === 'ready' ? 'drive status refreshed' : 'waiting for read-only refresh'}
+                {jobDashboard.automatic_processing_enabled ? 'Automatic processing requested' : 'Automatic processing disabled'} · {driveDashboard?.automatic_discovery_paused ? 'automatic drive discovery paused' : driveDashboard?.error_code === 'makemkv_unconfirmed' ? 'Windows drives detected · awaiting MakeMKV confirmation' : driveDashboard?.status === 'ready' ? 'drive status refreshed' : 'waiting for read-only refresh'}
               </div>
             </div>
             <button
@@ -3761,7 +3854,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                   : driveDashboard?.automatic_discovery_paused
                     ? `MakeMKV timed out ${driveDashboard.automatic_discovery_timeout_count ?? 2} consecutive times. Automatic retries are suspended so RipWeaver does not repeatedly probe the optical drives.`
                   : driveDashboard?.status === 'error'
-                  ? driveDashboard.error_code === 'timeout'
+                  ? driveDashboard.error_code === 'makemkv_unconfirmed'
+                    ? `Windows detected ${windowsDetectedDriveCount} optical ${windowsDetectedDriveCount === 1 ? 'drive' : 'drives'}, but MakeMKV did not confirm any current slots. The drives remain visible and safely locked until a read-only refresh succeeds.`
+                    : driveDashboard.error_code === 'timeout'
                     ? 'MakeMKV starts, but it could not enumerate the optical drives. This usually means one drive, USB/SATA enclosure, or Windows optical-device query is not responding.'
                     : 'Drive discovery did not complete. Wait for active MakeMKV work to finish, close any separate MakeMKV window, and verify the MakeMKVCLI path in Settings.'
                   : 'Select “Refresh drives” to perform one read-only MakeMKV slot discovery. It enumerates loaded and empty trays but does not inventory titles or start ripping.'}
@@ -3777,9 +3872,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
               {!driveDashboard?.refresh_in_progress && driveDashboard?.status === 'error' && (
                 <div className="mt-3 flex flex-wrap gap-2">
                   <button type="button" className="btn btn-secondary text-xs" onClick={() => void refreshDrives(120)} disabled={refreshingDrives || driveDashboard?.refresh_in_progress || driveDashboard?.refresh_deferred || Boolean(driveDashboard?.busy_drive_indexes?.length)}>
-                    {driveDashboard.error_code === 'timeout' ? 'Retry after checking drives' : 'Retry drive refresh'}
+                    {driveDashboard.error_code === 'timeout' ? 'Retry after checking drives' : driveDashboard.error_code === 'makemkv_unconfirmed' ? 'Retry read-only confirmation' : 'Retry drive refresh'}
                   </button>
-                  {driveDashboard.error_code !== 'timeout' && (
+                  {!['timeout', 'makemkv_unconfirmed'].includes(driveDashboard.error_code ?? '') && (
                     <button type="button" className="btn btn-secondary text-xs" onClick={onOpenSettings}>
                       Repair MakeMKVCLI path
                     </button>
@@ -3823,6 +3918,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
             ) : driveDashboard.drives.map((drive) => {
               const driveKey = driveSetupKey(drive);
               const setup = getDiscSetup(driveKey);
+              const makemkvUnconfirmed = drive.makemkv_confirmed === false;
               const driveTrusted = !drive.mapping_status || drive.mapping_status === 'trusted';
               if (!driveTrusted) {
                 const identityUnavailable = drive.mapping_warning === 'identity_unavailable';
@@ -3846,7 +3942,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                     <div className={`rounded-lg border p-3 text-sm ${ignored ? 'border-slate-400/25 bg-slate-500/10 text-slate-200' : 'border-amber-400/30 bg-amber-500/10 text-amber-100'}`}>
                       {ignored
                         ? 'This optical device is ignored. Manage drive mapping to approve it before RipWeaver can use it.'
-                        : identityUnavailable
+                        : makemkvUnconfirmed
+                          ? 'Windows detected this optical drive, but MakeMKV did not confirm its current slot. The drive remains visible and safely locked; retry read-only confirmation before RipWeaver can read, rip, or control it.'
+                          : identityUnavailable
                           ? 'MakeMKV detected this slot, but Windows did not return its hardware identity in time. The drive remains visible and safely locked; a read-only refresh retries the identity lookup.'
                           : 'This device was detected but has not been approved. Open drive setup and choose Use before RipWeaver can read or rip it.'}
                     </div>
@@ -3855,6 +3953,27 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                         {ignored ? 'Manage drive mapping' : 'Set up this drive'}
                       </button>
                     )}
+                  </div>
+                );
+              }
+              if (makemkvUnconfirmed) {
+                return (
+                  <div key={driveKey} className="rounded-xl border border-amber-400/50 bg-amber-500/10 p-4 space-y-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className={`text-4xl ${drive.has_disc ? 'text-amber-300' : 'text-slate-600'}`} aria-label={drive.has_disc ? 'Disc inserted' : 'Empty tray'}>{drive.has_disc ? '●' : '▱'}</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-semibold text-white">Optical drive {opticalDriveNumber(drive)}{drive.display_name ? ` · ${drive.display_name}` : ''}{drive.disc_label ? ` — ${drive.disc_label}` : ''}</div>
+                        <div className="text-xs font-bold uppercase text-amber-200">
+                          {drive.has_disc ? 'disc visible in Windows' : 'drive visible in Windows'} · MakeMKV confirmation required
+                        </div>
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-amber-400/30 bg-amber-500/10 p-3 text-sm text-amber-100">
+                      Windows detected this drive, but MakeMKV did not confirm its current slot. RipWeaver will not read, rip, eject, or otherwise control it until confirmation succeeds.
+                    </div>
+                    <button type="button" className="btn btn-secondary w-full" onClick={() => void refreshDrives(120)} disabled={refreshingDrives || driveDashboard?.refresh_in_progress || driveDashboard?.refresh_deferred || Boolean(driveDashboard?.busy_drive_indexes?.length)}>
+                      Retry read-only confirmation
+                    </button>
                   </div>
                 );
               }
@@ -4070,7 +4189,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                         ? 'ripping'
                         : job?.state.replaceAll('_', ' ') ?? physicalDriveOperation ?? (drivePreparing ? 'MakeMKV is reading disc' : 'disc inserted');
               const selectedDriveJob = savedJob?.job_id === job?.job_id;
-              const completeAutoEjectKey = job && driveRipComplete ? completeDiscAutoEjectKey(drive, job) : null;
+              const completeAutoEjectKey = driveRipComplete ? completeDiscAutoEjectKey(drive, job) : null;
               const completeAutoEjectDeadline = completeAutoEjectKey ? completeDiscAutoEjectDeadlines[completeAutoEjectKey] : undefined;
               const completeAutoEjectSeconds = completeAutoEjectDeadline === undefined
                 ? null
@@ -4419,6 +4538,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                                   Matching ran, but could not assign this title safely. Best candidate: {selectedEpisodeId} at {(selectedScore * 100).toFixed(1)}%; automatic threshold: {(engineThreshold * 100).toFixed(0)}%{typeof selectedVoteCount === 'number' ? `; qualifying windows: ${selectedVoteCount}` : ''}. Review or retry identification—do not rerip the MKV.
                                 </div>
                               )}
+                              {item.short_title && <div className="mt-2">{renderShortTitleReview(item)}</div>}
                               {!skipped && item.state === 'review_required' && job && (
                                 <button type="button" className="btn btn-secondary mt-2 text-xs" onClick={() => selectDriveJob(job, pipelineItemElementId(item.media_id))}>Open review</button>
                               )}
@@ -4901,6 +5021,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                   </button>
                 </>
               )}
+              {visiblePipelineItems.some((item) => item.short_title && item.stage === 'identify') && (
+                <div>Short titles are paused for a keep/ignore, deletion-review, or normal-matching choice. Marking one for deletion does not delete its MKV.</div>
+              )}
               {visiblePipelineItems.some((item) => (item.review_code || '').includes('gemini') || (item.review_code || '').includes('special_feature')) && (
                 <>
                   <div>Held identification needs a Gemini retry, a manual name, or an explicit hold choice.</div>
@@ -5035,7 +5158,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                     </div>
                   )}
                   {['failed', 'review_required'].includes(item.state) && (
-                    item.stage === 'organize' && item.error_type === 'PipelineQueueError' && item.original_source_unavailable ? (
+                    item.short_title && item.stage === 'identify' ? (
+                      renderShortTitleReview(item)
+                    ) : item.stage === 'organize' && item.error_type === 'PipelineQueueError' && item.original_source_unavailable ? (
                       <div className="max-w-md rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-100">
                         <div>The verified encode is preserved, but the old ripped source is no longer in staging. Nothing needs to be archived before media-library placement.</div>
                         <div className="mt-2">After updating or restarting RipWeaver, retry this item to place the verified encode without reripping or retranscoding.</div>
@@ -5960,7 +6085,9 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                     <div className="text-sm text-[var(--text-muted)] truncate">
                       {job.final_destination || `Original collision-safe rip target: ${job.staging_destination}`}
                     </div>
-                    <div className="text-xs text-[var(--text-muted)] mt-1">{formatBytes(job.estimated_bytes)}</div>
+                    <div className="text-xs text-[var(--text-muted)] mt-1">
+                      {formatBytes(job.estimated_bytes)}{job.duration_seconds ? ` · ${formatCollisionDuration(job.duration_seconds)}` : ''}
+                    </div>
                     {job.prior_outcome_name && !pipelineQueue?.items.find((item) => item.media_id === job.job_id)?.display_name && (
                       <div className="mt-2 rounded-lg border border-blue-500/30 bg-blue-500/10 p-2 text-sm text-blue-100">
                         <div className="font-semibold">Previous result: {job.prior_outcome_name}</div>

@@ -99,6 +99,7 @@ class Config(BaseModel):
     transcode_output_root: Path | None = None
     deletion_staging_root: Path | None = None
     retained_source_ttl_days: int = 30
+    short_title_review_seconds: int = 150
     retained_source_cleanup_postponed_until: str | None = None
     jellyfin_tv_root: Path | None = None
     jellyfin_movie_root: Path | None = None
@@ -115,6 +116,9 @@ class Config(BaseModel):
     default_handbrake_profile_2160p: str | None = None
     remember_last_handbrake_profile: bool = True
     gemini_model: str = "gemini-3.6-flash"
+    gemini_fallback_models: list[str] = Field(
+        default_factory=lambda: ["gemini-3.5-flash", "gemini-2.5-flash"]
+    )
     automatic_processing_enabled: bool = False
     automatic_eject_after_rip: bool = False
     automatic_gemini_ambiguity_fallback: bool = False
@@ -203,6 +207,13 @@ class Config(BaseModel):
             raise ValueError("Retained-source TTL must be at least 1 day")
         return value
 
+    @field_validator("short_title_review_seconds")
+    @classmethod
+    def validate_short_title_review_seconds(cls, value: int) -> int:
+        if isinstance(value, bool) or not 0 <= value <= 3600:
+            raise ValueError("Short-title review cutoff must be 0 to 3600 seconds")
+        return value
+
     @field_validator("retained_source_cleanup_postponed_until")
     @classmethod
     def validate_cleanup_postponement(cls, value: str | None) -> str | None:
@@ -228,4 +239,16 @@ class Config(BaseModel):
             )
         ):
             raise ValueError("Gemini model ID is invalid")
+        return cleaned
+
+    @field_validator("gemini_fallback_models")
+    @classmethod
+    def validate_gemini_fallback_models(cls, values: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for value in values:
+            model = cls.validate_gemini_model(value)
+            if model not in cleaned:
+                cleaned.append(model)
+        if len(cleaned) > 2:
+            raise ValueError("At most two Gemini fallback models may be configured")
         return cleaned

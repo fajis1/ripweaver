@@ -4402,3 +4402,55 @@ for review rather than forcing a TV identity.
   with the corrected code, the startup read-only drive refresh settled, and all
   three validated disc outcomes remained durable while the downstream queue
   stayed paused.
+
+### Privacy-redacted support export and Gemini capacity fallback (2026-08-29)
+
+- The sidebar now exposes **Support & Bug Reports**. Its loopback/same-origin
+  `POST /system/support-bundle` boundary creates a bounded ZIP in memory and
+  returns it as a download; no archive is retained or uploaded automatically.
+  The bundle contains non-secret runtime/setup status, recent path-redacted
+  pipeline events, and bounded tails of direct RipWeaver application logs.
+  Credentials, `.env` values, paths, media names/files, transcript dialogue,
+  private provider transactions, and unrelated files are excluded or redacted.
+- The report page can prepare a GitHub issue or blank-recipient email draft and
+  use the operating-system share sheet where supported. Browsers still require
+  the user to approve and attach the downloaded ZIP.
+- System Configuration already accepts write-only TMDb, OpenSubtitles, and
+  Gemini credentials. It now also persists a non-secret primary Gemini model
+  plus at most two ordered fallback model IDs. Full credential values remain
+  unavailable to browser responses and support exports.
+- Credential reads and write-only replacements now honor the same explicit
+  `MKV_MATCH_ENV_FILE` location. A source test worktree can therefore use an
+  existing ignored credential file without copying, displaying, or committing
+  its contents; an explicitly disabled credential file remains non-writable.
+- Episode ranking, descriptive bonus analysis, and canonical-series resolution
+  now use one bounded key/model order: both configured keys are tried for the
+  current model, then a fallback model is allowed after HTTP 429 capacity
+  exhaustion, sustained HTTP 503 overload, or an explicit unavailable-model
+  response. Ordinary bad requests, invalid structured output, credential
+  rejection, and network errors do not silently change models.
+- Fallback results retain the model actually used, and private exact-request
+  caching keys the response to that actual model. Synthetic tests exercise
+  capacity, unavailable-model, generic-error, descriptive, series-resolution,
+  cache, redaction, archive-bound, and in-memory download behavior. No live
+  Gemini/provider request, credential, media file, or optical disc was used.
+
+### Configurable short-title review (2026-08-29)
+
+- The non-secret `short_title_review_seconds` setting defaults to 150 seconds
+  (2 minutes 30 seconds), accepts 0 through 3600 seconds, and is editable in
+  System Configuration. Zero disables the automatic short-title hold.
+- New rip manifests retain the saved MakeMKV inventory duration for each title.
+  After verification, a title shorter than the configured cutoff is held before
+  identification. The exact duration and cutoff are stored in its private rip
+  contract so a later settings change cannot silently reclassify that item.
+- Review offers three reversible choices: keep the MKV and exclude it from
+  matching, mark it for deletion review, or explicitly include it in normal
+  matching. Exact include/skip decisions are remembered by disc fingerprint and
+  title index for future preparation and disc-aware matching scope.
+- Marking for deletion changes only durable review metadata. Permanent staged
+  MKV deletion remains a separate existing endpoint with a second confirmation,
+  exact contract/path validation, and no media-library mutation.
+- Focused tests use synthetic inventory and tiny dummy files only. Validation
+  does not access an optical disc, invoke MakeMKV/FFprobe/HandBrake, inspect real
+  media, delete user media, organize a library, or eject a drive.
