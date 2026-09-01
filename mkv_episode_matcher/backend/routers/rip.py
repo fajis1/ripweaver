@@ -752,6 +752,7 @@ class OrchestrationEventResponse(BaseModel):
 
 class OrchestrationJobListResponse(BaseModel):
     automatic_processing_enabled: bool
+    automatic_eject_after_rip: bool
     watcher_attached: bool
     jobs: list[OrchestrationJobResponse]
 
@@ -1041,6 +1042,13 @@ def _safe_drive_refresh_error(exc: PreflightError) -> str:
         return (
             "A read-only MakeMKV drive discovery is already running. Wait for the "
             "current refresh to finish; another refresh was not queued."
+        )
+    if "windows-only drives remain provisional" in message:
+        return (
+            "Windows detected one or more optical drives, but MakeMKV did not "
+            "confirm their current slots. The drives remain visible and safely "
+            "locked. Close any separate MakeMKV work, then retry the read-only "
+            "refresh."
         )
     if "no optical-drive records" in message:
         return (
@@ -1464,6 +1472,14 @@ def eject_drive(  # noqa: C901
         raise HTTPException(
             status_code=409,
             detail="Map this Windows optical device as trusted before controlling its tray",
+        )
+    if selected_drive is not None and not selected_drive.makemkv_confirmed:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "MakeMKV has not confirmed this optical drive's current slot; "
+                "retry the read-only drive refresh before controlling its tray"
+            ),
         )
     drive_jobs = [
         job
@@ -4319,7 +4335,7 @@ def list_rip_jobs(
 
     from mkv_episode_matcher.core.config_manager import get_config_manager
 
-    automatic = get_config_manager().load().automatic_processing_enabled
+    config = get_config_manager().load()
     fingerprints = _parse_dashboard_disc_fingerprints(disc_fingerprints)
     jobs = _filter_dashboard_jobs(
         store.list_jobs(),
@@ -4327,7 +4343,10 @@ def list_rip_jobs(
         disc_fingerprints=fingerprints,
     )
     return {
-        "automatic_processing_enabled": automatic,
+        "automatic_processing_enabled": config.automatic_processing_enabled,
+        "automatic_eject_after_rip": getattr(
+            config, "automatic_eject_after_rip", False
+        ),
         "watcher_attached": False,
         "jobs": [_job_response(job, store) for job in jobs],
     }

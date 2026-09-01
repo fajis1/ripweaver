@@ -1,5 +1,7 @@
 # Changelog
 
+- Fixed completed-disc automatic eject after a stale or early dashboard settings read by synchronizing the saved eject preference through the recurring job dashboard response. Restored completed discs can now enter the same countdown when their exact fingerprint scope proves every relevant title safely present, even when no old orchestration job remains in the bounded dashboard response.
+
 All notable changes to MKV Episode Matcher are documented here.
 
 > [!TIP]
@@ -7,6 +9,12 @@ All notable changes to MKV Episode Matcher are documented here.
 
 ## Unreleased - 2026-08-11
 
+- Updated the desktop catalogue handshake for the server's fail-closed schema-4
+  contract. The client now requires strict pending quarantine, refuses any
+  publication-eligible submission receipt, and no longer expects a new upload
+  to create consensus or contribution credit.
+- Updated Settings to distinguish quarantined submissions from historical
+  read-only reviewed or independently confirmed catalogue results.
 - Added a local **Support & Bug Reports** page that downloads a bounded,
   privacy-redacted diagnostic ZIP and opens a prefilled GitHub issue or email
   draft without uploading anything automatically.

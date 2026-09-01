@@ -208,9 +208,9 @@ def test_worker_is_inert_without_consent_and_sends_one_pending_item(
                 submission_id="submission",
                 content_hash=CONTENT_HASH,
                 payload_sha256=payload_sha256,
-                status="accepted",
-                confirmed_items=0,
-                unresolved_items=2,
+                status="pending",
+                validation_version=1,
+                publication_eligible=False,
             )
 
     enabled = SimpleNamespace(

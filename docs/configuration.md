@@ -244,26 +244,26 @@ never expose or persist the token.
 Lookups send only the compatibility disc identifier derived from disc file
 names and sizes. Media, paths, drive details, Jellyfin locations, transcripts,
 screenshots, and command output are not uploaded. Ten successful uncached
-automatic disc resolutions are free each UTC month. Accepted contributions and
-support can add non-expiring credits. When automatic credits are exhausted,
-the disc remains in review until the person explicitly continues the lookup
-manually or chooses support; it is never a hard paywall.
+automatic disc resolutions are free each UTC month. Existing historical credit
+balances remain visible, and configured support can add non-expiring purchased
+credits. New quarantined submissions do not earn credit. When automatic credits
+are exhausted, the disc remains in review until the person explicitly continues
+the lookup manually or chooses support; it is never a hard paywall.
 
-Matched-disc contributions require a second, separately disabled setting:
+Matched-disc submissions require a second, separately disabled setting:
 `Share matched disc layouts`. Enabling it is standing consent for future
 completed layouts. RipWeaver keeps a private local snapshot while matching and
-does not create a public payload until every selected title has a durable
+does not create an outbound payload until every selected title has a durable
 outcome. The payload contains the compatibility hash, media type, playlist and
 segment identifiers, durations, sizes, classifications, matched episode/movie
 or extra names, and evidence provenance. It does not contain the private local
 fingerprint, files, filesystem paths, Jellyfin state, drive identity, or
 credentials. Failed sends remain in a private retryable outbox.
 
-Consensus is title-by-title. Two independent installations must submit the same
-structure and assignment with a strict lead before a title becomes automatic.
-One vote is only a candidate; ties remain in review. Confirmed titles from a
-mostly agreed disc can be used while disputed bonus items continue through local
-matching. If local matching is confused, a single catalogue candidate can be
-shown as a review hint, but it is never applied automatically. Any layout that
-used such server assistance cannot vote toward consensus or earn contribution
-credit.
+The schema-v4 service treats every new public submission as untrusted input.
+After strict bounded validation, it enters a separate pending-only quarantine.
+Quarantine records cannot update consensus, create a reviewed revision, affect
+public lookups, or earn contribution credit, and there is no approval route.
+Historical reviewed revisions and previously confirmed title-level consensus
+remain available as read-only lookup data. A historical single-upload candidate
+may still be shown as a review hint, but it is never applied automatically.
