@@ -21,7 +21,7 @@
     
     
       
-        <title>Windows optical-drive mapping and recovery - MKV Episode Matcher</title>
+        <title>Short-title review - MKV Episode Matcher</title>
       
     
     
@@ -74,7 +74,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#windows-optical-drive-mapping-and-recovery" class="md-skip">
+        <a href="#short-title-review" class="md-skip">
           Skip to content
         </a>
       
@@ -108,7 +108,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Windows optical-drive mapping and recovery
+              Short-title review
             
           </span>
         </div>
@@ -673,10 +673,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#stable-drive-mapping" class="md-nav__link">
+  <a href="#configure-the-cutoff" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Stable drive mapping
+        Configure the cutoff
       
     </span>
   </a>
@@ -684,10 +684,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#ripweaver-shows-no-drives-while-windows-does" class="md-nav__link">
+  <a href="#review-choices" class="md-nav__link">
     <span class="md-ellipsis">
       
-        RipWeaver shows no drives while Windows does
+        Review choices
       
     </span>
   </a>
@@ -695,10 +695,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#loaded-unreadable-and-empty-are-different-states" class="md-nav__link">
+  <a href="#safety-behavior" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Loaded, unreadable, and empty are different states
+        Safety behavior
       
     </span>
   </a>
@@ -706,49 +706,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#safe-recovery-order" class="md-nav__link">
+  <a href="#how-to-test-it" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Safe recovery order
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Safe recovery order">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#1-restart-one-exact-windows-device" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        1. Restart one exact Windows device
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#2-perform-a-real-hardware-power-cycle" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        2. Perform a real hardware power cycle
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#tray-control-follow-up" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Tray-control follow-up
+        How to test it
       
     </span>
   </a>
@@ -756,10 +717,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#safety-record" class="md-nav__link">
+  <a href="#development-status" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Safety record
+        Development status
       
     </span>
   </a>
@@ -786,136 +747,85 @@
   
 
 
-<h1 id="windows-optical-drive-mapping-and-recovery">Windows optical-drive mapping and recovery</h1>
-<p>This note records the Windows drive-mapping behavior added on 2026-08-10 and
-the safe recovery procedure for an optical drive that stops reporting its
-loaded disc.</p>
-<h2 id="stable-drive-mapping">Stable drive mapping</h2>
+<h1 id="short-title-review">Short-title review</h1>
+<p>RipWeaver can hold unusually short ripped titles for review before episode
+matching. This keeps menus, previews, logos, and other very short clips from
+entering the matcher automatically while leaving the file under the user's
+control.</p>
+<h2 id="configure-the-cutoff">Configure the cutoff</h2>
+<p>Open <strong>Settings</strong>, then find <strong>Media Pipeline Locations</strong> and set <strong>Short-title
+review cutoff</strong>.</p>
 <ul>
-<li>MakeMKV drive numbers are temporary command slots. RipWeaver binds each slot
-  to a hashed Windows Plug-and-Play identity.</li>
-<li>The setup wizard reviews the complete currently detected device set. It can
-  mark every detected drive as usable at once or retain per-device <code>Use</code> and
-  <code>Ignore</code> choices.</li>
-<li>A newly detected or changed hardware identity is always unmapped. It does not
-  inherit an older drive's approval, even when the sanitized model description
-  is identical.</li>
-<li>A safe descriptor match can warn that a USB device may have been
-  re-enumerated. Saving the exact wizard snapshot retires absent older trusted
-  identities so they cannot silently regain approval later.</li>
-<li>All five currently installed optical drives are intentional ripping devices:
-  three SATA drives and two generic USB optical devices.</li>
-<li>A Windows-only provisional slot cannot prepare or rip a disc until a
-  read-only MakeMKV refresh confirms the same current slot.</li>
-<li>If automatic processing is enabled, the wizard has a separate explicit
-  option to continue loaded discs after saving. Clearing it changes only the
-  private map and starts no disc work.</li>
+<li>The default is <strong>150 seconds (2 minutes 30 seconds)</strong>.</li>
+<li>A title is held only when it is strictly shorter than the cutoff. A title
+  exactly equal to the cutoff is not held.</li>
+<li>The accepted range is 0 through 3,600 seconds.</li>
+<li>Set the value to <strong>0</strong> to disable short-title review.</li>
 </ul>
-<p>The private map stores only identity hashes, sanitized model/connection
-descriptors, and trusted, ignored, or retired states. It does not store raw
-Plug-and-Play IDs, serial numbers, or drive letters.</p>
-<h2 id="ripweaver-shows-no-drives-while-windows-does">RipWeaver shows no drives while Windows does</h2>
-<p>The RipWeaver dashboard displays its cached drive-discovery result; normal
-dashboard polling does not repeatedly access the optical drives. A status of
-<code>error</code> with error code <code>no_drives</code> means that RipWeaver found and ran
-MakeMKVCLI, but MakeMKV returned no usable optical-drive records. This is
-different from a missing or incorrectly configured MakeMKVCLI executable.</p>
-<p>Windows recognizing a drive is necessary but not sufficient for ripping.
-RipWeaver requires MakeMKV to confirm the current command slot before it will
-prepare or rip a disc. Therefore a Windows-visible device may still be absent
-from the dashboard after a failed MakeMKV discovery.</p>
-<p>Use this safe recovery sequence:</p>
+<p>The selected cutoff is saved when the settings form is saved. Each newly
+verified rip contract retains the cutoff that was active when it was created,
+so changing the setting affects future contracts rather than silently changing
+an item already being reviewed.</p>
+<h2 id="review-choices">Review choices</h2>
+<p>When a newly ripped title is shorter than the configured cutoff, RipWeaver
+stops it before matching and displays these choices:</p>
+<table>
+<thead>
+<tr>
+<th>Choice</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Keep file · ignore matching</strong></td>
+<td>Keeps the staged MKV, excludes it from episode matching, and remembers the decision for that exact disc and title.</td>
+</tr>
+<tr>
+<td><strong>Use for matching</strong></td>
+<td>Sends the title through the normal matching workflow and remembers that it should be included for that exact disc and title.</td>
+</tr>
+<tr>
+<td><strong>Mark for deletion review</strong></td>
+<td>Keeps the file, excludes it from matching, and records that it should be reviewed for deletion. It does not delete anything.</td>
+</tr>
+<tr>
+<td><strong>Delete staged rip permanently</strong></td>
+<td>Appears only after a staged file has been marked for deletion review. It requires a separate confirmation and permanently deletes only that staged rip. It does not delete a media-library file.</td>
+</tr>
+</tbody>
+</table>
+<p>The remembered decision is scoped to the exact disc fingerprint and title
+index. It is not a broad rule applied to unrelated discs or files.</p>
+<h2 id="safety-behavior">Safety behavior</h2>
+<p>The initial review buttons never rip, transcode, move, delete, or eject media.
+In particular, <strong>Mark for deletion review</strong> changes review metadata only. A
+permanent deletion remains a separate, explicitly confirmed action and should
+be tested only with disposable test media.</p>
+<h2 id="how-to-test-it">How to test it</h2>
 <ol>
-<li>Close the MakeMKV desktop application and allow any current MakeMKV or
-   RipWeaver disc operation to finish.</li>
-<li>Confirm the MakeMKVCLI path on RipWeaver's <strong>Settings</strong> page.</li>
-<li>Power-cycle an external drive or its USB hub if it appears stuck, then wait
-   for Windows to finish detecting it. Reconnect multiple external drives one
-   at a time when isolating a failing enclosure or device.</li>
-<li>In RipWeaver, select <strong>Refresh drives (read-only)</strong>. This is an explicitly
-   confirmed MakeMKV slot enumeration; it does not inventory titles, rip,
-   transcode, move, or delete media.</li>
-<li>If discovery times out repeatedly, restart Windows to reset the optical
-   driver stack before retrying.</li>
+<li>Restart the source-test copy of RipWeaver so it loads the current code.</li>
+<li>Open <strong>Settings</strong>, set the short-title cutoff to 150 seconds or another test
+   value, and save the settings.</li>
+<li>Prepare a future test rip containing a title shorter than the cutoff.</li>
+<li>Confirm that the title is held before matching and that the review panel
+   shows the three non-destructive choices.</li>
+<li>Test <strong>Keep file · ignore matching</strong> and <strong>Use for matching</strong> with safe test
+   items and confirm the chosen disposition persists.</li>
+<li>If testing deletion, use a disposable staged file, select <strong>Mark for
+   deletion review</strong> first, and carefully review the separate permanent-delete
+   confirmation.</li>
 </ol>
-<p>If MakeMKV still reports no drives, test whether the MakeMKV desktop
-application itself can see the devices after recovery. Do not start a rip for
-this check. A device that Windows sees but MakeMKV does not see is a MakeMKV,
-driver, firmware, USB/SATA bridge, or enclosure discovery issue rather than a
-RipWeaver rendering problem.</p>
-<h2 id="loaded-unreadable-and-empty-are-different-states">Loaded, unreadable, and empty are different states</h2>
-<p>Windows may detect an optical device and even obtain a volume label while File
-Explorer still reports that it cannot read the disc. That does not prove the
-tray is empty, and it does not prove MakeMKV cannot read the disc directly.</p>
-<p>Conversely, a wedged drive can remain present with Windows device status <code>OK</code>
-while reporting <code>MediaLoaded: False</code> for a disc that is physically in the tray.
-During the 2026-08-10 incident:</p>
-<ul>
-<li>Windows still enumerated the affected internal SATA Blu-ray drive;</li>
-<li>its device status was <code>OK</code>, but its media-loaded state was false;</li>
-<li>File Explorer could not read the disc and software eject failed; and</li>
-<li>no MakeMKV process was running.</li>
-</ul>
-<p>This combination supports a stale driver/device state or locked drive firmware,
-not an active MakeMKV lock. Do not repeatedly open the drive in File Explorer;
-close Explorer errors before retrying MakeMKV discovery.</p>
-<p>Future UI work should represent at least <code>empty</code>, <code>loaded</code>, and
-<code>loaded/unreadable or unknown</code> separately. A failed Windows volume mount must
-not be treated as proof of an empty tray. MakeMKV remains authoritative before
-disc preparation or ripping.</p>
-<h2 id="safe-recovery-order">Safe recovery order</h2>
-<p>Before resetting a device, confirm that no RipWeaver rip and no MakeMKV GUI or
-CLI process is reading any optical drive.</p>
-<h3 id="1-restart-one-exact-windows-device">1. Restart one exact Windows device</h3>
-<p>Open PowerShell as Administrator. Replace the placeholder drive letter and
-expected model text, then review the metadata before issuing the restart:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nv">$optical</span> <span class="p">=</span> <span class="nb">Get-CimInstance</span> <span class="n">Win32_CDROMDrive</span> <span class="n">-Filter</span> <span class="s2">&quot;Drive = &#39;&lt;LETTER&gt;:&#39;&quot;</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nv">$optical</span> <span class="p">|</span> <span class="nb">Select-Object</span> <span class="n">Drive</span><span class="p">,</span> <span class="n">Name</span><span class="p">,</span> <span class="n">MediaLoaded</span><span class="p">,</span> <span class="n">Status</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="k">if</span> <span class="p">(</span><span class="nv">$optical</span><span class="p">.</span><span class="n">Name</span> <span class="o">-notlike</span> <span class="s1">&#39;*&lt;EXPECTED MODEL TEXT&gt;*&#39;</span><span class="p">)</span> <span class="p">{</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="k">throw</span> <span class="s1">&#39;The drive letter is not bound to the expected optical device.&#39;</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="p">}</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="n">pnputil</span> <span class="p">/</span><span class="nb">restart-device</span> <span class="s2">&quot;</span><span class="p">$(</span><span class="nv">$optical</span><span class="p">.</span><span class="n">PNPDeviceID</span><span class="p">)</span><span class="s2">&quot;</span>
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="n">pnputil</span> <span class="p">/</span><span class="n">scan-devices</span>
-</code></pre></div>
-<p>Never use a broad <code>CDROM</code> class restart on a multi-drive system: it can reset
-all optical drives, including unaffected active pipelines. Do not use
-<code>pnputil /remove-device</code> for this recovery.</p>
-<p>The equivalent graphical operation is Device Manager, <code>DVD/CD-ROM drives</code>, the
-exact reviewed model, <code>Disable device</code>, wait ten seconds, then <code>Enable device</code>.</p>
-<h3 id="2-perform-a-real-hardware-power-cycle">2. Perform a real hardware power cycle</h3>
-<p>If the targeted Windows restart does not recover the drive:</p>
-<ul>
-<li>For a USB drive, disconnect both USB and external power, wait 30 seconds,
-  reconnect power, and then reconnect USB. Prefer the same USB port. A changed
-  identity or port remains blocked until the mapping wizard is reviewed.</li>
-<li>For an internal SATA drive, shut Windows down completely instead of choosing
-  Restart, switch off or unplug the PC for 30 seconds, and then power it on.</li>
-</ul>
-<p>After recovery, do not test by repeatedly opening the disc in File Explorer.
-Close the tray, wait 10 to 15 seconds, and use RipWeaver's read-only drive
-refresh.</p>
-<p>Use a tray's emergency-eject pinhole only as a final physical recovery with the
-computer powered off and disconnected. It is not a software reset.</p>
-<h2 id="tray-control-follow-up">Tray-control follow-up</h2>
-<p>Windows provides device-specific eject and load-media controls, but File
-Explorer normally exposes only eject. A future RipWeaver <code>Close tray and
-refresh</code> action should:</p>
-<ul>
-<li>target the exact trusted hashed device mapping;</li>
-<li>refuse an unmapped, ignored, or changed identity;</li>
-<li>refuse active/queued rip work that makes tray control unsafe;</li>
-<li>require explicit tray-control confirmation; and</li>
-<li>request a read-only MakeMKV refresh only after the close operation settles.</li>
-</ul>
-<p>Generic CD-audio commands are unsuitable on a five-drive system because they
-can address the wrong tray.</p>
-<h2 id="safety-record">Safety record</h2>
-<p>The incident diagnosis used only path-redacted Windows device metadata and a
-process-list check. No restart, disable, eject, load, MakeMKV command, disc read,
-rip, transcode, rename, move, delete, or media-library change was performed by
-Codex while diagnosing it.</p>
+<p>Previously processed items whose contracts do not contain the new duration
+metadata will not automatically gain the short-title review panel. The duration
+for new items comes from the saved MakeMKV inventory; RipWeaver does not need to
+open the media merely to decide whether the item is short.</p>
+<h2 id="development-status">Development status</h2>
+<p>The feature was added in commit <code>f61aa37</code> on the <code>codex/support-bundle</code> branch.
+The Python test suite passed with 1,159 tests, and the frontend lint and
+production build completed successfully. It has not been merged into <code>main</code> or
+included in a public installer or release yet.</p>
+<p>See <a href="../PROJECT_STATUS/">Project status</a> for the broader development record.</p>
 
 
 
