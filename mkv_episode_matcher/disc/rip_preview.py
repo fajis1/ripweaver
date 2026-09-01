@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -73,7 +72,6 @@ class RipPreviewJob:
     drive_index: int
     title_index: int
     estimated_bytes: int | None
-    duration_seconds: int | None
     staging_destination: str
     final_destination: str | None
     collision_status: str
@@ -118,17 +116,9 @@ def _manifest_sha256(manifest: RipManifest) -> str:
 def compatible_manifest_sha256s(manifest: RipManifest) -> frozenset[str]:
     """Return current and known-safe legacy digests for one exact manifest."""
 
+    current = _manifest_sha256(manifest)
     identity = manifest.to_dict()
     identity.pop("created_at", None)
-    identities = [identity]
-    jobs = identity.get("jobs", [])
-    if all(
-        isinstance(job, dict) and job.get("duration_seconds") is None for job in jobs
-    ):
-        legacy_jobs_identity = deepcopy(identity)
-        for job in legacy_jobs_identity.get("jobs", []):
-            job.pop("duration_seconds", None)
-        identities.append(legacy_jobs_identity)
     legacy_defaults = {
         "selected_title_indexes": None,
         "downstream_skip_title_indexes": (),
@@ -149,24 +139,15 @@ def compatible_manifest_sha256s(manifest: RipManifest) -> frozenset[str]:
         and all(context.get(key) == default for key, default in legacy_defaults.items())
         for context in contexts
     ):
-        return frozenset(
-            hashlib.sha256(
-                json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            ).hexdigest()
-            for value in identities
-        )
-    for value in tuple(identities):
-        legacy_context_identity = deepcopy(value)
-        for context in legacy_context_identity.get("media_contexts", []):
-            for key in legacy_defaults:
-                context.pop(key, None)
-        identities.append(legacy_context_identity)
-    return frozenset(
-        hashlib.sha256(
-            json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
-        for value in identities
+        return frozenset({current})
+    for context in contexts:
+        for key in legacy_defaults:
+            context.pop(key, None)
+    legacy_payload = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
     )
+    legacy = hashlib.sha256(legacy_payload).hexdigest()
+    return frozenset({current, legacy})
 
 
 def _collision_status(
@@ -304,7 +285,6 @@ def build_rip_preview(
                 drive_index=job.drive_index,
                 title_index=job.title_index,
                 estimated_bytes=job.estimated_bytes,
-                duration_seconds=job.duration_seconds,
                 staging_destination=job.relative_output_dir,
                 final_destination=(
                     f"{job.final_relative_dir}/{job.output_basename}"

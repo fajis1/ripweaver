@@ -80,27 +80,20 @@ class CatalogueCapabilities:
     provisional_help: bool
     independent_quorum: int
     human_moderation_required: bool
-    submissions_quarantined: bool
-    quarantine_publication_enabled: bool
     attachments_accepted: bool
     media_accepted: bool
 
     @property
     def compatible(self) -> bool:
         return (
-            self.schema_version == 4
+            self.schema_version == 3
             and self.public_lookup is False
             and self.installation_registration is True
-            and self.metered_lookup is True
-            and self.manual_lookup_after_prompt is True
-            and self.contribution_credits is False
             and self.authenticated_submissions is True
-            and self.automatic_piecewise_consensus is False
+            and self.automatic_piecewise_consensus is True
             and self.provisional_help is True
             and self.independent_quorum == 2
-            and self.human_moderation_required is True
-            and self.submissions_quarantined is True
-            and self.quarantine_publication_enabled is False
+            and self.human_moderation_required is False
             and self.attachments_accepted is False
             and self.media_accepted is False
         )
@@ -122,9 +115,9 @@ class ContributionReceipt:
     submission_id: str
     content_hash: str
     payload_sha256: str
-    status: Literal["pending", "rejected"]
-    validation_version: int
-    publication_eligible: Literal[False]
+    status: Literal["accepted"]
+    confirmed_items: int
+    unresolved_items: int
 
 
 @dataclass(frozen=True)
@@ -174,54 +167,6 @@ def _required_bool(value: object, field: str) -> bool:
             f"RipWeaver Catalogue returned invalid {field} metadata"
         )
     return value
-
-
-def _quarantine_receipt(
-    value: object, *, expected_content_hash: str
-) -> ContributionReceipt:
-    if not isinstance(value, dict) or value.get("status") not in {
-        "pending",
-        "rejected",
-    }:
-        raise RipWeaverCatalogueError(
-            "RipWeaver Catalogue submission was not quarantined"
-        )
-    if value.get("consensus") is not None:
-        raise RipWeaverCatalogueError(
-            "RipWeaver Catalogue quarantine returned forbidden consensus metadata"
-        )
-    validation_version = _required_int(
-        value.get("validation_version"), "validation version", minimum=1
-    )
-    if validation_version != 1:
-        raise RipWeaverCatalogueError(
-            "RipWeaver Catalogue returned an unsupported validation version"
-        )
-    if _required_bool(value.get("publication_eligible"), "publication eligibility"):
-        raise RipWeaverCatalogueError(
-            "RipWeaver Catalogue returned an unsafe publication-eligible receipt"
-        )
-    returned_hash = _required_string(value.get("content_hash"), "content hash")
-    if returned_hash.upper() != expected_content_hash.upper():
-        raise RipWeaverCatalogueError(
-            "RipWeaver Catalogue quarantined another disc submission"
-        )
-    payload_sha256 = _required_string(value.get("payload_sha256"), "payload digest")
-    if re.fullmatch(r"[0-9a-f]{64}", payload_sha256) is None:
-        raise RipWeaverCatalogueError(
-            "RipWeaver Catalogue returned an invalid payload digest"
-        )
-    status: Literal["pending", "rejected"] = (
-        "pending" if value["status"] == "pending" else "rejected"
-    )
-    return ContributionReceipt(
-        submission_id=_required_string(value.get("submission_id"), "submission ID"),
-        content_hash=returned_hash.upper(),
-        payload_sha256=payload_sha256,
-        status=status,
-        validation_version=validation_version,
-        publication_eligible=False,
-    )
 
 
 def _usage(value: object) -> CatalogueUsage:
@@ -391,11 +336,10 @@ class RipWeaverCatalogueClient:
             raise RipWeaverCatalogueError(
                 "RipWeaver Catalogue schema check returned invalid metadata"
             )
-        schema_version = _required_int(
-            payload.get("schema_version"), "schema version", minimum=1
-        )
         capabilities = CatalogueCapabilities(
-            schema_version=schema_version,
+            schema_version=_required_int(
+                payload.get("schema_version"), "schema version", minimum=1
+            ),
             service_version=_required_string(
                 payload.get("service_version"), "service version", maximum=64
             ),
@@ -423,16 +367,6 @@ class RipWeaverCatalogueClient:
             ),
             human_moderation_required=_required_bool(
                 payload.get("human_moderation_required"), "schema"
-            ),
-            submissions_quarantined=(
-                _required_bool(payload.get("submissions_quarantined"), "schema")
-                if schema_version >= 4
-                else False
-            ),
-            quarantine_publication_enabled=(
-                _required_bool(payload.get("quarantine_publication_enabled"), "schema")
-                if schema_version >= 4
-                else True
             ),
             attachments_accepted=_required_bool(
                 payload.get("attachments_accepted"), "schema"
@@ -654,7 +588,7 @@ class RipWeaverCatalogueClient:
             raise RipWeaverCatalogueAuthenticationError(
                 "RipWeaver Catalogue installation authentication failed"
             )
-        if response.status_code != 202:
+        if response.status_code not in {200, 202}:
             raise RipWeaverCatalogueError(
                 f"RipWeaver Catalogue contribution failed (HTTP {response.status_code})"
             )
@@ -664,9 +598,40 @@ class RipWeaverCatalogueClient:
             raise RipWeaverCatalogueError(
                 "RipWeaver Catalogue contribution returned invalid JSON"
             ) from exc
-        return _quarantine_receipt(
-            receipt,
-            expected_content_hash=content_hash,
+        if not isinstance(receipt, dict) or receipt.get("status") != "accepted":
+            raise RipWeaverCatalogueError(
+                "RipWeaver Catalogue contribution was not accepted"
+            )
+        consensus = receipt.get("consensus")
+        if not isinstance(consensus, dict):
+            raise RipWeaverCatalogueError(
+                "RipWeaver Catalogue returned invalid consensus metadata"
+            )
+        returned_hash = _required_string(receipt.get("content_hash"), "content hash")
+        if returned_hash.upper() != content_hash.upper():
+            raise RipWeaverCatalogueError(
+                "RipWeaver Catalogue accepted another disc contribution"
+            )
+        payload_sha256 = _required_string(
+            receipt.get("payload_sha256"), "payload digest"
+        )
+        if re.fullmatch(r"[0-9a-f]{64}", payload_sha256) is None:
+            raise RipWeaverCatalogueError(
+                "RipWeaver Catalogue returned an invalid payload digest"
+            )
+        return ContributionReceipt(
+            submission_id=_required_string(
+                receipt.get("submission_id"), "submission ID"
+            ),
+            content_hash=returned_hash.upper(),
+            payload_sha256=payload_sha256,
+            status="accepted",
+            confirmed_items=_required_int(
+                consensus.get("confirmed_items"), "confirmed item count"
+            ),
+            unresolved_items=_required_int(
+                consensus.get("unresolved_items"), "unresolved item count"
+            ),
         )
 
     def create_support_checkout(

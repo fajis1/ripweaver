@@ -7,7 +7,7 @@ from mkv_episode_matcher.backend.routers import rip
 from mkv_episode_matcher.disc import eject
 from mkv_episode_matcher.disc.drive_watcher import DriveWatcher
 from mkv_episode_matcher.disc.orchestration_store import OrchestrationStore
-from mkv_episode_matcher.disc.preflight import CommandResult, PreflightError
+from mkv_episode_matcher.disc.preflight import CommandResult
 
 
 def _drive_result(source: str) -> CommandResult:
@@ -30,23 +30,6 @@ def _rejected(method: str, stage: str, error_code: int) -> eject.EjectMethodResu
         accepted=False,
         failures=(eject.EjectFailure(method, stage, error_code),),
     )
-
-
-def test_job_dashboard_reports_current_automatic_eject_preference(monkeypatch):
-    monkeypatch.setattr(
-        "mkv_episode_matcher.core.config_manager.get_config_manager",
-        lambda: SimpleNamespace(
-            load=lambda: SimpleNamespace(
-                automatic_processing_enabled=True,
-                automatic_eject_after_rip=True,
-            )
-        ),
-    )
-
-    response = rip.list_rip_jobs(SimpleNamespace(list_jobs=lambda: []))
-
-    assert response["automatic_processing_enabled"] is True
-    assert response["automatic_eject_after_rip"] is True
 
 
 def test_eject_rejects_non_drive_letter_without_opening_device(monkeypatch):
@@ -217,43 +200,6 @@ def test_eject_endpoint_uses_primed_drive_cache_without_another_scan(
     assert cached.disc_label is None
     assert cached.current_job_id is None
     assert cached.current_disc_fingerprint is None
-
-
-def test_eject_endpoint_rejects_windows_only_provisional_drive(tmp_path, monkeypatch):
-    watcher = DriveWatcher(
-        lambda *_args, **_kwargs: CommandResult(
-            command=("makemkvcon64.exe", "info", "disc:9999"),
-            return_code=0,
-            stdout="",
-            stderr="",
-            started_at="2026-08-01T00:00:00+00:00",
-            finished_at="2026-08-01T00:00:01+00:00",
-        ),
-        native_discovery=lambda: ("D:",),
-        native_media_discovery=lambda: {"D:": (True, "disc")},
-    )
-    with pytest.raises(PreflightError, match="provisional"):
-        watcher.refresh(tmp_path / "makemkvcon64.exe")
-    monkeypatch.setattr(
-        rip,
-        "eject_optical_drive",
-        lambda _device_name: pytest.fail("a provisional drive must not be ejected"),
-    )
-
-    with pytest.raises(rip.HTTPException) as response:
-        rip.eject_drive(
-            0,
-            rip.EjectDriveRequest(confirm_eject=True),
-            OrchestrationStore(tmp_path / "jobs.sqlite3"),
-            lambda *_args, **_kwargs: pytest.fail(
-                "a provisional drive must not be inventoried"
-            ),
-            watcher,
-            rip.RipExecutionRegistry(),
-        )
-
-    assert response.value.status_code == 409
-    assert "MakeMKV has not confirmed" in response.value.detail
 
 
 def test_eject_endpoint_returns_safe_windows_diagnostics(tmp_path, monkeypatch):

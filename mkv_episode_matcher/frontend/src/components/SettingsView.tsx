@@ -4,7 +4,6 @@ interface Config {
     cache_dir: string;
     min_confidence: number;
     gemini_model: string;
-    gemini_fallback_models: string[];
     asr_provider: string;
     sub_provider: 'local' | 'opensubtitles';
     open_subtitles_username?: string;
@@ -17,7 +16,6 @@ interface Config {
     transcode_output_root?: string;
     deletion_staging_root?: string;
     retained_source_ttl_days: number;
-    short_title_review_seconds: number;
     jellyfin_tv_root?: string;
     jellyfin_movie_root?: string;
     makemkv_path?: string;
@@ -65,9 +63,6 @@ interface CatalogueStatus {
         provisional_help: boolean;
         independent_quorum: number;
         support_checkout: boolean;
-        human_moderation_required: boolean;
-        submissions_quarantined: boolean;
-        quarantine_publication_enabled: boolean;
     } | null;
     usage: {
         monthly_limit: number;
@@ -85,18 +80,8 @@ const CREDENTIAL_LABELS: Record<string, string> = {
     'opensubtitles-username': 'OpenSubtitles username',
     'opensubtitles-password': 'OpenSubtitles password',
     'gemini-primary': 'Gemini primary API key',
-    'gemini-paid': 'Gemini backup API key',
+    'gemini-paid': 'Gemini paid/fallback API key',
     'ripweaver-catalogue': 'RipWeaver Catalogue installation',
-};
-
-const CREDENTIAL_SETTING_TARGETS: Record<string, string> = {
-    tmdb: 'settings-tmdb-api-key',
-    'opensubtitles-api': 'settings-opensubtitles-api-key',
-    'opensubtitles-username': 'settings-opensubtitles-username',
-    'opensubtitles-password': 'settings-opensubtitles-password',
-    'gemini-primary': 'settings-gemini-primary-api-key',
-    'gemini-paid': 'settings-gemini-backup-api-key',
-    'ripweaver-catalogue': 'settings-ripweaver-catalogue',
 };
 
 interface StoredProfile {
@@ -156,18 +141,6 @@ const AUDIO_LANGUAGE_OPTIONS = [
     ['ell', 'Modern Greek'], ['lat', 'Latin'], ['und', 'Unknown / undefined'],
 ];
 
-const GEMINI_MODEL_OPTIONS = [
-    { value: 'gemini-3.7-flash', label: 'Gemini 3.7 Flash (Recommended)' },
-    { value: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash' },
-    { value: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash-Lite (Recommended lightweight)' },
-    { value: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash-Lite (Newer lightweight)' },
-    { value: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash' },
-    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
-    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro (Most accurate)' },
-    { value: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite' },
-    { value: 'gemma-4-31b-it', label: 'Gemma 4 31B IT (Free tier / open weights)' },
-];
-
 const SettingsView: React.FC = () => {
     const [config, setConfig] = useState<Config | null>(null);
     const [loading, setLoading] = useState(true);
@@ -185,7 +158,6 @@ const SettingsView: React.FC = () => {
     const [catalogueStatus, setCatalogueStatus] = useState<CatalogueStatus | null>(null);
     const [catalogueStatusError, setCatalogueStatusError] = useState<string | null>(null);
     const [connectingCatalogue, setConnectingCatalogue] = useState(false);
-    const [pendingCredentialTarget, setPendingCredentialTarget] = useState<string | null>(null);
     const [profileDraft, setProfileDraft] = useState({
         profile_id: '', display_name: '', encoder: 'vce_h265', encoder_preset: 'quality', quality: 24, quality_480p: 26, quality_720p: 25, quality_1080p: 24, quality_2160p: 22,
         selective_decomb: true, content_kind: 'unknown', nlmeans_preset: '', nlmeans_tune: 'none',
@@ -199,24 +171,6 @@ const SettingsView: React.FC = () => {
             if (payload?.profiles) setProfiles(payload.profiles);
         }).catch(() => undefined);
     }, []);
-
-    useEffect(() => {
-        if (!pendingCredentialTarget) return;
-        const targetId = CREDENTIAL_SETTING_TARGETS[pendingCredentialTarget];
-        const target = targetId ? document.getElementById(targetId) : null;
-        if (!target) return;
-        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        target.focus({ preventScroll: true });
-        setPendingCredentialTarget(null);
-    }, [pendingCredentialTarget, config?.sub_provider]);
-
-    const openCredentialSetting = (name: string) => {
-        if (!config || !CREDENTIAL_SETTING_TARGETS[name]) return;
-        if (name.startsWith('opensubtitles-') && config.sub_provider !== 'opensubtitles') {
-            setConfig({ ...config, sub_provider: 'opensubtitles' });
-        }
-        setPendingCredentialTarget(name);
-    };
 
     const editProfile = (item: StoredProfile, duplicate: boolean) => {
         setProfileDraft({
@@ -435,16 +389,6 @@ const SettingsView: React.FC = () => {
         setConfig({ ...config, [field]: value });
     };
 
-    const handleGeminiFallbackChange = (index: number, value: string) => {
-        if (!config) return;
-        const models = [...(config.gemini_fallback_models || [])];
-        models[index] = value;
-        setConfig({
-            ...config,
-            gemini_fallback_models: models.filter((model) => model.trim()),
-        });
-    };
-
     if (loading) return <div className="p-8 text-center text-muted">Loading settings...</div>;
     if (!config) return <div className="p-8 text-center text-red-400">Error loading settings</div>;
 
@@ -508,26 +452,15 @@ const SettingsView: React.FC = () => {
 
                     <div className="rounded-xl border border-[var(--border-color)] p-4 space-y-3">
                         <div className="font-semibold text-white">Credential status</div>
-                        <p className="text-xs text-[var(--text-muted)]">Only whether each local credential is configured and its final four characters are shown. Full values are never returned by the server. Select a credential to jump to its field, paste or replace the value, and then save Settings.</p>
+                        <p className="text-xs text-[var(--text-muted)]">Only whether each local credential is configured and its final four characters are shown. Full values are never returned by the server.</p>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                             {Object.entries(config.credential_status || {}).map(([name, status]) => (
-                                <button
-                                    key={name}
-                                    type="button"
-                                    onClick={() => openCredentialSetting(name)}
-                                    className="group flex items-center justify-between gap-3 rounded-lg border border-transparent bg-[var(--bg-tertiary)]/50 px-3 py-2 text-left text-sm transition hover:border-[var(--accent-primary)] hover:bg-[var(--bg-tertiary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent-primary)]"
-                                    aria-label={`${name === 'ripweaver-catalogue' ? 'Manage' : status.configured ? 'Replace' : 'Add'} ${CREDENTIAL_LABELS[name] || name}`}
-                                >
-                                    <span className="min-w-0">
-                                        <span className="block truncate text-muted">{CREDENTIAL_LABELS[name] || name}</span>
-                                        <span className={status.configured ? 'block text-xs text-green-300' : 'block text-xs text-[var(--text-muted)]'}>
-                                            {status.configured ? `Configured${status.last4 ? ` · …${status.last4}` : ''}` : 'Not configured'}
-                                        </span>
+                                <div key={name} className="flex items-center justify-between rounded-lg bg-[var(--bg-tertiary)]/50 px-3 py-2 text-sm">
+                                    <span className="text-muted">{CREDENTIAL_LABELS[name] || name}</span>
+                                    <span className={status.configured ? 'text-green-300' : 'text-[var(--text-muted)]'}>
+                                        {status.configured ? `Configured${status.last4 ? ` · …${status.last4}` : ''}` : 'Not configured'}
                                     </span>
-                                    <span className="shrink-0 rounded-md bg-indigo-500/15 px-2 py-1 text-xs font-medium text-indigo-200 group-hover:bg-indigo-500/25">
-                                        {name === 'ripweaver-catalogue' ? 'Manage' : status.configured ? 'Replace' : 'Add'} →
-                                    </span>
-                                </button>
+                                </div>
                             ))}
                         </div>
                     </div>
@@ -545,11 +478,11 @@ const SettingsView: React.FC = () => {
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4 bg-[var(--bg-tertiary)]/50 rounded-xl border border-[var(--border-color)]">
                             {[
                                 ['gemini_primary_api_key', 'gemini-primary', 'Gemini primary API key'],
-                                ['gemini_paid_api_key', 'gemini-paid', 'Gemini backup API key'],
+                                ['gemini_paid_api_key', 'gemini-paid', 'Gemini paid/fallback API key'],
                             ].map(([field, credential, label]) => (
                                 <label key={field} className="space-y-2">
                                     <span className="text-sm font-medium text-muted">{label}</span>
-                                    <input id={CREDENTIAL_SETTING_TARGETS[credential]} type="password" value={(config[field as keyof Config] as string) || ''} onChange={(event) => handleChange(field as keyof Config, event.target.value)} placeholder={config.credential_status?.[credential]?.configured ? 'Configured — paste only to replace' : 'Not configured'} className="w-full bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-lg px-4 py-2 text-white" />
+                                    <input type="password" value={(config[field as keyof Config] as string) || ''} onChange={(event) => handleChange(field as keyof Config, event.target.value)} placeholder={config.credential_status?.[credential]?.configured ? 'Configured — paste only to replace' : 'Not configured'} className="w-full bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-lg px-4 py-2 text-white" />
                                     <a href={config.credential_status?.[credential]?.management_url || 'https://aistudio.google.com/app/apikey'} target="_blank" rel="noopener noreferrer" className="inline-block text-sm text-indigo-300 underline hover:text-white">Get or manage key</a>
                                 </label>
                             ))}
@@ -568,50 +501,24 @@ const SettingsView: React.FC = () => {
                             />
                         </div>
                     </div>
-                    <div className="rounded-xl border border-indigo-500/30 bg-indigo-500/10 p-4 space-y-4">
-                        <div>
-                            <h4 className="font-semibold text-indigo-100">Gemini model selection and fallback</h4>
-                            <p className="mt-1 text-xs text-indigo-100/70">Choose the primary model and up to two models RipWeaver may try in order when capacity is exhausted.</p>
-                        </div>
-                        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                            <label className="space-y-2 rounded-lg border border-indigo-300/15 bg-black/10 p-3">
-                                <span className="flex items-center gap-2 text-sm font-medium text-indigo-100"><span className="rounded-full bg-indigo-400/20 px-2 py-0.5 text-xs">1</span>Primary model</span>
-                                <select value={config.gemini_model} onChange={(event) => handleChange('gemini_model', event.target.value)} className="w-full rounded-lg border border-indigo-300/25 bg-slate-950 px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-indigo-400">
-                                    {!GEMINI_MODEL_OPTIONS.some((option) => option.value === config.gemini_model) && (
-                                        <option className="bg-slate-950 text-white" value={config.gemini_model}>{config.gemini_model} (saved custom model)</option>
-                                    )}
-                                    {GEMINI_MODEL_OPTIONS.map((option) => <option className="bg-slate-950 text-white" key={option.value} value={option.value}>{option.label}</option>)}
-                                </select>
-                            </label>
-                            {[0, 1].map((index) => (
-                                <label key={index} className="space-y-2 rounded-lg border border-indigo-300/15 bg-black/10 p-3">
-                                    <span className="flex items-center gap-2 text-sm font-medium text-indigo-100"><span className="rounded-full bg-indigo-400/20 px-2 py-0.5 text-xs">{index + 2}</span>{index === 0 ? 'First fallback model' : 'Second fallback model'}</span>
-                                    <select value={config.gemini_fallback_models?.[index] || ''} onChange={(event) => handleGeminiFallbackChange(index, event.target.value)} className="w-full rounded-lg border border-indigo-300/25 bg-slate-950 px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-indigo-400">
-                                        <option className="bg-slate-950 text-white" value="">None</option>
-                                        {config.gemini_fallback_models?.[index] && !GEMINI_MODEL_OPTIONS.some((option) => option.value === config.gemini_fallback_models[index]) && (
-                                            <option className="bg-slate-950 text-white" value={config.gemini_fallback_models[index]}>{config.gemini_fallback_models[index]} (saved custom model)</option>
-                                        )}
-                                        {GEMINI_MODEL_OPTIONS.map((option) => <option className="bg-slate-950 text-white" key={option.value} value={option.value}>{option.label}</option>)}
-                                    </select>
-                                </label>
-                            ))}
-                        </div>
-                        <p className="text-xs text-indigo-100/70">
-                            Order: primary → first fallback → second fallback. RipWeaver tries both configured API keys for each model before advancing after HTTP 429 capacity exhaustion, sustained HTTP 503 overload, or a definite unavailable-model response. Model IDs are non-secret; API keys remain protected in the local credential file.
-                        </p>
-                    </div>
+                    <label className="block space-y-2">
+                        <span className="text-sm font-medium text-muted">Gemini model</span>
+                        <input type="text" list="gemini-model-options" value={config.gemini_model} onChange={(event) => handleChange('gemini_model', event.target.value)} className="w-full bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-lg px-4 py-2 text-white" placeholder="Gemini model ID" />
+                        <datalist id="gemini-model-options"><option value="gemini-3.6-flash" /></datalist>
+                        <span className="block text-xs text-[var(--text-muted)]">Choose a suggested model or type another valid Gemini model ID. This is non-secret; API keys remain protected in the local environment file.</span>
+                    </label>
                 </div>
 
                 <div className="space-y-4">
                     <h3 className="text-xl font-semibold text-white border-b border-[var(--border-color)] pb-2">Media Pipeline Locations</h3>
-                    <p className="text-sm text-[var(--text-muted)]">Rips and encodes stay in staging. After verified media-library placement, an original rip can be retained in staging for deletion so it remains available for a later re-encode. The library folders may be used by Plex, Jellyfin, Emby, or another media server.</p>
+                    <p className="text-sm text-[var(--text-muted)]">Rips and encodes stay in staging. After verified Jellyfin placement, an original rip can be retained in staging for deletion so it remains available for a later re-encode.</p>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         {[
                             ['rip_output_root', 'MakeMKV rip staging root'],
                             ['transcode_output_root', 'Encoded staging root'],
                             ['deletion_staging_root', 'Staging for deletion / reprocessing root'],
-                            ['jellyfin_tv_root', 'TV media library root'],
-                            ['jellyfin_movie_root', 'Movie media library root'],
+                            ['jellyfin_tv_root', 'Jellyfin TV library root'],
+                            ['jellyfin_movie_root', 'Jellyfin movie library root'],
                         ].map(([field, label]) => (
                             <div key={field} className="space-y-2">
                                 <span className="text-sm font-medium text-muted">{label}</span>
@@ -632,19 +539,6 @@ const SettingsView: React.FC = () => {
                             className="w-full bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-lg px-4 py-2 text-white"
                         />
                         <p className="text-xs text-[var(--text-muted)]">Retained originals stay available in cleanup staging for this many days before RipWeaver treats them as expired.</p>
-                    </div>
-                    <div className="space-y-2">
-                        <label className="text-sm font-medium text-muted">Short-title review cutoff (seconds)</label>
-                        <input
-                            type="number"
-                            min="0"
-                            max="3600"
-                            step="15"
-                            value={config.short_title_review_seconds}
-                            onChange={(event) => handleChange('short_title_review_seconds', Number(event.target.value))}
-                            className="w-full bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-lg px-4 py-2 text-white"
-                        />
-                        <p className="text-xs text-[var(--text-muted)]">Default: 150 seconds (2 minutes 30 seconds). Newly ripped titles shorter than this pause before matching so you can keep and ignore them, mark them for deletion review, or match them normally. Set 0 to disable this review.</p>
                     </div>
                 </div>
 
@@ -681,7 +575,7 @@ const SettingsView: React.FC = () => {
                     </label>
                     <label className="block rounded-xl border border-cyan-500/30 bg-cyan-500/10 p-4 text-sm text-cyan-100">
                         <input type="checkbox" className="mr-3" checked={config.automatic_eject_after_rip} onChange={(event) => handleChange('automatic_eject_after_rip', event.target.checked)} />
-                        Automatically eject a disc after every reviewed title has ripped and verified, or after a one-minute cancellable countdown when every known destination already exists in the media library. Failure, timeout, pause, stop, unfinished rerip work, or other active rip work prevents ejection.
+                        Automatically eject a disc after every reviewed title has ripped and verified, or after a one-minute cancellable countdown when every known destination already exists in Jellyfin. Failure, timeout, pause, stop, unfinished rerip work, or other active rip work prevents ejection.
                     </label>
                     <label className="block rounded-xl border border-indigo-500/30 bg-indigo-500/10 p-4 text-sm text-indigo-100">
                         <input type="checkbox" className="mr-3" checked={config.automatic_gemini_ambiguity_fallback} onChange={(event) => handleChange('automatic_gemini_ambiguity_fallback', event.target.checked)} />
@@ -691,14 +585,14 @@ const SettingsView: React.FC = () => {
                         <input type="checkbox" className="mr-3" checked={config.thediscdb_lookup_enabled} onChange={(event) => handleChange('thediscdb_lookup_enabled', event.target.checked)} />
                         Look up inserted discs in TheDiscDB. RipWeaver reads only disc file names and sizes needed for the database identifier, sends only that identifier to TheDiscDB, and accepts episode names only when the returned source playlist and segment map agree with MakeMKV.
                     </label>
-                    <div id="settings-ripweaver-catalogue" tabIndex={-1} className="scroll-mt-6 rounded-xl border border-violet-500/30 bg-violet-500/10 p-4 text-sm text-violet-100 space-y-3 focus:outline-none focus:ring-2 focus:ring-violet-400">
+                    <div className="rounded-xl border border-violet-500/30 bg-violet-500/10 p-4 text-sm text-violet-100 space-y-3">
                         <label className="block">
                             <input type="checkbox" className="mr-3" checked={config.ripweaver_catalogue_enabled} onChange={(event) => handleChange('ripweaver_catalogue_enabled', event.target.checked)} />
-                            Use the community RipWeaver Catalogue for automatic disc identification. Only the compatibility disc identifier is sent; media, local paths, drive details, and media-library information are never uploaded.
+                            Use the community RipWeaver Catalogue for automatic disc identification. Only the compatibility disc identifier is sent; media, local paths, drive details, and Jellyfin information are never uploaded.
                         </label>
                         <label className="block rounded-lg border border-violet-300/20 bg-black/10 p-3">
                             <input type="checkbox" className="mr-3" checked={config.ripweaver_catalogue_contributions_enabled} onChange={(event) => handleChange('ripweaver_catalogue_contributions_enabled', event.target.checked)} />
-                            Automatically submit cumulative, durably matched title layouts from eligible discs to the server's strict pending quarantine. This is one-time consent for future eligible discs; unresolved titles are omitted until matched. Uploads contain only the disc identifier, playlist/segment structure, runtimes, sizes, match provenance, and canonical media names. No media, local paths, drive identity, media-library location, transcript, or credential is uploaded. Quarantined submissions cannot update the public catalogue, create consensus, or earn contribution credit.
+                            Automatically contribute cumulative, durably matched title layouts from eligible discs. This is one-time consent for future eligible discs; unresolved titles are omitted until matched. Uploads contain only the disc identifier, playlist/segment structure, runtimes, sizes, match provenance, and canonical media names. No media, local paths, drive identity, Jellyfin location, transcript, or credential is uploaded.
                         </label>
                         <label className="block space-y-1">
                             <span className="text-xs font-semibold">Catalogue server</span>
@@ -719,7 +613,7 @@ const SettingsView: React.FC = () => {
                                                 : catalogueStatus.compatible === false
                                                   ? 'The server is reachable, but its protocol is not compatible with this desktop version.'
                                                   : catalogueStatus.registered
-                                                    ? `Connected and registered${catalogueStatus.capabilities ? ` · schema ${catalogueStatus.capabilities.schema_version}${catalogueStatus.capabilities.submissions_quarantined ? ' · strict quarantine' : ''}` : ''}`
+                                                    ? `Connected and registered${catalogueStatus.capabilities ? ` · schema ${catalogueStatus.capabilities.schema_version}` : ''}`
                                                     : 'Server is reachable and compatible; this installation is not registered yet.'}
                                     </div>
                                 </div>
@@ -740,15 +634,10 @@ const SettingsView: React.FC = () => {
                                     </div>
                                     {catalogueStatus.contribution_outbox && (
                                         <div className="rounded border border-violet-300/15 p-2">
-                                            Submissions: <span className="font-semibold text-white">{catalogueStatus.contribution_outbox.sent} sent to quarantine</span>
+                                            Contributions: <span className="font-semibold text-white">{catalogueStatus.contribution_outbox.sent} sent</span>
                                             <span className="block text-violet-100/60">{catalogueStatus.contribution_outbox.pending} waiting · {catalogueStatus.contribution_outbox.snapshots} disc snapshots</span>
                                         </div>
                                     )}
-                                </div>
-                            )}
-                            {catalogueStatus?.capabilities?.submissions_quarantined && !catalogueStatus.capabilities.quarantine_publication_enabled && (
-                                <div className="rounded border border-emerald-300/20 bg-emerald-500/10 p-2 text-xs text-emerald-100">
-                                    New submissions pass strict validation and enter a pending-only quarantine with no route into public catalogue results. Historical reviewed and independently confirmed catalogue records remain read-only.
                                 </div>
                             )}
                             {catalogueStatus?.capabilities?.automatic_piecewise_consensus && (
@@ -760,7 +649,7 @@ const SettingsView: React.FC = () => {
                     </div>
                     <label className="block rounded-xl border border-blue-500/30 bg-blue-500/10 p-4 text-sm text-blue-100">
                         <input type="checkbox" className="mr-3" checked={config.automatic_organization_enabled} onChange={(event) => handleChange('automatic_organization_enabled', event.target.checked)} />
-                        Automatically move collision-free, verified encodes from staging into the configured media library. Different resolution versions of one episode may coexist; an exact destination or another file at the same resolution stops for review. Overwrite and deletion are never automatic.
+                        Automatically move collision-free, verified encodes from staging into the configured Jellyfin library. Different resolution versions of one episode may coexist; an exact destination or another file at the same resolution stops for review. Overwrite and deletion are never automatic.
                     </label>
                 </div>
 
@@ -903,7 +792,6 @@ const SettingsView: React.FC = () => {
                                     <div className="space-y-2">
                                         <label className="text-sm font-medium text-muted">Username</label>
                                         <input
-                                            id="settings-opensubtitles-username"
                                             type="text"
                                             value={config.open_subtitles_username || ''}
                                             onChange={(e) => handleChange('open_subtitles_username', e.target.value)}
@@ -914,7 +802,6 @@ const SettingsView: React.FC = () => {
                                     <div className="space-y-2">
                                         <label className="text-sm font-medium text-muted">Password</label>
                                         <input
-                                            id="settings-opensubtitles-password"
                                             type="password"
                                             value={config.open_subtitles_password || ''}
                                             onChange={(e) => handleChange('open_subtitles_password', e.target.value)}
@@ -925,7 +812,6 @@ const SettingsView: React.FC = () => {
                                     <div className="col-span-full space-y-2">
                                         <label className="text-sm font-medium text-muted">API Key</label>
                                         <input
-                                            id="settings-opensubtitles-api-key"
                                             type="password"
                                             value={config.open_subtitles_api_key || ''}
                                             onChange={(e) => handleChange('open_subtitles_api_key', e.target.value)}
@@ -948,7 +834,6 @@ const SettingsView: React.FC = () => {
                         <div className="space-y-2">
                             <label className="text-sm font-medium text-muted">TMDb API Key (Optional)</label>
                             <input
-                                id="settings-tmdb-api-key"
                                 type="password"
                                 value={config.tmdb_api_key || ''}
                                 onChange={(e) => handleChange('tmdb_api_key', e.target.value)}

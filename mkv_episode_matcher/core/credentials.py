@@ -162,26 +162,18 @@ def credential_last4(name: CredentialName) -> str | None:
     return value[-4:] if value else None
 
 
-def _configured_dotenv_path() -> Path:
-    configured_path = os.environ.get("MKV_MATCH_ENV_FILE")
-    if configured_path == "":
-        raise RuntimeError("Credential file storage is disabled for this process")
-    return Path(configured_path) if configured_path else Path(".env")
-
-
 def store_credential(
     name: CredentialName,
     value: str,
     *,
-    dotenv_path: Path | None = None,
+    dotenv_path: Path = Path(".env"),
 ) -> None:
-    """Persist a value to the configured ignored dotenv file and this process."""
+    """Persist a user-supplied value to the ignored dotenv file and this process."""
 
     if not value.strip():
         raise ValueError("Credential value cannot be empty")
 
     spec = CREDENTIAL_SPECS[name]
-    dotenv_path = dotenv_path or _configured_dotenv_path()
     dotenv_path = dotenv_path.resolve()
     dotenv_path.parent.mkdir(parents=True, exist_ok=True)
     if not dotenv_path.exists():
@@ -199,7 +191,7 @@ def store_credential(
 def migrate_credentials_from_json(
     config_path: Path,
     *,
-    dotenv_path: Path | None = None,
+    dotenv_path: Path = Path(".env"),
 ) -> list[CredentialName]:
     """Move recognized legacy JSON credentials without returning their values."""
 

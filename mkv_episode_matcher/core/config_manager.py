@@ -108,7 +108,6 @@ class ConfigManager:
             "cache_dir": str(Path.home() / ".mkv-episode-matcher" / "cache"),
             "min_confidence": 0.7,
             "gemini_model": "gemini-3.6-flash",
-            "gemini_fallback_models": ["gemini-3.5-flash", "gemini-2.5-flash"],
             "asr_provider": "whisper",
             "asr_model_name": asr_model_name,
             "sub_provider": "opensubtitles",

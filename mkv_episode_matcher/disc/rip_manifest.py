@@ -453,7 +453,6 @@ def build_rip_manifest(  # noqa: C901
                         f"{staging_root}/{fingerprint}/title-{title.index:03d}"
                     ),
                     estimated_bytes=title.size_bytes,
-                    duration_seconds=title.duration_seconds,
                     output_basename=(f"{disc_label_slug}--" if disc_label_slug else "")
                     + (f"{disc_id}-{fingerprint}-title-{title.index:03d}.mkv"),
                     final_relative_dir=(

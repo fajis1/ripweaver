@@ -193,51 +193,6 @@ def test_gemini_disc_batch_reuses_private_exact_request_cache(tmp_path):
     assert ranker.calls == 1
 
 
-def test_gemini_disc_batch_reuses_cache_from_configured_fallback_model(tmp_path):
-    files = (UnmatchedFileEvidence("title-1", 1200, ("dialogue",)),)
-    catalog = (EpisodeCatalogEntry("S04E11", 4, 11, "Eleven", "", 1200),)
-    dossier = IdentificationDossierStore(tmp_path / "private")
-
-    class Ranker:
-        model = "gemini-primary"
-        models = ("gemini-primary", "gemini-fallback")
-
-        def __init__(self):
-            self.calls = 0
-
-        def rank_with_configured_keys(
-            self,
-            supplied_files,
-            _catalog,
-            *,
-            prior_attempts,
-            existing_episode_ids,
-            review_phase,
-            proposed_assignments=None,
-            subtitle_comparisons=None,
-        ):
-            self.calls += 1
-            return GeminiReviewPlan(
-                "gemini-unmatched-review-plan",
-                "gemini-fallback",
-                (
-                    GeminiMatchResult(
-                        supplied_files[0].file_id,
-                        "S04E11",
-                        0.9,
-                        ("paired scenes",),
-                    ),
-                ),
-            )
-
-    ranker = Ranker()
-    first = analysis._rank_gemini_chunks(ranker, files, catalog, dossier, frozenset())
-    second = analysis._rank_gemini_chunks(ranker, files, catalog, dossier, frozenset())
-
-    assert first == second
-    assert ranker.calls == 1
-
-
 def test_gemini_provider_recorder_is_not_part_of_request_digest(tmp_path):
     files = (UnmatchedFileEvidence("title-1", 1200, ("dialogue",)),)
     catalog = (EpisodeCatalogEntry("S07E20", 7, 20, "Twenty", "", 1200),)
@@ -1060,9 +1015,8 @@ def test_last_held_title_can_use_prior_disc_assignments(tmp_path, monkeypatch):
     gemini_calls = []
 
     class Ranker:
-        def __init__(self, *, model, fallback_models=()):
+        def __init__(self, *, model):
             assert model == "gemini-test"
-            assert tuple(fallback_models) == ()
 
         def rank_with_configured_keys(self, files, candidates, **kwargs):
             gemini_calls.append(kwargs)
@@ -1214,9 +1168,8 @@ def test_ambiguous_gemini_title_is_fenced_by_other_disc_matches(tmp_path, monkey
     gemini_catalogs = []
 
     class Ranker:
-        def __init__(self, *, model, fallback_models=()):
+        def __init__(self, *, model):
             assert model == "gemini-test"
-            assert tuple(fallback_models) == ()
 
         def rank_with_configured_keys(self, files, candidates, **_kwargs):
             candidate_ids = tuple(item.episode_id for item in candidates)
@@ -2806,9 +2759,8 @@ def test_all_season_analysis_uses_independent_evidence_not_sequence(  # noqa: C9
     if use_gemini:
 
         class FakeRanker:
-            def __init__(self, *, model, fallback_models=()):
+            def __init__(self, *, model):
                 assert model == "gemini-test"
-                assert tuple(fallback_models) == ()
                 self.calls = 0
 
             def rank_with_configured_keys(

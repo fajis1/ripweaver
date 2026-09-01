@@ -29,7 +29,6 @@ class PipelineQueueError(RuntimeError):
 
 
 DOWNSTREAM_STAGES = ("identify", "transcode", "organize")
-DEFAULT_SHORT_TITLE_REVIEW_SECONDS = 150
 _MEDIA_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _RIP_BASENAME = re.compile(
@@ -256,16 +255,8 @@ def enqueue_verified_rip_results(  # noqa: C901
     identity_overrides: Mapping[str, tuple[str, int]] | None = None,
     expected_title_indexes_by_disc: Mapping[str, tuple[int, ...]] | None = None,
     repair_recovered_identity: bool = False,
-    short_title_review_seconds: int = DEFAULT_SHORT_TITLE_REVIEW_SECONDS,
 ) -> tuple[QueuedPipelineItem, ...]:
     """Convert exact verified rip results into private downstream contracts."""
-
-    if (
-        isinstance(short_title_review_seconds, bool)
-        or not isinstance(short_title_review_seconds, int)
-        or not 0 <= short_title_review_seconds <= 3600
-    ):
-        raise PipelineQueueError("Short-title review cutoff is invalid")
 
     output_root = output_root.resolve()
     contract_root = contract_root.resolve()
@@ -379,8 +370,6 @@ def enqueue_verified_rip_results(  # noqa: C901
             "media_id": queue_media_id,
             "source_path": str(source),
             "source_size_bytes": result.output_bytes,
-            "duration_seconds": job.duration_seconds,
-            "short_title_review_threshold_seconds": short_title_review_seconds,
             "warning_count": result.warning_count,
             "media_context": context_payload,
         }
@@ -402,18 +391,6 @@ def enqueue_verified_rip_results(  # noqa: C901
             payload["disc_expected_title_indexes"] = sorted(
                 expected_titles_by_disc.get(disc_id, ())
             )
-        fingerprint = payload.get("disc_fingerprint")
-        title_index = payload.get("title_index")
-        reviewed_disposition = (
-            store.title_dispositions(fingerprint).get(title_index)
-            if isinstance(fingerprint, str) and isinstance(title_index, int)
-            else None
-        )
-        if (reviewed_disposition or {}).get("disposition") == "include":
-            payload["disc_expected_title_indexes"] = sorted({
-                *payload.get("disc_expected_title_indexes", []),
-                title_index,
-            })
         serialized = json.dumps(payload, indent=2, sort_keys=True) + "\n"
         contract = contract_root / f"{queue_media_id}.verified-rip.json"
         if contract.exists():
@@ -451,9 +428,10 @@ def enqueue_verified_rip_results(  # noqa: C901
             downstream_skip = (
                 context is not None
                 and job.title_index in context.downstream_skip_title_indexes
-                and (reviewed_disposition or {}).get("disposition") != "include"
             )
             if downstream_skip:
+                fingerprint = payload.get("disc_fingerprint")
+                title_index = payload.get("title_index")
                 if not isinstance(fingerprint, str) or not isinstance(title_index, int):
                     raise PipelineQueueError(
                         "Automatic downstream skip requires exact disc identity"
@@ -471,21 +449,7 @@ def enqueue_verified_rip_results(  # noqa: C901
                     )
                 )
             else:
-                short_title = (
-                    short_title_review_seconds > 0
-                    and job.duration_seconds is not None
-                    and 0 < job.duration_seconds < short_title_review_seconds
-                    and (reviewed_disposition or {}).get("disposition") != "include"
-                )
-                queued.append(
-                    store.enqueue_verified_rip(
-                        queue_media_id,
-                        artifact,
-                        review_code=(
-                            "short_title_review_required" if short_title else None
-                        ),
-                    )
-                )
+                queued.append(store.enqueue_verified_rip(queue_media_id, artifact))
         except PipelineQueueError:
             if not repair_recovered_identity:
                 raise
@@ -862,7 +826,6 @@ class PipelineQueueStore:
             "likely_disc_menu",
             "repeated_read_failure",
             "automatic_non_episode",
-            "reviewed_short_title",
         }:
             raise PipelineQueueError("Future-rip skip reason is invalid")
         with self._connect() as connection:
@@ -905,179 +868,6 @@ class PipelineQueueStore:
                 (disc_fingerprint, title_index),
             )
         return cursor.rowcount == 1
-
-    def review_short_title_disposition(  # noqa: C901 - exact guarded review transaction
-        self,
-        media_id: str,
-        *,
-        expected_artifact_sha256: str,
-        action: str,
-    ) -> QueuedPipelineItem:
-        """Apply a reversible matching decision without deleting the staged MKV."""
-
-        checked_id = self._check_media_id(media_id)
-        if _SHA256.fullmatch(expected_artifact_sha256) is None:
-            raise PipelineQueueError("Expected short-title artifact digest is invalid")
-        if action not in {
-            "ignore_matching",
-            "mark_for_deletion",
-            "match_normally",
-        }:
-            raise PipelineQueueError("Short-title review action is invalid")
-
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT * FROM pipeline_items WHERE media_id = ?", (checked_id,)
-            ).fetchone()
-            if row is None:
-                connection.rollback()
-                raise PipelineQueueError("Pipeline item was not found")
-            if row["stage"] != "identify" or row["state"] in {
-                "running",
-                "discarded",
-            }:
-                connection.rollback()
-                raise PipelineQueueError(
-                    "Only an inactive identification-stage short title can be reviewed"
-                )
-            if row["rip_artifact_sha256"] != expected_artifact_sha256:
-                connection.rollback()
-                raise PipelineQueueError(
-                    "Short-title artifact changed; refresh and retry"
-                )
-            try:
-                contract_path = Path(row["rip_artifact_path"])
-                if _file_sha256(contract_path) != expected_artifact_sha256:
-                    raise PipelineQueueError(
-                        "Verified short-title contract is missing or changed"
-                    )
-                payload = json.loads(contract_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                connection.rollback()
-                raise PipelineQueueError(
-                    "Verified short-title contract is unavailable"
-                ) from exc
-            duration = payload.get("duration_seconds")
-            threshold = payload.get("short_title_review_threshold_seconds")
-            fingerprint = payload.get("disc_fingerprint")
-            title_index = payload.get("title_index")
-            if (
-                payload.get("mode") != "verified-rip-contract"
-                or isinstance(duration, bool)
-                or not isinstance(duration, int)
-                or isinstance(threshold, bool)
-                or not isinstance(threshold, int)
-                or threshold <= 0
-                or not 0 < duration < threshold
-                or not isinstance(fingerprint, str)
-                or re.fullmatch(r"[0-9a-f]{16}", fingerprint) is None
-                or isinstance(title_index, bool)
-                or not isinstance(title_index, int)
-                or title_index < 0
-            ):
-                connection.rollback()
-                raise PipelineQueueError(
-                    "The verified rip is not an eligible configured short title"
-                )
-
-            now = self._now()
-            if action == "match_normally":
-                disposition = "include"
-                reason = "reviewed_short_title_match"
-                next_state = "queued"
-                review_code = None
-            else:
-                disposition = "skip"
-                reason = "reviewed_short_title"
-                next_state = (
-                    "review_required" if action == "mark_for_deletion" else "completed"
-                )
-                review_code = (
-                    "short_title_deletion_review"
-                    if action == "mark_for_deletion"
-                    else None
-                )
-            connection.execute(
-                """
-                INSERT INTO disc_title_dispositions (
-                    disc_fingerprint, title_index, disposition, reason, updated_at
-                ) VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(disc_fingerprint, title_index) DO UPDATE SET
-                    disposition = excluded.disposition,
-                    reason = excluded.reason,
-                    updated_at = excluded.updated_at
-                """,
-                (fingerprint, title_index, disposition, reason, now),
-            )
-            scope_row = connection.execute(
-                "SELECT relevant_title_indexes_json FROM disc_matching_scopes "
-                "WHERE disc_fingerprint = ?",
-                (fingerprint,),
-            ).fetchone()
-            if scope_row is not None or action == "match_normally":
-                try:
-                    scope_values = (
-                        json.loads(scope_row["relevant_title_indexes_json"])
-                        if scope_row is not None
-                        else payload.get("disc_expected_title_indexes", [])
-                    )
-                except json.JSONDecodeError as exc:
-                    connection.rollback()
-                    raise PipelineQueueError("Disc matching scope is invalid") from exc
-                if not isinstance(scope_values, list) or any(
-                    isinstance(index, bool) or not isinstance(index, int) or index < 0
-                    for index in scope_values
-                ):
-                    connection.rollback()
-                    raise PipelineQueueError("Disc matching scope is invalid")
-                reviewed_scope = set(scope_values)
-                if action == "match_normally":
-                    reviewed_scope.add(title_index)
-                else:
-                    reviewed_scope.discard(title_index)
-                connection.execute(
-                    """
-                    INSERT INTO disc_matching_scopes (
-                        disc_fingerprint, relevant_title_indexes_json, updated_at
-                    ) VALUES (?, ?, ?)
-                    ON CONFLICT(disc_fingerprint) DO UPDATE SET
-                        relevant_title_indexes_json = excluded.relevant_title_indexes_json,
-                        updated_at = excluded.updated_at
-                    """,
-                    (
-                        fingerprint,
-                        json.dumps(sorted(reviewed_scope), separators=(",", ":")),
-                        now,
-                    ),
-                )
-            connection.execute(
-                """
-                UPDATE pipeline_items SET state = ?, stage = 'identify',
-                    artifact_path = rip_artifact_path,
-                    artifact_sha256 = rip_artifact_sha256,
-                    artifact_count = rip_artifact_count,
-                    error_type = NULL, review_code = ?, updated_at = ?
-                WHERE media_id = ?
-                """,
-                (next_state, review_code, now, checked_id),
-            )
-            self._append_event(
-                connection,
-                media_id=checked_id,
-                event_type="short_title_disposition_reviewed",
-                stage="identify",
-                state=next_state,
-                details={
-                    "action": action,
-                    "duration_seconds": duration,
-                    "review_threshold_seconds": threshold,
-                    "future_rip_disposition": disposition,
-                    "media_changed": False,
-                },
-            )
-            connection.commit()
-        return self.get(checked_id)
 
     def record_matching_performance(
         self,
@@ -1504,19 +1294,11 @@ class PipelineQueueStore:
         self,
         media_id: str,
         artifact: PipelineArtifact,
-        *,
-        review_code: str | None = None,
     ) -> QueuedPipelineItem:
         """Admit one verified rip to identification exactly once."""
 
         checked_id = self._check_media_id(media_id)
         _validate_artifact(artifact, "rip")
-        if (
-            review_code is not None
-            and re.fullmatch(r"[a-z][a-z0-9_-]{2,63}", review_code) is None
-        ):
-            raise PipelineQueueError("Pipeline review code is invalid")
-        initial_state = "review_required" if review_code is not None else "queued"
         now = self._now()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1541,19 +1323,17 @@ class PipelineQueueStore:
                 INSERT INTO pipeline_items (
                     media_id, state, stage, artifact_path, artifact_sha256,
                     artifact_count, rip_artifact_path, rip_artifact_sha256,
-                    rip_artifact_count, review_code, created_at, updated_at
-                ) VALUES (?, ?, 'identify', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    rip_artifact_count, created_at, updated_at
+                ) VALUES (?, 'queued', 'identify', ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     checked_id,
-                    initial_state,
                     str(artifact.contract_path),
                     artifact.contract_sha256,
                     artifact.item_count,
                     str(artifact.contract_path),
                     artifact.contract_sha256,
                     artifact.item_count,
-                    review_code,
                     now,
                     now,
                 ),
@@ -1561,17 +1341,10 @@ class PipelineQueueStore:
             self._append_event(
                 connection,
                 media_id=checked_id,
-                event_type=(
-                    "short_title_review_required"
-                    if review_code == "short_title_review_required"
-                    else "verified_rip_queued"
-                ),
+                event_type="verified_rip_queued",
                 stage="identify",
-                state=initial_state,
-                details={
-                    "item_count": artifact.item_count,
-                    **({"review_code": review_code} if review_code else {}),
-                },
+                state="queued",
+                details={"item_count": artifact.item_count},
             )
             connection.commit()
         return self.get(checked_id)

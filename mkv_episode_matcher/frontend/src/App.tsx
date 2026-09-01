@@ -11,8 +11,6 @@ import SystemCleanupView from './components/SystemCleanupView';
 import JellyfinCleanupPanel from './components/JellyfinCleanupPanel';
 import ExpiredSourceCleanupModal from './components/ExpiredSourceCleanupModal';
 import LibraryEpisodeRepairView from './components/LibraryEpisodeRepairView';
-import SetupHealthView from './components/SetupHealthView';
-import SupportView from './components/SupportView';
 
 interface ScannedFile {
   path: string;
@@ -339,20 +337,12 @@ function App() {
       return <SettingsView />;
     }
 
-    if (currentView === 'setup-health') {
-      return <SetupHealthView onOpenSettings={() => setCurrentView('settings')} />;
-    }
-
     if (currentView === 'recent-activity') {
       return <RecentActivityView onOpenDashboard={() => setCurrentView('rip-pipeline')} />;
     }
 
     if (currentView === 'logs') {
       return <LogsView />;
-    }
-
-    if (currentView === 'support') {
-      return <SupportView version={systemStatus.version} onOpenSettings={() => setCurrentView('settings')} />;
     }
 
     if (currentView === 'system-cleanup') {
@@ -394,7 +384,7 @@ function App() {
                 <img src="https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg" alt="TMDB" className="h-16 w-auto" />
               </a>
               <p className="mt-3 text-sm text-[var(--text-muted)]">This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
-              <p className="mt-3 text-sm text-[var(--text-muted)]">RipWeaver is based on MKV Episode Matcher by Jonathan Sakkos and incorporates selected ideas or adapted behavior from Riplex by AnyCredit5518. It can use independent OpenSubtitles.com and Google Gemini services, user-installed MakeMKV, HandBrake, and FFmpeg tools, and media libraries served by Plex, Jellyfin, Emby, or similar software.</p>
+              <p className="mt-3 text-sm text-[var(--text-muted)]">RipWeaver is based on MKV Episode Matcher by Jonathan Sakkos and incorporates selected ideas or adapted behavior from Riplex by AnyCredit5518. It can use independent OpenSubtitles.com and Google Gemini services and user-installed MakeMKV, HandBrake, FFmpeg, and Jellyfin tools.</p>
               <p className="mt-3 text-sm"><a className="text-blue-300 hover:underline" href="https://github.com/fajis1/ripweaver/blob/main/THIRD_PARTY_NOTICES.md" target="_blank" rel="noopener noreferrer">Third-party notices and license details</a></p>
             </div>
           </div>

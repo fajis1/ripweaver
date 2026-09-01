@@ -1,37 +1,11 @@
 # Changelog
 
-- Fixed completed-disc automatic eject after a stale or early dashboard settings read by synchronizing the saved eject preference through the recurring job dashboard response. Restored completed discs can now enter the same countdown when their exact fingerprint scope proves every relevant title safely present, even when no old orchestration job remains in the bounded dashboard response.
-
 All notable changes to MKV Episode Matcher are documented here.
 
 > [!TIP]
 > For the complete changelog history, see [CHANGELOG.md](https://github.com/Jsakkos/mkv-episode-matcher/blob/main/CHANGELOG.md) in the repository.
 
 ## Unreleased - 2026-08-11
-
-- Updated the desktop catalogue handshake for the server's fail-closed schema-4
-  contract. The client now requires strict pending quarantine, refuses any
-  publication-eligible submission receipt, and no longer expects a new upload
-  to create consensus or contribution credit.
-- Updated Settings to distinguish quarantined submissions from historical
-  read-only reviewed or independently confirmed catalogue results.
-- Added a local **Support & Bug Reports** page that downloads a bounded,
-  privacy-redacted diagnostic ZIP and opens a prefilled GitHub issue or email
-  draft without uploading anything automatically.
-- Added ordered Gemini model fallbacks in Settings. RipWeaver now tries both
-  configured keys for a model, then advances through up to two backup models
-  after HTTP 429 capacity exhaustion, sustained HTTP 503 overload, or a
-  definite unavailable-model response.
-- Made every credential-status card an action button that jumps to and focuses
-  its local replacement field. OpenSubtitles fields are revealed automatically,
-  while the generated RipWeaver Catalogue credential jumps to its connection
-  controls.
-- Fixed source test worktrees so credential reads and replacements both honor
-  `MKV_MATCH_ENV_FILE`; test code can reuse an existing ignored credential file
-  without copying or exposing it.
-- Expanded the Gemini model panel with clearly numbered primary, first-fallback,
-  and second-fallback selectors plus the labeled model presets offered by the
-  OpenReader-style setup.
 
 - Added bounded alternate-release subtitle failover for confidently resolved TV
   series and seasons. When usable Whisper evidence fails against every normal

@@ -87,7 +87,7 @@ export default function LibraryEpisodeRepairView({ onBackToStandard }: Props) {
       }));
       setSelected(new Set());
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Could not inventory the TV media-library folders.');
+      setError(caught instanceof Error ? caught.message : 'Could not inventory the Jellyfin TV folders.');
     } finally {
       setBusy(false);
     }
@@ -155,13 +155,13 @@ export default function LibraryEpisodeRepairView({ onBackToStandard }: Props) {
         <div>
           <h2 className="text-3xl font-bold heading-gradient mb-1">Verify Existing Episode Names</h2>
           <p className="text-sm text-[var(--text-muted)] max-w-3xl">
-            This repair channel finds media-library episodes whose RipWeaver history contains a sequence-derived match from the affected discs. It tests only the episode already claimed by the filename; disc order and sequence matching are never identification evidence here.
+            This repair channel finds Jellyfin episodes whose RipWeaver history contains a sequence-derived match from the affected discs. It tests only the episode already claimed by the filename; disc order and sequence matching are never identification evidence here.
           </p>
         </div>
         <div className="flex flex-wrap gap-3 justify-end">
           <button className="btn btn-secondary" onClick={onBackToStandard}>Standard Season 0X scan</button>
           <button className="btn btn-primary" onClick={discover} disabled={busy || job?.status === 'running'}>
-            {job ? 'Build fresh inventory' : 'Inventory TV media-library folders'}
+            {job ? 'Build fresh inventory' : 'Inventory Jellyfin TV folders'}
           </button>
         </div>
       </div>
@@ -171,7 +171,7 @@ export default function LibraryEpisodeRepairView({ onBackToStandard }: Props) {
       {!job && (
         <div className="glass-panel rounded-2xl p-8 max-w-3xl">
           <h3 className="text-xl font-bold text-white">A separate fix path</h3>
-          <p className="mt-3 text-[var(--text-muted)]">The inventory step reads filenames, private match provenance, and file metadata only. It searches every folder under the configured TV media-library root for the affected episode IDs. You will see the exact list before approving any Whisper audio reads or subtitle lookups.</p>
+          <p className="mt-3 text-[var(--text-muted)]">The inventory step reads filenames, private match provenance, and file metadata only. It searches every folder under the configured Jellyfin TV root for the affected episode IDs. You will see the exact list before approving any Whisper audio reads or subtitle lookups.</p>
           <p className="mt-3 text-[var(--text-muted)]">Confirmed names remain untouched. Clear mismatches are selected for a collision-refusing generic rename. Inconclusive files remain unselected unless you explicitly choose them.</p>
         </div>
       )}
@@ -202,7 +202,7 @@ export default function LibraryEpisodeRepairView({ onBackToStandard }: Props) {
           )}
 
           <div className="flex-1 overflow-auto p-4 space-y-3">
-            {job.candidates.length === 0 && <div className="text-[var(--text-muted)] p-6">No current media-library MKVs correspond to the sequence-derived episode claims retained in RipWeaver history.</div>}
+            {job.candidates.length === 0 && <div className="text-[var(--text-muted)] p-6">No current Jellyfin MKVs correspond to the sequence-derived episode claims retained in RipWeaver history.</div>}
             {job.candidates.map(candidate => {
               const eligible = ['mismatch', 'inconclusive'].includes(candidate.status) && !candidate.renamed;
               const checked = selected.has(candidate.file_id);

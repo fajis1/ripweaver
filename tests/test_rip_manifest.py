@@ -91,13 +91,6 @@ def test_manifest_rips_plausible_titles_before_classification(tmp_path):
         job.relative_output_dir.startswith(".staging/disc-01/") for job in manifest.jobs
     )
     assert all(job.final_relative_dir is None for job in manifest.jobs)
-    assert [job.duration_seconds for job in manifest.jobs] == [
-        3000,
-        3010,
-        2990,
-        3005,
-        12005,
-    ]
     assert all(
         job.output_basename
         and job.output_basename.startswith("Private-Disc-Label--disc-01-")

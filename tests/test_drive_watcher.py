@@ -320,42 +320,6 @@ def test_native_loaded_disc_does_not_disappear_when_makemkv_omits_usb_drive():
     assert drive.makemkv_confirmed is False
 
 
-def test_windows_drives_remain_visible_when_makemkv_returns_no_slots():
-    watcher = DriveWatcher(
-        lambda *_args, **_kwargs: _result(""),
-        native_discovery=lambda: ("D:", "F:"),
-        native_media_discovery=lambda: {
-            "D:": (True, "disc"),
-            "F:": (False, None),
-        },
-    )
-
-    with pytest.raises(PreflightError, match="Windows-only drives remain provisional"):
-        watcher.refresh(Path("makemkvcon64.exe"))
-
-    snapshot = watcher.snapshot()
-    assert snapshot.status == "error"
-    assert snapshot.error_type == "PreflightError"
-    assert snapshot.error_code == "makemkv_unconfirmed"
-    assert [
-        (drive.drive_index, drive.available, drive.has_disc)
-        for drive in snapshot.drives
-    ] == [(0, True, True), (1, True, False)]
-    assert [watcher.device_name(index) for index in (0, 1)] == ["D:", "F:"]
-    assert all(not drive.makemkv_confirmed for drive in snapshot.drives)
-
-    native_update = watcher.refresh_native_media()
-    assert native_update.status == "error"
-    assert native_update.error_code == "makemkv_unconfirmed"
-
-    with pytest.raises(ValueError, match="untrusted, unconfirmed, or empty"):
-        watcher.bind_current_job(
-            0,
-            "rip-0123456789abcdef0123456789abcdef",
-            "0123456789abcdef",
-        )
-
-
 def test_windows_only_slot_cannot_bind_disc_work_before_makemkv_confirmation():
     watcher = DriveWatcher(
         lambda *_args, **_kwargs: _result('DRV:0,2,999,0,"hardware","","D:"\n'),

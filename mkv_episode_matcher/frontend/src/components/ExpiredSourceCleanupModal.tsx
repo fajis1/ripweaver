@@ -92,7 +92,7 @@ const ExpiredSourceCleanupModal = () => {
           {proposal.file_count} original file(s), totaling {formatBytes(proposal.total_size_bytes)}, have reached the configured {proposal.ttl_days}-day retention period.
         </p>
         <div className="mt-4 rounded-xl border border-amber-400/25 bg-amber-400/10 p-4 text-sm text-amber-100">
-          Approving permanently deletes only the retained originals from cleanup staging. Media-library files are not changed. Another encode would require ripping the disc again.
+          Approving permanently deletes only the retained originals from cleanup staging. Jellyfin files are not changed. Another encode would require ripping the disc again.
         </div>
         {error && <div className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">{error}</div>}
         <div className="mt-6 flex flex-wrap items-center justify-end gap-3">

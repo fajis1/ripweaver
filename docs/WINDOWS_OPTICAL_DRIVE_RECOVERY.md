@@ -4,6 +4,68 @@ This note records the Windows drive-mapping behavior added on 2026-08-10 and
 the safe recovery procedure for an optical drive that stops reporting its
 loaded disc.
 
+## Working dashboard contract (2026-09-01)
+
+The current Disc Dashboard/optical-drive menu was restored and verified after
+the packaged desktop build temporarily made the drives appear missing. Preserve
+the following behavior when changing drive discovery, dashboard polling, or the
+desktop launcher:
+
+- The old development shortcut and a packaged executable may use different
+  Python installations, static frontend builds, configuration roots, and local
+  databases. A drive-menu regression must first identify which backend process
+  and frontend build the browser is actually using. Do not "repair" a working
+  source checkout merely because an older packaged frontend is being served.
+- Windows device discovery supplies stable, hashed device identities and a
+  provisional dashboard row. MakeMKV supplies the current command slot and is
+  authoritative for disc presence. Keep those two sources separate and
+  reconcile them; neither source replaces the other.
+- The public display number is a compact one-based dashboard ordinal. The
+  internal `drive_index` remains MakeMKV's possibly sparse zero-based command
+  slot. Never derive a MakeMKV command from the displayed row number.
+- A provisional Windows row may be displayed while MakeMKV discovery is
+  pending, but it must have `makemkv_confirmed: false` and must not prepare,
+  rip, or control a tray. A successful read-only MakeMKV refresh must confirm
+  the same current slot before those actions become available.
+- Full MakeMKV discovery is an all-drive barrier. If any optical work is active,
+  the refresh remains armed and deferred instead of competing with that work.
+  Per-drive work must continue using the exclusive process-control claims and
+  `--noscan` rules documented in `AGENTS.md`.
+- The dashboard must not continuously wake every idle drive by polling Windows
+  volume labels. Native Windows volume-change events request reconciliation;
+  the normal idle dashboard poll reads the most recent path-redacted snapshot.
+- A read-only refresh is single-flight. Repeated clicks or automatic requests
+  must not launch competing MakeMKV discovery processes. Bounded automatic
+  retry backoff remains 5, 15, 60, then 300 seconds, and consecutive timeouts
+  may suspend automatic discovery until the user explicitly retries.
+- Drive identity data returned to the UI stays path-free and serial-free. Raw
+  Plug-and-Play IDs, drive serial numbers, executable paths, command lines, and
+  process IDs must not enter API responses or routine logs.
+
+The green completed-disc state and automatic ejection are related but separate
+from discovery. Acquisition completion is based on every relevant title being
+verified in staging or the media library, or explicitly skipped. When automatic
+eject is enabled, that transition must arm one durable delayed-eject request;
+dashboard polling must expose the remaining delay so the countdown is visible.
+At expiry, ejection must resolve the exact trusted hashed identity again, refuse
+active work or a changed/unconfirmed slot, and be idempotent. Refreshing the
+page or restarting a frontend must not create a second eject request or lose an
+already durable request. An eject failure remains visible and retryable; it must
+not change a completed disc back into missing work.
+
+Before merging a change in this area, run at least these synthetic tests (they
+must not touch physical drives):
+
+```powershell
+uv run pytest tests\test_drive_mapping.py tests\test_drive_watcher.py
+uv run pytest tests\test_dashboard_polling.py tests\test_drive_eject.py
+uv run pytest tests\test_automatic_rip.py tests\test_rip_runtime.py
+```
+
+Also build the frontend whenever `RipPipelineView.tsx` changes. Confirm that the
+packaged `dist/index.html` points to the newly generated assets; a stale packaged
+bundle can reproduce an old drive menu even when the Python backend is correct.
+
 ## Stable drive mapping
 
 - MakeMKV drive numbers are temporary command slots. RipWeaver binds each slot
@@ -28,39 +90,6 @@ loaded disc.
 The private map stores only identity hashes, sanitized model/connection
 descriptors, and trusted, ignored, or retired states. It does not store raw
 Plug-and-Play IDs, serial numbers, or drive letters.
-
-## RipWeaver shows no drives while Windows does
-
-The RipWeaver dashboard displays its cached drive-discovery result; normal
-dashboard polling does not repeatedly access the optical drives. A status of
-`error` with error code `no_drives` means that RipWeaver found and ran
-MakeMKVCLI, but MakeMKV returned no usable optical-drive records. This is
-different from a missing or incorrectly configured MakeMKVCLI executable.
-
-Windows recognizing a drive is necessary but not sufficient for ripping.
-RipWeaver requires MakeMKV to confirm the current command slot before it will
-prepare or rip a disc. Therefore a Windows-visible device may still be absent
-from the dashboard after a failed MakeMKV discovery.
-
-Use this safe recovery sequence:
-
-1. Close the MakeMKV desktop application and allow any current MakeMKV or
-   RipWeaver disc operation to finish.
-2. Confirm the MakeMKVCLI path on RipWeaver's **Settings** page.
-3. Power-cycle an external drive or its USB hub if it appears stuck, then wait
-   for Windows to finish detecting it. Reconnect multiple external drives one
-   at a time when isolating a failing enclosure or device.
-4. In RipWeaver, select **Refresh drives (read-only)**. This is an explicitly
-   confirmed MakeMKV slot enumeration; it does not inventory titles, rip,
-   transcode, move, or delete media.
-5. If discovery times out repeatedly, restart Windows to reset the optical
-   driver stack before retrying.
-
-If MakeMKV still reports no drives, test whether the MakeMKV desktop
-application itself can see the devices after recovery. Do not start a rip for
-this check. A device that Windows sees but MakeMKV does not see is a MakeMKV,
-driver, firmware, USB/SATA bridge, or enclosure discovery issue rather than a
-RipWeaver rendering problem.
 
 ## Loaded, unreadable, and empty are different states
 

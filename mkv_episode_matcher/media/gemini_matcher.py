@@ -10,7 +10,7 @@ import hashlib
 import json
 import re
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Protocol
@@ -27,12 +27,6 @@ from mkv_episode_matcher.core.credentials import (
 )
 from mkv_episode_matcher.core.environment import load_environment_settings
 from mkv_episode_matcher.media.episode_catalog import EpisodeCatalogEntry
-from mkv_episode_matcher.media.gemini_failover import (
-    GeminiModelUnavailableError,
-    is_gemini_model_unavailable_response,
-    ordered_gemini_models,
-    permits_gemini_model_fallback,
-)
 
 INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
 _FILE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$")
@@ -962,7 +956,6 @@ class GeminiEpisodeRanker:
         self,
         *,
         model: str,
-        fallback_models: Sequence[str] | None = None,
         transport: GeminiTransport | None = None,
         timeout_seconds: float = 45.0,
         max_retries: int = 2,
@@ -971,7 +964,6 @@ class GeminiEpisodeRanker:
         if timeout_seconds <= 0 or max_retries < 0:
             raise ValueError("Gemini timeout/retry settings are invalid")
         self.model = model
-        self.models = ordered_gemini_models(model, fallback_models)
         self.transport = transport or RequestsGeminiTransport()
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
@@ -984,7 +976,6 @@ class GeminiEpisodeRanker:
         *,
         api_key: str,
         credential: CredentialName,
-        model: str | None = None,
         prior_attempts: Mapping[str, tuple[dict[str, object], ...]] | None = None,
         existing_episode_ids: frozenset[str] | None = None,
         reviewer_scene_descriptions: Mapping[str, str] | None = None,
@@ -998,9 +989,8 @@ class GeminiEpisodeRanker:
             raise ValueError("Gemini credential name is invalid")
         if not api_key:
             raise ApiCredentialError(credential, "not configured")
-        active_model = model or self.model
         body = build_gemini_request(
-            active_model,
+            self.model,
             files,
             catalog,
             prior_attempts=prior_attempts,
@@ -1021,7 +1011,7 @@ class GeminiEpisodeRanker:
             except (requests.RequestException, ConnectionError, TimeoutError) as exc:
                 _record_provider_transaction(
                     transaction_recorder,
-                    model=active_model,
+                    model=self.model,
                     phase=review_phase,
                     attempt=attempt + 1,
                     body=body,
@@ -1043,7 +1033,7 @@ class GeminiEpisodeRanker:
             if response.status_code in (401, 403):
                 _record_provider_transaction(
                     transaction_recorder,
-                    model=active_model,
+                    model=self.model,
                     phase=review_phase,
                     attempt=attempt + 1,
                     body=body,
@@ -1063,7 +1053,7 @@ class GeminiEpisodeRanker:
             if response.status_code == 429 or response.status_code >= 500:
                 _record_provider_transaction(
                     transaction_recorder,
-                    model=active_model,
+                    model=self.model,
                     phase=review_phase,
                     attempt=attempt + 1,
                     body=body,
@@ -1088,32 +1078,10 @@ class GeminiEpisodeRanker:
                     else "provider is temporarily unavailable"
                 )
                 raise ApiServiceError("Gemini", response.status_code, reason)
-            if is_gemini_model_unavailable_response(
-                response.status_code, response.payload, response.raw_text
-            ):
-                _record_provider_transaction(
-                    transaction_recorder,
-                    model=active_model,
-                    phase=review_phase,
-                    attempt=attempt + 1,
-                    body=body,
-                    files=files,
-                    catalog=catalog,
-                    status_code=response.status_code,
-                    elapsed_ms=round((time.perf_counter() - request_started) * 1000),
-                    outcome="request_rejected",
-                    response=response,
-                    diagnostic="configured model is unavailable",
-                )
-                raise GeminiModelUnavailableError(
-                    "Gemini",
-                    response.status_code,
-                    "configured model is unavailable",
-                )
             if response.status_code >= 400:
                 _record_provider_transaction(
                     transaction_recorder,
-                    model=active_model,
+                    model=self.model,
                     phase=review_phase,
                     attempt=attempt + 1,
                     body=body,
@@ -1135,7 +1103,7 @@ class GeminiEpisodeRanker:
             except GeminiResponseError as exc:
                 _record_provider_transaction(
                     transaction_recorder,
-                    model=active_model,
+                    model=self.model,
                     phase=review_phase,
                     attempt=attempt + 1,
                     body=body,
@@ -1154,7 +1122,7 @@ class GeminiEpisodeRanker:
                 continue
             _record_provider_transaction(
                 transaction_recorder,
-                model=active_model,
+                model=self.model,
                 phase=review_phase,
                 attempt=attempt + 1,
                 body=body,
@@ -1167,12 +1135,12 @@ class GeminiEpisodeRanker:
             )
             return GeminiReviewPlan(
                 mode="gemini-unmatched-review-plan",
-                model=active_model,
+                model=self.model,
                 matches=matches,
             )
         raise ApiServiceError("Gemini", None, "retry loop ended unexpectedly")
 
-    def rank_with_configured_keys(  # noqa: C901 - bounded key/model failover
+    def rank_with_configured_keys(
         self,
         files: tuple[UnmatchedFileEvidence, ...],
         catalog: tuple[EpisodeCatalogEntry, ...],
@@ -1186,70 +1154,45 @@ class GeminiEpisodeRanker:
         proposed_assignments: Mapping[str, str | None] | None = None,
         transaction_recorder: GeminiTransactionRecorder | None = None,
     ) -> GeminiReviewPlan:
-        """Try both configured keys, then capacity-eligible fallback models."""
+        """Try primary then paid key, with one interactive auth recovery each."""
 
         provider_errors: list[ApiServiceError | GeminiResponseError] = []
-        for model_index, active_model in enumerate(self.models):
-            model_error: ApiServiceError | GeminiResponseError | None = None
-            for credential, field in (
-                ("gemini-primary", "gemini_primary_api_key"),
-                ("gemini-paid", "gemini_paid_api_key"),
-            ):
-                settings = load_environment_settings()
-                api_key = getattr(settings, field)
-                if not api_key:
-                    continue
-                for auth_attempt in range(2):
-                    try:
-                        return self.rank_with_key(
-                            files,
-                            catalog,
-                            api_key=api_key,
-                            credential=credential,
-                            model=active_model,
-                            prior_attempts=prior_attempts,
-                            existing_episode_ids=existing_episode_ids,
-                            reviewer_scene_descriptions=reviewer_scene_descriptions,
-                            subtitle_comparisons=subtitle_comparisons,
-                            review_phase=review_phase,
-                            proposed_assignments=proposed_assignments,
-                            transaction_recorder=transaction_recorder,
-                        )
-                    except ApiCredentialError as exc:
-                        if auth_attempt == 0 and request_credential_recovery(exc):
-                            settings = load_environment_settings()
-                            api_key = getattr(settings, field)
-                            if api_key:
-                                continue
-                        break
-                    except GeminiModelUnavailableError as exc:
-                        provider_errors.append(exc)
-                        model_error = exc
-                        break
-                    except (ApiServiceError, GeminiResponseError) as exc:
-                        provider_errors.append(exc)
-                        model_error = exc
-                        break
-                if isinstance(model_error, GeminiModelUnavailableError):
-                    break
-            next_model = (
-                self.models[model_index + 1]
-                if model_index + 1 < len(self.models)
-                else None
-            )
-            if (
-                model_error is not None
-                and next_model is not None
-                and permits_gemini_model_fallback(model_error)
-            ):
-                logger.warning(
-                    "Gemini model {} exhausted or unavailable; trying configured fallback {}",
-                    active_model,
-                    next_model,
-                )
+        for credential, field in (
+            ("gemini-primary", "gemini_primary_api_key"),
+            ("gemini-paid", "gemini_paid_api_key"),
+        ):
+            settings = load_environment_settings()
+            api_key = getattr(settings, field)
+            if not api_key:
                 continue
-            if model_error is not None:
-                raise model_error
+            for auth_attempt in range(2):
+                try:
+                    return self.rank_with_key(
+                        files,
+                        catalog,
+                        api_key=api_key,
+                        credential=credential,
+                        prior_attempts=prior_attempts,
+                        existing_episode_ids=existing_episode_ids,
+                        reviewer_scene_descriptions=reviewer_scene_descriptions,
+                        subtitle_comparisons=subtitle_comparisons,
+                        review_phase=review_phase,
+                        proposed_assignments=proposed_assignments,
+                        transaction_recorder=transaction_recorder,
+                    )
+                except ApiCredentialError as exc:
+                    if auth_attempt == 0 and request_credential_recovery(exc):
+                        settings = load_environment_settings()
+                        api_key = getattr(settings, field)
+                        if api_key:
+                            continue
+                    break
+                except ApiServiceError as exc:
+                    provider_errors.append(exc)
+                    break
+                except GeminiResponseError as exc:
+                    provider_errors.append(exc)
+                    break
         if provider_errors:
             raise provider_errors[-1]
         raise ApiCredentialError("gemini-primary", "not configured or accepted")
@@ -1265,7 +1208,6 @@ class GeminiDescriptiveRanker(GeminiEpisodeRanker):
         release_hint: str,
         api_key: str,
         credential: CredentialName,
-        model: str | None = None,
         prior_attempts: Mapping[str, tuple[dict[str, object], ...]] | None = None,
         transaction_recorder: GeminiTransactionRecorder | None = None,
     ) -> GeminiDescriptivePlan:
@@ -1273,9 +1215,8 @@ class GeminiDescriptiveRanker(GeminiEpisodeRanker):
             raise ValueError("Gemini credential name is invalid")
         if not api_key:
             raise ApiCredentialError(credential, "not configured")
-        active_model = model or self.model
         body = build_descriptive_gemini_request(
-            active_model,
+            self.model,
             files,
             release_hint=release_hint,
             prior_attempts=prior_attempts,
@@ -1291,7 +1232,7 @@ class GeminiDescriptiveRanker(GeminiEpisodeRanker):
             except (requests.RequestException, ConnectionError, TimeoutError) as exc:
                 _record_provider_transaction(
                     transaction_recorder,
-                    model=active_model,
+                    model=self.model,
                     phase="descriptive",
                     attempt=attempt + 1,
                     body=body,
@@ -1312,7 +1253,7 @@ class GeminiDescriptiveRanker(GeminiEpisodeRanker):
             if response.status_code in (401, 403):
                 _record_provider_transaction(
                     transaction_recorder,
-                    model=active_model,
+                    model=self.model,
                     phase="descriptive",
                     attempt=attempt + 1,
                     body=body,
@@ -1332,7 +1273,7 @@ class GeminiDescriptiveRanker(GeminiEpisodeRanker):
             if response.status_code == 429 or response.status_code >= 500:
                 _record_provider_transaction(
                     transaction_recorder,
-                    model=active_model,
+                    model=self.model,
                     phase="descriptive",
                     attempt=attempt + 1,
                     body=body,
@@ -1357,32 +1298,10 @@ class GeminiDescriptiveRanker(GeminiEpisodeRanker):
                     else "provider is temporarily unavailable"
                 )
                 raise ApiServiceError("Gemini", response.status_code, reason)
-            if is_gemini_model_unavailable_response(
-                response.status_code, response.payload, response.raw_text
-            ):
-                _record_provider_transaction(
-                    transaction_recorder,
-                    model=active_model,
-                    phase="descriptive",
-                    attempt=attempt + 1,
-                    body=body,
-                    files=files,
-                    catalog=(),
-                    status_code=response.status_code,
-                    elapsed_ms=round((time.perf_counter() - request_started) * 1000),
-                    outcome="request_rejected",
-                    response=response,
-                    diagnostic="configured model is unavailable",
-                )
-                raise GeminiModelUnavailableError(
-                    "Gemini",
-                    response.status_code,
-                    "configured model is unavailable",
-                )
             if response.status_code >= 400:
                 _record_provider_transaction(
                     transaction_recorder,
-                    model=active_model,
+                    model=self.model,
                     phase="descriptive",
                     attempt=attempt + 1,
                     body=body,
@@ -1402,7 +1321,7 @@ class GeminiDescriptiveRanker(GeminiEpisodeRanker):
             except GeminiResponseError as exc:
                 _record_provider_transaction(
                     transaction_recorder,
-                    model=active_model,
+                    model=self.model,
                     phase="descriptive",
                     attempt=attempt + 1,
                     body=body,
@@ -1418,7 +1337,7 @@ class GeminiDescriptiveRanker(GeminiEpisodeRanker):
                 raise
             _record_provider_transaction(
                 transaction_recorder,
-                model=active_model,
+                model=self.model,
                 phase="descriptive",
                 attempt=attempt + 1,
                 body=body,
@@ -1431,7 +1350,7 @@ class GeminiDescriptiveRanker(GeminiEpisodeRanker):
             )
             return GeminiDescriptivePlan(
                 mode="gemini-descriptive-review-plan",
-                model=active_model,
+                model=self.model,
                 matches=matches,
             )
         raise ApiServiceError("Gemini", None, "retry loop ended unexpectedly")
@@ -1445,53 +1364,27 @@ class GeminiDescriptiveRanker(GeminiEpisodeRanker):
         transaction_recorder: GeminiTransactionRecorder | None = None,
     ) -> GeminiDescriptivePlan:
         provider_errors: list[ApiServiceError | GeminiResponseError] = []
-        for model_index, active_model in enumerate(self.models):
-            model_error: ApiServiceError | GeminiResponseError | None = None
-            for credential, field in (
-                ("gemini-primary", "gemini_primary_api_key"),
-                ("gemini-paid", "gemini_paid_api_key"),
-            ):
-                settings = load_environment_settings()
-                api_key = getattr(settings, field)
-                if not api_key:
-                    continue
-                try:
-                    return self.describe_with_key(
-                        files,
-                        release_hint=release_hint,
-                        api_key=api_key,
-                        credential=credential,
-                        model=active_model,
-                        prior_attempts=prior_attempts,
-                        transaction_recorder=transaction_recorder,
-                    )
-                except ApiCredentialError:
-                    continue
-                except GeminiModelUnavailableError as exc:
-                    provider_errors.append(exc)
-                    model_error = exc
-                    break
-                except (ApiServiceError, GeminiResponseError) as exc:
-                    provider_errors.append(exc)
-                    model_error = exc
-            next_model = (
-                self.models[model_index + 1]
-                if model_index + 1 < len(self.models)
-                else None
-            )
-            if (
-                model_error is not None
-                and next_model is not None
-                and permits_gemini_model_fallback(model_error)
-            ):
-                logger.warning(
-                    "Gemini model {} exhausted or unavailable; trying configured fallback {}",
-                    active_model,
-                    next_model,
-                )
+        for credential, field in (
+            ("gemini-primary", "gemini_primary_api_key"),
+            ("gemini-paid", "gemini_paid_api_key"),
+        ):
+            settings = load_environment_settings()
+            api_key = getattr(settings, field)
+            if not api_key:
                 continue
-            if model_error is not None:
-                raise model_error
+            try:
+                return self.describe_with_key(
+                    files,
+                    release_hint=release_hint,
+                    api_key=api_key,
+                    credential=credential,
+                    prior_attempts=prior_attempts,
+                    transaction_recorder=transaction_recorder,
+                )
+            except ApiCredentialError:
+                continue
+            except (ApiServiceError, GeminiResponseError) as exc:
+                provider_errors.append(exc)
         if provider_errors:
             raise provider_errors[-1]
         raise ApiCredentialError("gemini-primary", "not configured or accepted")

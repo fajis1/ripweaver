@@ -89,7 +89,7 @@ class CatalogueContributionWorker:
                 )
             self.store.mark_sent(contribution.payload_sha256)
             logger.info(
-                "Submitted one path-free matched-disc layout to pending catalogue quarantine"
+                "Contributed one path-free matched-disc layout to the catalogue"
             )
             return True
         except (RipWeaverCatalogueError, CatalogueContributionError, OSError) as exc:
