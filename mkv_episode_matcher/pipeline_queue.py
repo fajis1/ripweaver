@@ -2392,10 +2392,12 @@ class PipelineQueueStore:
                 f"SELECT media_id, state, stage FROM pipeline_items WHERE media_id IN ({placeholders})",
                 checked,
             ).fetchall()
-            if len(rows) != len(checked):
+            if len(rows) != len(checked) or any(
+                row["state"] not in {"failed", "review_required", "queued"} for row in rows
+            ):
                 connection.rollback()
                 raise PipelineQueueError(
-                    "Some items to dismiss were not found in the queue"
+                    "Only failed, queued, or review-held items can be cleared"
                 )
 
             now = self._now()

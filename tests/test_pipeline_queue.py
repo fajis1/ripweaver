@@ -795,15 +795,16 @@ def test_dismiss_held_items_preserves_artifacts_and_history(tmp_path):
 
 def test_dismiss_items_is_atomic_when_selection_contains_active_work(tmp_path):
     store = _store(tmp_path)
-    for media_id in ("held", "queued"):
+    for media_id in ("held", "running"):
         store.enqueue_verified_rip(media_id, _artifact(tmp_path, media_id, "rip"))
     store.claim_next()
     store.require_review("held", "unmatched_disc_analysis_required")
+    store.claim_next() # Claims "running" and sets state to "running"
 
-    with pytest.raises(PipelineQueueError, match="Only failed or review-held"):
-        store.dismiss_items(("held", "queued"))
+    with pytest.raises(PipelineQueueError, match="Only failed, queued, or review-held"):
+        store.dismiss_items(("held", "running"))
     assert store.get("held").state == "review_required"
-    assert store.get("queued").state == "queued"
+    assert store.get("running").state == "running"
 
 
 def test_cancel_queued_items_preserves_artifacts_and_refuses_running(tmp_path):
