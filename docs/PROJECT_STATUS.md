@@ -4454,3 +4454,16 @@ for review rather than forcing a TV identity.
 - Focused tests use synthetic inventory and tiny dummy files only. Validation
   does not access an optical disc, invoke MakeMKV/FFprobe/HandBrake, inspect real
   media, delete user media, organize a library, or eject a drive.
+### Media Triage / Loose File Ingestion (2026-09-01)
+
+- We are currently developing the "Media Triage" feature to ingest unstructured, loose media files (e.g. from G:\Videos) directly into the pipeline (identify -> 	ranscode -> organize).
+- **Configuration:** A new media_triage_folder property has been added to EnvironmentSettings and .env.example.
+- **Note on Workspace:** Active agent development for this feature is occurring in the test branch, despite this branch having been merged into main on GitHub. All handovers and UI modifications must take place here.
+- **Next steps:** Build mkv_episode_matcher/backend/routers/triage.py to scan the configured directory, classify files as requiring matching or encoding, and present them to the frontend.
+
+
+## Future Feature: Advanced Home Video Identification (Media Triage)
+- The current Media Triage scanner excludes files starting with PXL_ (Google Pixel format) as personal home movies.
+- **Future Need:** PXL_ is not the only format for home videos (e.g., iPhones use IMG_, GoPros use GOPR, generic cameras use DSC_ or MVI_, and many have datestamps like YYYYMMDD_HHMMSS).
+- We must develop more robust heuristics (regex patterns, metadata extraction like missing audio tracks or specific encoder tags, or lack of standard media naming) to identify home videos.
+- **Future Pipeline:** These identified home videos need their own separate processing pipeline, potentially using an LLM (Gemini summary naming) for automatic description/tagging, as they cannot be matched against TV/Movie databases.

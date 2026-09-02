@@ -147,7 +147,6 @@ class CacheManager:
 
     def _evict_lru(self):
         """Evict least recently used items until under limits."""
-        import time
 
         # Sort by access time (oldest first)
         if not self.access_order:

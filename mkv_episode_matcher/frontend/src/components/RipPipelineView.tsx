@@ -455,6 +455,12 @@ interface AttentionDiscGroup {
   failedCount: number;
   titleLabel: string;
   updatedAt: number;
+  failedTypes?: string[];
+  identifyingCount?: number;
+  transcodingCount?: number;
+  organizingCount?: number;
+  queuedCount?: number;
+  completedCount?: number;
 }
 
 const attentionDiscGroups = (items: PipelineQueueItem[]): AttentionDiscGroup[] => {
@@ -1057,6 +1063,16 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
   const [unmatchedEpisodeStart, setUnmatchedEpisodeStart] = useState('');
   const [unmatchedEpisodeEnd, setUnmatchedEpisodeEnd] = useState('');
   const [submittingSeriesRecovery, setSubmittingSeriesRecovery] = useState<string | null>(null);
+  const [queueGroupBy, setQueueGroupBy] = useState<'status' | 'disc' | 'error' | 'folder'>('status');
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  
+  const toggleGroup = (key: string) => {
+    const newExpanded = new Set(expandedGroups);
+    if (newExpanded.has(key)) newExpanded.delete(key);
+    else newExpanded.add(key);
+    setExpandedGroups(newExpanded);
+  };
+
   const [openingReviewId, setOpeningReviewId] = useState<string | null>(null);
   const [reviewPlaybackOpened, setReviewPlaybackOpened] = useState<Set<string>>(() => new Set());
   const [rerippingJobId, setRerippingJobId] = useState<string | null>(null);
@@ -3323,6 +3339,134 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
     .filter((item) => !showLikelyRemovableOnly || item.likely_removable)
     .sort((left, right) => Number(right.likely_removable) - Number(left.likely_removable));
   const visibleAttentionDiscGroups = attentionOnly ? attentionDiscGroups(visiblePipelineItems) : [];
+
+    // Build groups for queueOnly mode based on queueGroupBy
+    const getQueueGroups = (): AttentionDiscGroup[] => {
+      const groups = new Map<string, PipelineQueueItem[]>();
+      
+      visiblePipelineItems.forEach(item => {
+        let key = "Other";
+        if (queueGroupBy === 'disc') {
+          key = item.disc_fingerprint ? `Disc: ${item.disc_fingerprint}` : (item.media_id.startsWith('triage') ? 'Triage (Loose Files)' : 'Unknown Disc');
+        } else if (queueGroupBy === 'status') {
+          if (item.state === 'review_required' || item.state === 'failed') key = 'Needs Human Intervention';
+          else if (item.state === 'running') key = 'Currently Processing';
+          else if (item.state === 'queued') key = 'Queued';
+          else if (item.state === 'completed') key = 'Completed';
+        } else if (queueGroupBy === 'error') {
+          if (item.state !== 'review_required' && item.state !== 'failed') key = 'Running smoothly';
+          else if (item.review_code?.includes('match') || item.review_code?.includes('identify')) key = 'Matching / Naming Errors';
+          else if (item.review_code?.includes('transcode') || item.review_code?.includes('HandBrake')) key = 'Encoding Errors';
+          else if (item.review_code) key = `Error: ${item.review_code}`;
+          else key = 'Unknown Errors';
+        } else if (queueGroupBy === 'folder') {
+          key = item.media_id.startsWith('triage') ? 'Media Triage Folder' : (item.location_relative ? `Folder: ${item.location_relative.split('/')[0]}` : 'MakeMKV Rips');
+        }
+        
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key)!.push(item);
+      });
+      
+      return Array.from(groups.entries()).map(([key, items], index) => {
+        const failedCount = items.filter(i => i.state === 'review_required' || i.state === 'failed').length;
+        
+        let label = key;
+        let recordLabel = `${items.length} items`;
+        let titleLabel = key;
+        
+        if (queueGroupBy === 'disc' && key.startsWith('Disc: ')) {
+          const fingerprint = key.replace('Disc: ', '');
+          const seriesNames = Array.from(new Set(items.flatMap((item) => {
+            let seriesName = item.series_name?.trim() || item.catalogue_candidate_help?.series_name?.trim();
+            if (!seriesName && item.display_name) {
+              const parts = item.display_name.split(' - ');
+              if (parts.length >= 2) seriesName = parts[0].trim();
+            }
+            return seriesName ? [seriesName] : [];
+          })));
+          
+          let seasonDiscInfo = '';
+          for (const item of items) {
+             const loc = item.location_relative || '';
+             // Look for S04, S4, Season 04
+             const sMatch = loc.match(/(?:S|Season\s*0*)(\d+)/i);
+             // Look for D3, D03, Disc 3, Disc03
+             const dMatch = loc.match(/(?:D|Disc\s*0*)(\d+)/i);
+             
+             if (sMatch || dMatch) {
+                const sStr = sMatch ? `S${sMatch[1].padStart(2, '0')}` : '';
+                const dStr = dMatch ? `D${dMatch[1]}` : '';
+                seasonDiscInfo = ` ${sStr} ${dStr}`.trim();
+                if (seasonDiscInfo.length > 0) seasonDiscInfo = ` (${seasonDiscInfo})`;
+                break;
+             }
+          }
+
+          
+          if (seriesNames.length === 1) {
+            label = seriesNames[0] + seasonDiscInfo;
+            recordLabel = `Disc ${fingerprint.slice(0, 8).toUpperCase()}`;
+            titleLabel = `${items.length} titles`;
+          } else if (seriesNames.length > 1) {
+            label = `${seriesNames[0]} + ${seriesNames.length - 1} more` + seasonDiscInfo;
+            recordLabel = `Disc ${fingerprint.slice(0, 8).toUpperCase()}`;
+            titleLabel = `${items.length} titles`;
+          } else {
+            label = seasonDiscInfo ? `Unknown Series${seasonDiscInfo}` : `Unknown Series`;
+            recordLabel = `Disc ${fingerprint.slice(0, 8).toUpperCase()}`;
+            titleLabel = `${items.length} items`;
+          }
+        }
+        
+        const failedTypesSet = new Set<string>();
+        let identifyingCount = 0;
+        let transcodingCount = 0;
+        let organizingCount = 0;
+        let queuedCount = 0;
+        let completedCount = 0;
+        
+        items.forEach(i => {
+          if (i.state === 'review_required' || i.state === 'failed') {
+            if (i.review_code) failedTypesSet.add(i.review_code.replaceAll('_', ' '));
+            else if (i.error_type) failedTypesSet.add(i.error_type.replaceAll('_', ' '));
+          } else if (i.state === 'completed') {
+            completedCount++;
+          } else if (i.stage === 'identify') {
+            identifyingCount++;
+          } else if (i.stage === 'transcode') {
+            transcodingCount++;
+          } else if (i.stage === 'organize') {
+            organizingCount++;
+          } else if (i.state === 'queued') {
+            queuedCount++;
+          }
+        });
+        const failedTypes = Array.from(failedTypesSet);
+        
+        return {
+          key: `queue-group-${index}-${key}`,
+          label,
+          recordLabel,
+          items: items,
+          identificationCount: items.length,
+          failedCount,
+          titleLabel,
+          updatedAt: 0,
+          failedTypes,
+          identifyingCount,
+          transcodingCount,
+          organizingCount,
+          queuedCount,
+          completedCount
+        };
+      }).sort((a, b) => {
+        // Human intervention always first in status sort
+        if (a.label === 'Needs Human Intervention') return -1;
+        if (b.label === 'Needs Human Intervention') return 1;
+        return b.failedCount - a.failedCount;
+      });
+    };
+
   const sequenceRecoveryByDisc = new Map<string, { firstMediaId: string; itemCount: number }>();
   const seriesResolutionRecoveryByDisc = new Map<string, string>();
   for (const item of visiblePipelineItems) {
@@ -3680,7 +3824,25 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
   );
 
   return (
-    <div className="h-full overflow-auto space-y-6">
+    <>
+      {queueOnly && pipelineQueue && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 rounded-full border border-[var(--border-color)] bg-[var(--bg-tertiary)]/90 px-6 py-3 shadow-lg backdrop-blur flex items-center gap-4 animate-fade-in">
+           {pipelineQueue.paused ? (
+             <>
+               <span className="text-amber-300 font-bold">Pipeline is Paused</span>
+               <button className="btn btn-primary text-sm rounded-full px-4 py-1.5" disabled={controlling} onClick={() => controlPipeline('resume')}>Resume Processing</button>
+             </>
+           ) : (
+             <>
+               <span className="text-blue-300 font-bold flex items-center gap-2">
+                 <span className="animate-pulse">&#9679;</span> Currently Processing
+               </span>
+               <button className="btn btn-secondary text-sm rounded-full border-[var(--border-color)] hover:bg-white/10 px-4 py-1.5" disabled={controlling} onClick={() => controlPipeline('pause')}>Pause</button>
+             </>
+           )}
+        </div>
+      )}
+      <div className="h-full overflow-auto space-y-6">
       <div className={queueOnly || attentionOnly ? 'hidden' : 'contents'}>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
@@ -4912,7 +5074,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
               </div>
             </div>
           )}
-          {!pipelineQueue?.automatic_processing_enabled && queuedTranscodeItems.length > 0 && (
+          {queuedTranscodeItems.length > 0 && (
             <div className="rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-sm text-amber-100 space-y-3">
               <p>Transcode jobs are ready but held until their exact HandBrake profile, encoded staging destination, and item set are reviewed.</p>
               <label className="block space-y-1">
@@ -4930,7 +5092,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
               </div>
             </div>
           )}
-          {transcodePlan && !pipelineQueue?.automatic_processing_enabled && (
+          {transcodePlan && (
             <div className="rounded-lg border border-indigo-400/30 bg-indigo-400/10 p-4 space-y-3 text-sm">
               <div className="font-semibold text-white">Reviewed transcode batch</div>
               <div>{transcodePlan.item_count} exact queued item(s)</div>
@@ -5042,20 +5204,27 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
           {visiblePipelineItems.length === 0 ? (
             <div className="text-sm text-[var(--text-muted)]">{showLikelyRemovableOnly ? 'No active items are currently flagged as likely removable.' : attentionOnly ? 'No pipeline errors or review choices need attention.' : queueOnly ? 'No actionable downstream work is waiting. Completed items are available in Recently Finished.' : savedJob?.state === 'queued' ? 'This disc has not produced verified rips yet. Complete the MakeMKV confirmation below; identification will enter this queue automatically after each rip verifies.' : selectedDiscFingerprint ? 'No actionable downstream work belongs to this selected disc. Completed items are available in Recently Finished.' : 'Select a disc to see only its downstream items.'}</div>
           ) : (
-            <div id="pipeline-review-actions" className={`${attentionOnly ? 'space-y-3' : 'divide-y divide-[var(--border-color)]'} scroll-mt-4`}>
+            <>
+          {queueOnly && (
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-xl font-bold text-white">Pipeline Queue</h3>
+              <select 
+                value={queueGroupBy}
+                onChange={(e) => setQueueGroupBy(e.target.value as any)}
+                className="bg-[var(--bg-tertiary)] border border-[var(--border-color)] text-white rounded px-3 py-1 text-sm focus:outline-none focus:border-amber-500"
+              >
+                <option value="status">Group by Status</option>
+                <option value="error">Group by Error / Intervention</option>
+                <option value="disc">Group by Disc / Source</option>
+                <option value="folder">Group by Folder</option>
+              </select>
+            </div>
+          )}
+<div id="pipeline-review-actions" className={`${attentionOnly ? 'space-y-3' : 'divide-y divide-[var(--border-color)]'} scroll-mt-4`}>
               {(attentionOnly
-                ? visibleAttentionDiscGroups
-                : [{
-                    key: 'visible-pipeline-items',
-                    label: '',
-                    recordLabel: '',
-                    items: visiblePipelineItems,
-                    identificationCount: 0,
-                    failedCount: 0,
-                    titleLabel: '',
-                    updatedAt: 0,
-                  }]
-              ).map((group) => {
+                  ? visibleAttentionDiscGroups
+                  : getQueueGroups()
+                ).map((group) => {
                 const itemCards = group.items.map((item) => (
                 <div id={pipelineItemElementId(item.media_id)} tabIndex={-1} key={item.media_id} className="scroll-mt-24 rounded-lg py-3 flex flex-wrap items-center justify-between gap-3 outline-none focus:ring-2 focus:ring-amber-300/70">
                   <div>
@@ -5602,7 +5771,81 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                   )}
                 </div>
                 ));
-                if (!attentionOnly) return <Fragment key={group.key}>{itemCards}</Fragment>;
+                                  if (!attentionOnly) return (
+                    <Fragment key={group.key}>
+                      {queueOnly && (
+                        <div 
+                          className="bg-[var(--bg-tertiary)] border border-[var(--border-color)] rounded-t-xl p-4 flex justify-between items-center cursor-pointer hover:bg-white/5 mt-4"
+                          onClick={() => toggleGroup(group.key)}
+                        >
+                          <div className="flex items-center gap-3">
+                            <span className={"transform transition-transform " + (expandedGroups.has(group.key) ? 'rotate-90' : '')}>&#9654;</span>
+                            <span className="font-bold text-white text-lg">{group.label}</span>
+                                                        <div className="flex gap-2 items-center flex-wrap">
+                                {group.failedCount > 0 && (
+                                  <>
+                                    <span className="bg-red-500/20 text-red-300 text-xs px-2 py-1 rounded border border-red-500/30 font-bold">{group.failedCount} Failed</span>
+                                    {group.failedTypes && group.failedTypes.map((type: string, idx: number) => (
+                                      <span key={idx} className="bg-amber-500/20 text-amber-300 text-xs px-2 py-1 rounded border border-amber-500/30 capitalize">
+                                        {type}
+                                      </span>
+                                    ))}
+                                  </>
+                                )}
+                                {(group.identifyingCount || 0) > 0 && <span className="bg-blue-500/20 text-blue-300 text-xs px-2 py-1 rounded border border-blue-500/30">{group.identifyingCount} Matching</span>}
+                                {(group.transcodingCount || 0) > 0 && <span className="bg-purple-500/20 text-purple-300 text-xs px-2 py-1 rounded border border-purple-500/30">{group.transcodingCount} Encoding</span>}
+                                {(group.organizingCount || 0) > 0 && <span className="bg-green-500/20 text-green-300 text-xs px-2 py-1 rounded border border-green-500/30">{group.organizingCount} Moving</span>}
+                                  
+                                  {group.items.length > 0 && (
+                                    <>
+                                      {Array.from(new Set(group.items.map(i => i.review_code || i.error_type).filter(Boolean) as string[])).map(issue => {
+                                        const matchingItems = group.items.filter(i => i.review_code === issue || i.error_type === issue);
+                                        return (
+                                          <button 
+                                            key={issue}
+                                            type="button" 
+                                            className="ml-2 btn btn-secondary text-xs hover:bg-orange-500/20 hover:text-orange-300 hover:border-orange-500/30 transition-colors"
+                                            disabled={controlling}
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              if (window.confirm(`Are you sure you want to clear the ${matchingItems.length} items with issue '${issue}'?`)) {
+                                                dismissPipelineItems(matchingItems.map(item => item.media_id));
+                                              }
+                                            }}
+                                          >
+                                            Clear {issue.replace(/_/g, ' ')} ({matchingItems.length})
+                                          </button>
+                                        );
+                                      })}
+                                      <button 
+                                        type="button" 
+                                        className="ml-4 btn btn-secondary text-xs hover:bg-red-500/20 hover:text-red-300 hover:border-red-500/30 transition-colors"
+                                        disabled={controlling}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          if (window.confirm(`Are you sure you want to clear all ${group.items.length} items in this group from the active queue?`)) {
+                                            dismissPipelineItems(group.items.map(item => item.media_id));
+                                          }
+                                        }}
+                                      >
+                                        Clear All ({group.items.length})
+                                      </button>
+                                    </>
+                                  )}
+                                {(group.queuedCount || 0) > 0 && <span className="bg-slate-500/20 text-slate-300 text-xs px-2 py-1 rounded border border-slate-500/30">{group.queuedCount} Queued</span>}
+                                {(group.completedCount || 0) > 0 && <span className="bg-green-500/20 text-green-300 text-xs px-2 py-1 rounded border border-green-500/30">{group.completedCount} Done</span>}
+                            </div>
+                          </div>
+                          <span className="text-[var(--text-muted)] text-sm">{group.recordLabel}</span>
+                        </div>
+                      )}
+                      
+                      <div className={queueOnly && !expandedGroups.has(group.key) ? 'hidden' : (queueOnly ? 'p-2 divide-y divide-[var(--border-color)] bg-[var(--bg-secondary)] border-x border-b border-[var(--border-color)] rounded-b-xl' : '')}>
+                        {itemCards}
+                      </div>
+                    </Fragment>
+                  );
+
                 return (
                   <details key={group.key} className="overflow-hidden rounded-xl border border-amber-400/30 bg-amber-500/5">
                     <summary className="cursor-pointer px-4 py-4 text-amber-50 marker:text-amber-300 hover:bg-amber-500/10">
@@ -5635,7 +5878,8 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                 );
               })}
             </div>
-          )}
+          </>
+            )}
         </div>
       )}
 
@@ -6167,6 +6411,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
         </div>
       )}
     </div>
+    </>
   );
 };
 

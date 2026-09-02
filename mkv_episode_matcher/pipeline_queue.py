@@ -2393,12 +2393,13 @@ class PipelineQueueStore:
                 checked,
             ).fetchall()
             if len(rows) != len(checked) or any(
-                row["state"] not in {"failed", "review_required"} for row in rows
+                row["state"] not in {"failed", "review_required", "queued"} for row in rows
             ):
                 connection.rollback()
                 raise PipelineQueueError(
-                    "Only failed or review-held items can be cleared"
+                    "Only failed, queued, or review-held items can be cleared"
                 )
+
             now = self._now()
             for row in rows:
                 connection.execute(

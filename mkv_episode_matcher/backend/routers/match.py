@@ -3,7 +3,7 @@ import hashlib
 import json
 import threading
 from pathlib import Path
-from typing import Annotated, List, Optional
+from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -35,10 +35,12 @@ from mkv_episode_matcher.pipeline_queue import (
 
 router = APIRouter(prefix="/match", tags=["match"])
 
+
 class MatchRequest(BaseModel):
-    files: List[str]
-    series_name: Optional[str] = None
-    season: Optional[int] = None
+    files: list[str]
+    series_name: str | None = None
+    season: int | None = None
+
 
 class MatchResponse(BaseModel):
     status: str
@@ -155,7 +157,9 @@ def _classify_folder_durations(
     if len(episode_like) >= max(2, round(len(durations) * 0.6)):
         ordered = sorted(episode_like)
         median = ordered[len(ordered) // 2]
-        clustered = [value for value in episode_like if abs(value - median) <= median * 0.25]
+        clustered = [
+            value for value in episode_like if abs(value - median) <= median * 0.25
+        ]
         if len(clustered) >= max(2, round(len(durations) * 0.5)):
             reason = "dominant episode-length runtime cluster"
             if series_name:
@@ -171,8 +175,13 @@ def _classify_folder_durations(
 
 
 def _queue_descriptive_directory(
-    *, store: PipelineQueueStore, contract_root: Path, files: tuple[Path, ...],
-    inspections: tuple[object, ...], content_hint: str, release_title: str | None,
+    *,
+    store: PipelineQueueStore,
+    contract_root: Path,
+    files: tuple[Path, ...],
+    inspections: tuple[object, ...],
+    content_hint: str,
+    release_title: str | None,
 ) -> tuple[str, tuple[str, ...]]:
     fingerprint = _directory_batch_fingerprint(files)
     contract_root.mkdir(parents=True, exist_ok=True)
@@ -246,37 +255,37 @@ def _classify_legacy_play_all(matches, failures) -> list[dict[str, object]]:
                 matched_episodes=tuple(matched),
             )
             if evidence is not None:
-                detected.append(
-                    {
-                        "file": str(source),
-                        "component_episode_ids": list(evidence.component_episode_ids),
-                        "duration_ratio": round(evidence.duration_ratio, 6),
-                        "size_ratio": (
-                            round(evidence.size_ratio, 6)
-                            if evidence.size_ratio is not None
-                            else None
-                        ),
-                    }
-                )
+                detected.append({
+                    "file": str(source),
+                    "component_episode_ids": list(evidence.component_episode_ids),
+                    "duration_ratio": round(evidence.duration_ratio, 6),
+                    "size_ratio": (
+                        round(evidence.size_ratio, 6)
+                        if evidence.size_ratio is not None
+                        else None
+                    ),
+                })
         return detected
     except (FFprobeError, OSError, AttributeError, TypeError, ValueError):
         return []
+
 
 # Simple in-memory job store for demo purposes
 # In production, use Redis or database
 jobs = {}
 
+
 @router.post("/start")
 async def start_match(
-    request: MatchRequest, 
+    request: MatchRequest,
     background_tasks: BackgroundTasks,
-    engine: MatchEngineV2 = Depends(get_engine)
+    engine: MatchEngineV2 = Depends(get_engine),
 ):
     job_id = f"job_{len(jobs) + 1}"
     jobs[job_id] = {"status": "pending", "results": [], "logs": []}
-    
+
     background_tasks.add_task(process_matching_job, job_id, request, engine)
-    
+
     return {"status": "started", "job_id": job_id}
 
 
@@ -315,8 +324,7 @@ def start_unmatched_match(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     media_ids = tuple(
-        f"directory-{fingerprint}-title-{index:03d}"
-        for index in range(len(files))
+        f"directory-{fingerprint}-title-{index:03d}" for index in range(len(files))
     )
 
     def run() -> None:
@@ -348,7 +356,9 @@ def start_unmatched_match(
                 except PipelineQueueError:
                     pass
 
-    threading.Thread(target=run, name="directory-unmatched-analysis", daemon=True).start()
+    threading.Thread(
+        target=run, name="directory-unmatched-analysis", daemon=True
+    ).start()
     return {
         "status": "started",
         "disc_fingerprint": fingerprint,
@@ -449,9 +459,15 @@ def start_smart_folder_match(  # noqa: C901 - guarded classification workflow
 
                 def run_descriptive() -> None:
                     try:
-                        applied = set(execute_gemini_fallback(
-                            store, media_ids, config, get_engine().asr, contract_root
-                        ))
+                        applied = set(
+                            execute_gemini_fallback(
+                                store,
+                                media_ids,
+                                config,
+                                get_engine().asr,
+                                contract_root,
+                            )
+                        )
                         for media_id in set(media_ids) - applied:
                             store.choose_review_path(
                                 media_id, "gemini_descriptive_review_required"
@@ -483,14 +499,18 @@ def start_smart_folder_match(  # noqa: C901 - guarded classification workflow
         "gemini_enabled": request.confirm_external_fallback,
     }
 
+
 @router.get("/status/{job_id}")
 async def get_job_status(job_id: str):
     return jobs.get(job_id, {"status": "not_found"})
 
-async def process_matching_job(job_id: str, request: MatchRequest, engine: MatchEngineV2):
+
+async def process_matching_job(
+    job_id: str, request: MatchRequest, engine: MatchEngineV2
+):
     manager = get_manager()
     loop = asyncio.get_event_loop()
-    
+
     def progress_callback(current, total, filename):
         asyncio.run_coroutine_threadsafe(
             manager.broadcast({
@@ -498,9 +518,9 @@ async def process_matching_job(job_id: str, request: MatchRequest, engine: Match
                 "job_id": job_id,
                 "current": current,
                 "total": total,
-                "filename": str(filename)
+                "filename": str(filename),
             }),
-            loop
+            loop,
         )
 
     def phase_callback(phase, message):
@@ -509,21 +529,25 @@ async def process_matching_job(job_id: str, request: MatchRequest, engine: Match
                 "type": "phase_update",
                 "job_id": job_id,
                 "phase": phase,
-                "message": message
+                "message": message,
             }),
-            loop
+            loop,
         )
 
     try:
         jobs[job_id]["status"] = "processing"
-        await manager.broadcast({"type": "job_update", "job_id": job_id, "status": "processing"})
-        
+        await manager.broadcast({
+            "type": "job_update",
+            "job_id": job_id,
+            "status": "processing",
+        })
+
         # Determine strict or auto season
         season_override = request.season
-        
+
         paths = [Path(f) for f in request.files]
         parent_dir = paths[0].parent if paths else Path(".")
-        
+
         # Run blocking engine call in thread pool
         matches, failures = await asyncio.to_thread(
             engine.process_path,
@@ -532,7 +556,7 @@ async def process_matching_job(job_id: str, request: MatchRequest, engine: Match
             files_override=paths,
             json_output=True,
             progress_callback=progress_callback,
-            phase_callback=phase_callback
+            phase_callback=phase_callback,
         )
 
         play_all_aggregates = await asyncio.to_thread(
@@ -548,24 +572,24 @@ async def process_matching_job(job_id: str, request: MatchRequest, engine: Match
             for failure in failures
             if str(failure.original_file) not in play_all_files
         ]
-        
+
         # Serialize results
         serialized_matches = []
         for m in matches:
-             serialized_matches.append({
-                 "original_file": str(m.matched_file),
-                 "series": m.episode_info.series_name,
-                 "season": m.episode_info.season,
-                 "episode": m.episode_info.episode,
-                 "title": m.episode_info.title,
-                 "confidence": m.confidence
-             })
-             
+            serialized_matches.append({
+                "original_file": str(m.matched_file),
+                "series": m.episode_info.series_name,
+                "season": m.episode_info.season,
+                "episode": m.episode_info.episode,
+                "title": m.episode_info.title,
+                "confidence": m.confidence,
+            })
+
         jobs[job_id]["status"] = "completed"
         jobs[job_id]["results"] = serialized_matches
         jobs[job_id]["failures"] = [str(f.original_file) for f in failures]
         jobs[job_id]["play_all_aggregates"] = play_all_aggregates
-        
+
         await manager.broadcast({
             "type": "job_complete",
             "job_id": job_id,
@@ -574,7 +598,7 @@ async def process_matching_job(job_id: str, request: MatchRequest, engine: Match
             "failures": jobs[job_id]["failures"],
             "play_all_aggregates": play_all_aggregates,
         })
-        
+
     except Exception as e:
         from mkv_episode_matcher.core.credentials import ApiCredentialError
 

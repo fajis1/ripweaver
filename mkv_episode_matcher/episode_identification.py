@@ -54,7 +54,9 @@ class EpisodeMatcher:
         self.show_name = show_name
         self.chunk_duration = 30
         self.skip_initial_duration = 300
-        self.device = device or ("cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu")
+        self.device = device or (
+            "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
+        )
         self.temp_dir = Path(tempfile.gettempdir()) / "whisper_chunks"
         self.temp_dir.mkdir(exist_ok=True)
         # Initialize subtitle cache
@@ -185,9 +187,7 @@ class EpisodeMatcher:
             logger.debug("Returning cached reference files")
             return self.reference_files_cache[cache_key]
 
-        reference_dir = (
-            self.cache_dir / "data" / safe_cache_component(self.show_name)
-        )
+        reference_dir = self.cache_dir / "data" / safe_cache_component(self.show_name)
         patterns = [
             f"S{season_number:02d}E",
             f"S{season_number}E",

@@ -117,11 +117,14 @@ def test_held_review_startup_skips_unattended_workers(tmp_path, monkeypatch):
     pipeline_store = SimpleNamespace(reconcile_incomplete=lambda **_kwargs: ())
 
     class ImmediateThread:
-        def __init__(self, *, target, daemon):
+        def __init__(self, *, target, daemon, **kwargs):
             self.target = target
             self.daemon = daemon
+            self.name = kwargs.get("name")
 
         def start(self):
+            if self.name == "transcode-sweeper":
+                return # Don't block the test with infinite loop
             self.target()
 
     def unexpected_call(*_args, **_kwargs):

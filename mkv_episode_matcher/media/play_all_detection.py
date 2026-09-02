@@ -44,9 +44,8 @@ def detect_play_all(
         for end in range(start + 2, len(ordered) + 1):
             group = ordered[start:end]
             if any(
-                (left.season, left.episode + 1)
-                != (right.season, right.episode)
-                for left, right in zip(group, group[1:])
+                (left.season, left.episode + 1) != (right.season, right.episode)
+                for left, right in zip(group, group[1:], strict=False)
             ):
                 break
             expected_duration = sum(item.duration_seconds for item in group)

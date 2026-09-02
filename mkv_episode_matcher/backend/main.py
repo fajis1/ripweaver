@@ -1,4 +1,5 @@
 import sys
+import threading
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -28,6 +29,7 @@ from mkv_episode_matcher.backend.routers import (
     rip,
     scan,
     system,
+    triage,
 )
 from mkv_episode_matcher.backend.startup_queue_resume import (
     STARTUP_QUEUE_RESUME_DELAY_SECONDS,
@@ -51,6 +53,7 @@ from mkv_episode_matcher.pipeline_queue import (
 
 _downstream_worker: DownstreamWorker | None = None
 _catalogue_contribution_worker: CatalogueContributionWorker | None = None
+_transcode_sweeper_thread: threading.Thread | None = None
 UVICORN_GRACEFUL_SHUTDOWN_SECONDS = 15
 
 
@@ -88,6 +91,52 @@ def _automatic_downstream_enabled(config) -> bool:
     return bool(
         config.automatic_processing_enabled and not automatic_rip_startup_held()
     )
+
+
+def _start_automatic_transcode_sweeper() -> threading.Thread:
+    def sweeper():
+        import threading
+        import time
+
+        from loguru import logger
+
+        from mkv_episode_matcher.backend.automatic_rip import (
+            _continue_automatic_downstream,
+        )
+        from mkv_episode_matcher.backend.dependencies import get_pipeline_queue_store
+        from mkv_episode_matcher.core.config_manager import get_config_manager
+
+        while getattr(threading.current_thread(), "keep_running", True):
+            time.sleep(15)
+            try:
+                config = get_config_manager().load()
+                if not config.automatic_processing_enabled:
+                    continue
+                store = get_pipeline_queue_store()
+                if store.is_paused():
+                    continue
+
+                # Check for queued transcode items
+                items = [
+                    item
+                    for item in store.list_items()
+                    if item.stage == "transcode" and item.state == "queued"
+                ]
+                if not items:
+                    continue
+
+                media_ids = tuple(item.media_id for item in items)
+                logger.info(
+                    "Automatic sweeper found {} queued transcode items, starting batch...",
+                    len(media_ids),
+                )
+                _continue_automatic_downstream(media_ids)
+            except Exception as exc:
+                logger.error("Automatic sweeper failed: {}", exc)
+
+    t = threading.Thread(target=sweeper, name="transcode-sweeper", daemon=True)
+    t.start()
+    return t
 
 
 def _start_catalogue_contribution_worker() -> None:
@@ -191,6 +240,7 @@ app.include_router(system.router)
 app.include_router(catalogue.router)
 app.include_router(rip.router)
 app.include_router(acquisition.router)
+app.include_router(triage.router)
 
 
 # Fix MIME types on Windows - Validated Middleware Approach
@@ -284,6 +334,9 @@ async def startup_event():
 
     _start_catalogue_contribution_worker()
 
+    global _transcode_sweeper_thread
+    _transcode_sweeper_thread = _start_automatic_transcode_sweeper()
+
     def warm_up_engine():
         global _downstream_worker
         if not _automatic_downstream_enabled(config):
@@ -358,7 +411,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    global _catalogue_contribution_worker, _downstream_worker
+    global _catalogue_contribution_worker, _downstream_worker, _transcode_sweeper_thread
     cancel_startup_queue_resume()
     if _catalogue_contribution_worker is not None:
         _catalogue_contribution_worker.stop()
@@ -366,6 +419,11 @@ async def shutdown_event():
     if _downstream_worker is not None:
         _downstream_worker.stop()
         _downstream_worker = None
+
+    if _transcode_sweeper_thread is not None:
+        _transcode_sweeper_thread.keep_running = False
+        _transcode_sweeper_thread = None
+
     stop_windows_drive_events()
     try:
         shutdown = shutdown_makemkv_process_control()
