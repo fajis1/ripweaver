@@ -7,4 +7,3 @@ try:
 except PackageNotFoundError:
     # package is not installed, use hardcoded version
     __version__ = "1.2.0"
-

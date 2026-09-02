@@ -25,6 +25,7 @@ class EnvironmentSettings(BaseSettings):
     gemini_paid_api_key: str | None = None
     gemini_model: str = "gemini-3.6-flash"
     ripweaver_catalogue_token: str | None = None
+    media_triage_folder: Path | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

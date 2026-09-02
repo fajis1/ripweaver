@@ -20,6 +20,7 @@ interface Config {
     short_title_review_seconds: number;
     jellyfin_tv_root?: string;
     jellyfin_movie_root?: string;
+    media_triage_folder?: string;
     makemkv_path?: string;
     handbrake_path?: string;
     ffmpeg_path?: string;
@@ -449,8 +450,8 @@ const SettingsView: React.FC = () => {
     if (!config) return <div className="p-8 text-center text-red-400">Error loading settings</div>;
 
     return (
-        <div className="max-w-4xl mx-auto glass-panel p-8 rounded-2xl animate-fade-in h-full overflow-y-auto">
-            <h2 className="text-3xl font-bold mb-8 heading-gradient">System Configuration</h2>
+        <>
+
 
             {folderPicker && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true" aria-label={`Choose ${folderPicker.label}`} onMouseDown={(event) => { if (event.currentTarget === event.target) setFolderPicker(null); }}>
@@ -473,6 +474,8 @@ const SettingsView: React.FC = () => {
                   </div>
                 </div>
             )}
+        <div className="max-w-4xl mx-auto glass-panel p-8 rounded-2xl animate-fade-in h-full overflow-y-auto">
+            <h2 className="text-3xl font-bold mb-8 heading-gradient">System Configuration</h2>
 
             {audioChoicePrompt && (
                 <div className="hidden">
@@ -501,7 +504,7 @@ const SettingsView: React.FC = () => {
                 </div>
             )}
 
-            <form onSubmit={handleSave} className="space-y-8">
+            <form id="settings-form" onSubmit={handleSave} className="space-y-8">
                 {/* Core Settings */}
                 <div className="space-y-4">
                     <h3 className="text-xl font-semibold text-white border-b border-[var(--border-color)] pb-2">Core Settings</h3>
@@ -612,6 +615,7 @@ const SettingsView: React.FC = () => {
                             ['deletion_staging_root', 'Staging for deletion / reprocessing root'],
                             ['jellyfin_tv_root', 'TV media library root'],
                             ['jellyfin_movie_root', 'Movie media library root'],
+                            ['media_triage_folder', 'Media Triage watch folder'],
                         ].map(([field, label]) => (
                             <div key={field} className="space-y-2">
                                 <span className="text-sm font-medium text-muted">{label}</span>
@@ -966,18 +970,21 @@ const SettingsView: React.FC = () => {
                         </div>
                     </div>
                 </div>
-
-                <div className="pt-4 flex justify-end">
-                    <button
-                        type="submit"
-                        disabled={saving}
-                        className={`btn btn-primary px-8 py-3 text-lg shadow-lg shadow-blue-500/20 ${saving ? 'opacity-70 cursor-wait' : ''}`}
-                    >
-                        {saving ? 'Saving configuration…' : message?.type === 'success' && message.text === 'Settings saved successfully' ? '✓ Configuration saved' : 'Save Configuration'}
-                    </button>
-                </div>
-            </form>
+              </form>
         </div>
+            {/* Floating Action Button */}
+            <div className="absolute bottom-8 right-8 z-[100]">
+                <button
+                    type="submit"
+                    form="settings-form"
+                    disabled={saving}
+                    className={`btn btn-primary px-8 py-4 text-lg font-bold shadow-2xl shadow-blue-500/50 flex items-center gap-3 rounded-full border border-blue-400/30 transition-all ${saving ? 'opacity-70 cursor-wait' : 'hover:-translate-y-1 hover:shadow-blue-500/70'}`}
+                >
+                    {saving ? 'Saving...' : message?.type === 'success' && message.text === 'Settings saved successfully' ? 'Saved!' : 'Save Settings'}
+                </button>
+            </div>
+        </>
+
     );
 };
 

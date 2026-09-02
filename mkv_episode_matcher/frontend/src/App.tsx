@@ -13,6 +13,7 @@ import ExpiredSourceCleanupModal from './components/ExpiredSourceCleanupModal';
 import LibraryEpisodeRepairView from './components/LibraryEpisodeRepairView';
 import SetupHealthView from './components/SetupHealthView';
 import SupportView from './components/SupportView';
+import MediaTriageView from './components/MediaTriageView';
 
 interface ScannedFile {
   path: string;
@@ -345,6 +346,10 @@ function App() {
 
     if (currentView === 'recent-activity') {
       return <RecentActivityView onOpenDashboard={() => setCurrentView('rip-pipeline')} />;
+    }
+
+    if (currentView === 'media-triage') {
+      return <MediaTriageView onNavigateToQueue={() => setCurrentView("pipeline-queue")} />;
     }
 
     if (currentView === 'logs') {

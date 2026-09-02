@@ -18,6 +18,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, systemStatus
         { id: 'recent-activity', label: 'Recently Finished', icon: '✓' },
         { id: 'rip-pipeline', label: 'Disc Dashboard', icon: '💿' },
         { id: 'pipeline-queue', label: 'Queue', icon: '⏳' },
+        { id: 'media-triage', label: 'Media Triage', icon: '🩺' },
         { id: 'dashboard', label: 'Library Scan', icon: '📺' },
         { id: 'logs', label: 'Logs', icon: '📋' },
         { id: 'support', label: 'Support & Bug Reports', icon: '🛟' },

@@ -5,7 +5,6 @@ import shutil
 from pathlib import Path
 
 import ctranslate2
-import requests
 from loguru import logger
 from opensubtitlescom import OpenSubtitles
 from opensubtitlescom.exceptions import OpenSubtitlesException
@@ -202,9 +201,7 @@ def get_subtitles(show_id, seasons: set[int], config=None, max_retries=3):
         subtitles = OpenSubtitles(open_subtitles_user_agent, open_subtitles_api_key)
         subtitles.login(open_subtitles_username, open_subtitles_password)
     except Exception as e:
-        logger.error(
-            f"Failed to log in to OpenSubtitles: {type(e).__name__}"
-        )
+        logger.error(f"Failed to log in to OpenSubtitles: {type(e).__name__}")
         return
 
     for season in seasons:

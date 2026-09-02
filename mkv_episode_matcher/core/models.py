@@ -103,6 +103,7 @@ class Config(BaseModel):
     retained_source_cleanup_postponed_until: str | None = None
     jellyfin_tv_root: Path | None = None
     jellyfin_movie_root: Path | None = None
+    media_triage_folder: Path | None = None
     makemkv_path: Path | None = None
     disc_image_creator_path: Path | None = None
     handbrake_path: Path | None = None
