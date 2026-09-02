@@ -5574,6 +5574,20 @@ for review rather than forcing a TV identity.</p>
   does not access an optical disc, invoke MakeMKV/FFprobe/HandBrake, inspect real
   media, delete user media, organize a library, or eject a drive.</li>
 </ul>
+<h3 id="media-triage-loose-file-ingestion-2026-09-01">Media Triage / Loose File Ingestion (2026-09-01)</h3>
+<ul>
+<li>We are currently developing the "Media Triage" feature to ingest unstructured, loose media files (e.g. from G:\Videos) directly into the pipeline (identify -&gt;    ranscode -&gt; organize).</li>
+<li><strong>Configuration:</strong> A new media_triage_folder property has been added to EnvironmentSettings and .env.example.</li>
+<li><strong>Note on Workspace:</strong> Active agent development for this feature is occurring in the test branch, despite this branch having been merged into main on GitHub. All handovers and UI modifications must take place here.</li>
+<li><strong>Next steps:</strong> Build mkv_episode_matcher/backend/routers/triage.py to scan the configured directory, classify files as requiring matching or encoding, and present them to the frontend.</li>
+</ul>
+<h2 id="future-feature-advanced-home-video-identification-media-triage">Future Feature: Advanced Home Video Identification (Media Triage)</h2>
+<ul>
+<li>The current Media Triage scanner excludes files starting with PXL_ (Google Pixel format) as personal home movies.</li>
+<li><strong>Future Need:</strong> PXL_ is not the only format for home videos (e.g., iPhones use IMG_, GoPros use GOPR, generic cameras use DSC_ or MVI_, and many have datestamps like YYYYMMDD_HHMMSS).</li>
+<li>We must develop more robust heuristics (regex patterns, metadata extraction like missing audio tracks or specific encoder tags, or lack of standard media naming) to identify home videos.</li>
+<li><strong>Future Pipeline:</strong> These identified home videos need their own separate processing pipeline, potentially using an LLM (Gemini summary naming) for automatic description/tagging, as they cannot be matched against TV/Movie databases.</li>
+</ul>
 
 
 
