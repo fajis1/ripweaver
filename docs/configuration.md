@@ -78,6 +78,12 @@ Example configuration file (`config.json`):
 
 ## API Keys Setup
 
+The current Web UI provides write-only credential fields under **Settings →
+Core Settings** for TMDb, OpenSubtitles username/password/API key, and Gemini
+primary/backup API keys. Saving writes credentials to the local ignored
+`.env`; the server returns only configured status and the final four
+characters, never the complete value.
+
 ### 🎬 TMDb API Key (Optional)
 
 TMDb integration provides enhanced episode metadata:
@@ -104,6 +110,30 @@ OpenSubtitles integration provides subtitle downloads:
 - Higher API rate limits
 - Better download quotas
 - Priority support
+
+### Google Gemini keys and models (optional)
+
+Use the Gemini primary API-key field and, if available, a distinct backup key.
+Use the dropdowns to select one primary model and up to two ordered backup
+models. RipWeaver stays on
+the current model while it tries both keys, then changes models only after HTTP
+429 capacity exhaustion, sustained HTTP 503 overload, or a definite
+unavailable-model response. The model list is non-secret and is stored in the
+normal JSON configuration; API keys remain in `.env`.
+
+Two useful chains are:
+
+- Flash: `gemini-3.6-flash` → `gemini-3.5-flash` → `gemini-2.5-flash`
+- Flash-Lite: `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite` →
+  `gemini-2.5-flash-lite`
+
+### Exporting a support bundle
+
+Open **Support & Bug Reports** and select **Create & download support ZIP**.
+The local-only endpoint includes bounded, redacted application logs and public
+pipeline/setup state. It never includes `.env`, complete credentials, media,
+paths, transcript dialogue, or private provider transactions. Review the ZIP
+before attaching it to a GitHub issue or email draft.
 
 ## Advanced Settings
 
@@ -214,26 +244,26 @@ never expose or persist the token.
 Lookups send only the compatibility disc identifier derived from disc file
 names and sizes. Media, paths, drive details, Jellyfin locations, transcripts,
 screenshots, and command output are not uploaded. Ten successful uncached
-automatic disc resolutions are free each UTC month. Accepted contributions and
-support can add non-expiring credits. When automatic credits are exhausted,
-the disc remains in review until the person explicitly continues the lookup
-manually or chooses support; it is never a hard paywall.
+automatic disc resolutions are free each UTC month. Existing historical credit
+balances remain visible, and configured support can add non-expiring purchased
+credits. New quarantined submissions do not earn credit. When automatic credits
+are exhausted, the disc remains in review until the person explicitly continues
+the lookup manually or chooses support; it is never a hard paywall.
 
-Matched-disc contributions require a second, separately disabled setting:
+Matched-disc submissions require a second, separately disabled setting:
 `Share matched disc layouts`. Enabling it is standing consent for future
 completed layouts. RipWeaver keeps a private local snapshot while matching and
-does not create a public payload until every selected title has a durable
+does not create an outbound payload until every selected title has a durable
 outcome. The payload contains the compatibility hash, media type, playlist and
 segment identifiers, durations, sizes, classifications, matched episode/movie
 or extra names, and evidence provenance. It does not contain the private local
 fingerprint, files, filesystem paths, Jellyfin state, drive identity, or
 credentials. Failed sends remain in a private retryable outbox.
 
-Consensus is title-by-title. Two independent installations must submit the same
-structure and assignment with a strict lead before a title becomes automatic.
-One vote is only a candidate; ties remain in review. Confirmed titles from a
-mostly agreed disc can be used while disputed bonus items continue through local
-matching. If local matching is confused, a single catalogue candidate can be
-shown as a review hint, but it is never applied automatically. Any layout that
-used such server assistance cannot vote toward consensus or earn contribution
-credit.
+The schema-v4 service treats every new public submission as untrusted input.
+After strict bounded validation, it enters a separate pending-only quarantine.
+Quarantine records cannot update consensus, create a reviewed revision, affect
+public lookups, or earn contribution credit, and there is no approval route.
+Historical reviewed revisions and previously confirmed title-level consensus
+remain available as read-only lookup data. A historical single-upload candidate
+may still be shown as a review hint, but it is never applied automatically.

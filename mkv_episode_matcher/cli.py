@@ -487,7 +487,6 @@ def config(
         from mkv_episode_matcher.core.model_registry import (
             DEFAULT_MODEL,
             get_leaderboard_url,
-            get_model_info,
             list_recommended_models,
         )
 
@@ -509,9 +508,7 @@ def config(
 
         console.print(f"\n  [dim]Browse more models: {get_leaderboard_url()}[/dim]")
         console.print(
-            "  [dim]Enter a number (1-{}) or a custom HuggingFace model ID[/dim]".format(
-                len(model_list)
-            )
+            f"  [dim]Enter a number (1-{len(model_list)}) or a custom HuggingFace model ID[/dim]"
         )
 
         new_model = typer.prompt(
@@ -587,7 +584,6 @@ def info():
     try:
         from mkv_episode_matcher.core.model_registry import (
             get_leaderboard_url,
-            get_model_info,
             is_model_downloaded,
             list_recommended_models,
         )
@@ -1366,8 +1362,8 @@ def probe_mkv(
     table.add_column("Audio streams", justify="right")
     table.add_column("Report")
     for media_id, media, report_path in reports:
-        duration = getattr(media, "duration_seconds")
-        audio_streams = getattr(media, "audio_streams")
+        duration = media.duration_seconds
+        audio_streams = media.audio_streams
         table.add_row(
             media_id,
             f"{duration / 60:.1f} min",

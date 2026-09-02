@@ -34,7 +34,9 @@ class TranscodeAuthorizationPlan:
             "default_profile_id": self.default_profile_id,
             "profile_display_name": self.profile_display_name,
             "profile_selection": (
-                "explicit" if self.profile_override_id is not None else "source-resolution"
+                "explicit"
+                if self.profile_override_id is not None
+                else "source-resolution"
             ),
             "resolution_profile_ids": self.resolution_profile_ids,
             "output_destination": "configured encoded staging root",
@@ -72,8 +74,12 @@ def build_transcode_authorization_plan(
         }.items()
         if configured is not None
     }
-    if any(configured not in available for configured in resolution_profile_ids.values()):
-        raise PipelineQueueError("A resolution-specific HandBrake profile is unavailable")
+    if any(
+        configured not in available for configured in resolution_profile_ids.values()
+    ):
+        raise PipelineQueueError(
+            "A resolution-specific HandBrake profile is unavailable"
+        )
     if (
         config.transcode_output_root is None
         or not config.transcode_output_root.is_dir()

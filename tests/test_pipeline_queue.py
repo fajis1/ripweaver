@@ -19,6 +19,7 @@ from mkv_episode_matcher.backend.routers.rip import (
     _disc_range_elimination_candidate,
     _exact_queued_rip_source,
     _pipeline_identification_attempts,
+    _pipeline_item_response,
     apply_manual_episode_identification,
     restart_placeholder_identification,
 )
@@ -1632,6 +1633,137 @@ def test_verified_non_episode_is_retained_without_downstream_queue(tmp_path):
     assert store.expected_title_indexes_for_disc("0123456789abcdef") == (1, 3)
     assert store.restore_title_disposition("0123456789abcdef", 0) is True
     assert store.expected_title_indexes_for_disc("0123456789abcdef") == (0, 1, 3)
+
+
+def test_short_title_pauses_for_reversible_review_without_deleting_media(tmp_path):
+    store = _store(tmp_path)
+    output_root = tmp_path / "media-output"
+    contract_root = tmp_path / "private-contracts"
+    output_root.mkdir()
+    contract_root.mkdir()
+    job = RipJob(
+        job_id="disc-01-title-002",
+        drive_index=0,
+        title_index=2,
+        relative_output_dir="Test Show/Season 01/isolated/title-002",
+        output_basename="Test-Disc--disc-01-0123456789abcdef-title-002.mkv",
+        final_relative_dir="Test Show/Season 01",
+        duration_seconds=149,
+    )
+    source = resolve_final_output(output_root, job)
+    assert source is not None
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"verified-short-title")
+    result = RipResult(
+        job_id=job.job_id,
+        return_code=0,
+        output_count=1,
+        output_bytes=source.stat().st_size,
+        warning_count=0,
+        started_at="2026-01-01T00:00:00+00:00",
+        finished_at="2026-01-01T00:01:00+00:00",
+    )
+
+    item = enqueue_verified_rip_results(
+        store,
+        jobs=(job,),
+        results=[result],
+        output_root=output_root,
+        contract_root=contract_root,
+        short_title_review_seconds=150,
+    )[0]
+
+    assert item.state == "review_required"
+    assert item.review_code == "short_title_review_required"
+    assert store.claim_next() is None
+    payload = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
+    assert payload["duration_seconds"] == 149
+    assert payload["short_title_review_threshold_seconds"] == 150
+    response = _pipeline_item_response(
+        item, config=SimpleNamespace(retained_source_ttl_days=30)
+    )
+    assert response["duration_seconds"] == 149
+    assert response["short_title"] is True
+
+    marked = store.review_short_title_disposition(
+        item.media_id,
+        expected_artifact_sha256=item.artifact.contract_sha256,
+        action="mark_for_deletion",
+    )
+    assert marked.state == "review_required"
+    assert marked.review_code == "short_title_deletion_review"
+    assert source.is_file()
+    assert store.title_dispositions("0123456789abcdef") == {
+        2: {"disposition": "skip", "reason": "reviewed_short_title"}
+    }
+    assert store.list_events(item.media_id)[-1].details["media_changed"] is False
+
+    ignored = store.review_short_title_disposition(
+        item.media_id,
+        expected_artifact_sha256=item.artifact.contract_sha256,
+        action="ignore_matching",
+    )
+    assert ignored.state == "completed"
+    assert source.is_file()
+
+    included = store.review_short_title_disposition(
+        item.media_id,
+        expected_artifact_sha256=item.artifact.contract_sha256,
+        action="match_normally",
+    )
+    assert included.state == "queued"
+    assert included.review_code is None
+    assert store.title_dispositions("0123456789abcdef") == {
+        2: {"disposition": "include", "reason": "reviewed_short_title_match"}
+    }
+    assert store.disc_matching_scope("0123456789abcdef") == (2,)
+
+
+def test_title_at_short_review_cutoff_continues_normally(tmp_path):
+    store = _store(tmp_path)
+    output_root = tmp_path / "media-output"
+    contract_root = tmp_path / "private-contracts"
+    output_root.mkdir()
+    contract_root.mkdir()
+    job = RipJob(
+        job_id="disc-01-title-003",
+        drive_index=0,
+        title_index=3,
+        relative_output_dir="isolated/title-003",
+        output_basename="Test-Disc--disc-01-0123456789abcdef-title-003.mkv",
+        final_relative_dir="Test Show/Season 01",
+        duration_seconds=150,
+    )
+    source = resolve_final_output(output_root, job)
+    assert source is not None
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"verified-cutoff-title")
+    result = RipResult(
+        job_id=job.job_id,
+        return_code=0,
+        output_count=1,
+        output_bytes=source.stat().st_size,
+        warning_count=0,
+        started_at="2026-01-01T00:00:00+00:00",
+        finished_at="2026-01-01T00:01:00+00:00",
+    )
+
+    item = enqueue_verified_rip_results(
+        store,
+        jobs=(job,),
+        results=[result],
+        output_root=output_root,
+        contract_root=contract_root,
+        short_title_review_seconds=150,
+    )[0]
+
+    assert item.state == "queued"
+    with pytest.raises(PipelineQueueError, match="not an eligible"):
+        store.review_short_title_disposition(
+            item.media_id,
+            expected_artifact_sha256=item.artifact.contract_sha256,
+            action="ignore_matching",
+        )
 
 
 def test_verified_rip_retry_preserves_old_contract_and_uses_digest_name(tmp_path):

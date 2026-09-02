@@ -22,6 +22,10 @@ jobs:
     name: Build CPU (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -95,6 +99,24 @@ jobs:
           cp LICENSE dist/RipWeaver/LICENSE.txt
           cp THIRD_PARTY_NOTICES.md dist/RipWeaver/THIRD_PARTY_NOTICES.txt
 
+      - name: Install NSIS (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install nsis --no-progress -y
+
+      - name: Build per-user Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if (-not (Test-Path -LiteralPath $makensis -PathType Leaf)) { throw 'makensis.exe was not installed.' }
+          $version = uv run python -c "import mkv_episode_matcher; print(mkv_episode_matcher.__version__)"
+          $source = (Resolve-Path -LiteralPath 'dist\RipWeaver').Path
+          $output = Join-Path (Resolve-Path -LiteralPath 'dist').Path 'RipWeaver-Setup-Windows-x64.exe'
+          $license = (Resolve-Path -LiteralPath 'LICENSE').Path
+          & $makensis "/DAPP_VERSION=$version" "/DSOURCE_DIR=$source" "/DOUTPUT_FILE=$output" "/DLICENSE_FILE=$license" 'installer\windows\RipWeaver.nsi'
+          if ($LASTEXITCODE -ne 0) { throw 'The NSIS installer build failed.' }
+
       - name: Create Archive (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -129,12 +151,53 @@ jobs:
           tar -xzf "dist/${{ matrix.output_name }}.tar.gz" -C "$smoke_root"
           "$smoke_root/RipWeaver/RipWeaver" --portable-smoke-test
 
+      - name: Smoke test Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installRoot = Join-Path $env:RUNNER_TEMP ("RipWeaver installer {0} test" -f [char]0x03A9)
+          $setup = (Resolve-Path -LiteralPath 'dist\RipWeaver-Setup-Windows-x64.exe').Path
+          if (Test-Path -LiteralPath $installRoot) { throw 'The installer smoke directory already exists.' }
+          $installProcess = Start-Process -FilePath $setup -ArgumentList "/S /D=$installRoot" -Wait -PassThru -WindowStyle Hidden
+          if ($installProcess.ExitCode -ne 0) { throw "The RipWeaver installer exited with code $($installProcess.ExitCode)." }
+          $executable = Join-Path $installRoot 'RipWeaver.exe'
+          & $executable --portable-smoke-test
+          if ($LASTEXITCODE -ne 0) { throw 'The installed RipWeaver smoke test failed.' }
+          $uninstaller = Join-Path $installRoot 'Uninstall.exe'
+          $uninstallProcess = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru -WindowStyle Hidden
+          if ($uninstallProcess.ExitCode -ne 0) { throw "The RipWeaver uninstaller exited with code $($uninstallProcess.ExitCode)." }
+          for ($attempt = 0; $attempt -lt 40 -and (Test-Path -LiteralPath $executable); $attempt += 1) { Start-Sleep -Milliseconds 250 }
+          if (Test-Path -LiteralPath $executable) { throw 'The uninstaller left the RipWeaver executable behind.' }
+
+      - name: Create SHA-256 checksum
+        run: |
+          uv run python -c "import hashlib; from pathlib import Path; p = Path(r'dist/${{ matrix.output_name }}.${{ matrix.archive_ext }}'); digest = hashlib.file_digest(p.open('rb'), 'sha256').hexdigest(); p.with_name(p.name + '.sha256').write_text(f'{digest}  {p.name}\n', encoding='ascii')"
+
+      - name: Create Windows installer SHA-256 checksum
+        if: runner.os == 'Windows'
+        run: |
+          uv run python -c "import hashlib; from pathlib import Path; p = Path(r'dist/RipWeaver-Setup-Windows-x64.exe'); digest = hashlib.file_digest(p.open('rb'), 'sha256').hexdigest(); p.with_name(p.name + '.sha256').write_text(f'{digest}  {p.name}\n', encoding='ascii')"
+
+      - name: Attest portable archive
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/${{ matrix.output_name }}.${{ matrix.archive_ext }}
+
+      - name: Attest Windows installer
+        if: runner.os == 'Windows'
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/RipWeaver-Setup-Windows-x64.exe
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.output_name }}
           path: |
             dist/${{ matrix.output_name }}.${{ matrix.archive_ext }}
+            dist/${{ matrix.output_name }}.${{ matrix.archive_ext }}.sha256
+            dist/RipWeaver-Setup-Windows-x64.exe
+            dist/RipWeaver-Setup-Windows-x64.exe.sha256
           retention-days: 30
 
   # CUDA builds on self-hosted runners (optional)
@@ -143,6 +206,10 @@ jobs:
     if: ${{ github.event.inputs.build_cuda == 'true' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -231,12 +298,22 @@ jobs:
           tar -xzf "dist/${{ matrix.output_name }}.tar.gz" -C "$smoke_root"
           "$smoke_root/RipWeaver/RipWeaver" --portable-smoke-test
 
+      - name: Create SHA-256 checksum
+        run: |
+          uv run python -c "import hashlib; from pathlib import Path; p = Path(r'dist/${{ matrix.output_name }}.${{ matrix.archive_ext }}'); digest = hashlib.file_digest(p.open('rb'), 'sha256').hexdigest(); p.with_name(p.name + '.sha256').write_text(f'{digest}  {p.name}\n', encoding='ascii')"
+
+      - name: Attest portable archive
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/${{ matrix.output_name }}.${{ matrix.archive_ext }}
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.output_name }}
           path: |
             dist/${{ matrix.output_name }}.${{ matrix.archive_ext }}
+            dist/${{ matrix.output_name }}.${{ matrix.archive_ext }}.sha256
           retention-days: 30
 
   # Create release when triggered by a tag
@@ -260,8 +337,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            artifacts/**/*.exe
             artifacts/**/*.zip
             artifacts/**/*.tar.gz
+            artifacts/**/*.sha256
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref, '-') }}

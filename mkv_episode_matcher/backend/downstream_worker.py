@@ -18,12 +18,15 @@ from mkv_episode_matcher.pipeline_queue import DownstreamDispatcher, PipelineQue
 _DISC_TITLE_ID = re.compile(
     r"-disc-\d+-([0-9a-f]{16})-title-(\d{3})(?:-|$)", re.IGNORECASE
 )
-_AUTOMATIC_DISC_COORDINATOR_CODES = _AUTOMATIC_UNMATCHED_CODES | frozenset({
-    "all_season_analysis_running",
-}) | _AUTOMATIC_DISC_RETRY_CODES
-_AUTOMATIC_DISC_IMMEDIATE_CODES = (
+_AUTOMATIC_DISC_COORDINATOR_CODES = (
     _AUTOMATIC_UNMATCHED_CODES
-    - frozenset({"all_season_sequence_review_required"})
+    | frozenset({
+        "all_season_analysis_running",
+    })
+    | _AUTOMATIC_DISC_RETRY_CODES
+)
+_AUTOMATIC_DISC_IMMEDIATE_CODES = (
+    _AUTOMATIC_UNMATCHED_CODES - frozenset({"all_season_sequence_review_required"})
     | _AUTOMATIC_DISC_RETRY_CODES
 )
 

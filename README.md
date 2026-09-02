@@ -45,8 +45,11 @@ not include MakeMKV, HandBrakeCLI, FFmpeg, provider credentials, or media tools.
 2. Discover or select the MakeMKV, HandBrakeCLI, FFmpeg, and FFprobe
    executables.
 3. Select separate rip-staging and encoded-staging roots plus at least one
-   Jellyfin library root.
-4. Enter the provider credentials you intend to use and click **Save**.
+   TV or movie media-library root used by Plex, Jellyfin, Emby, or another
+   media server.
+4. Enter the provider credentials you intend to use and click **Save**. The
+   page has fields for the TMDb API key, OpenSubtitles username/password/API
+   key, and Gemini primary/backup API keys.
 
 Credential values are written to the local ignored `.env` and are never
 returned to the browser.
@@ -58,6 +61,8 @@ uv run mkv-match credentials tmdb
 uv run mkv-match credentials opensubtitles-api
 uv run mkv-match credentials opensubtitles-username
 uv run mkv-match credentials opensubtitles-password
+uv run mkv-match credentials gemini-primary
+uv run mkv-match credentials gemini-paid
 ```
 
 Run `uv run mkv-match credentials` without a name to see configured status and
@@ -73,6 +78,29 @@ uv run mkv-match credentials --migrate-legacy
 ```
 
 It reports only the names moved, never their values.
+
+### Gemini model fallback
+
+Under **Settings → Core Settings**, use the dropdowns to choose a primary
+Gemini model and up to two ordered backup models. RipWeaver tries the primary and backup API keys for the
+current model before switching models after exhausted capacity (HTTP 429),
+sustained overload (HTTP 503), or a definite unavailable-model response. Other
+request errors stop for review instead of silently changing models.
+
+The default Flash chain is `gemini-3.6-flash` → `gemini-3.5-flash` →
+`gemini-2.5-flash`. A cost-oriented chain can use
+`gemini-3.5-flash-lite` → `gemini-3.1-flash-lite` →
+`gemini-2.5-flash-lite`.
+
+### Bug reports and support ZIPs
+
+Open **Support & Bug Reports** in the sidebar to create a bounded diagnostic
+ZIP. It includes redacted setup status, recent pipeline events, and limited
+RipWeaver log tails. It excludes credentials, environment values, paths, media
+names, dialogue, media files, and private Gemini provider responses. The ZIP is
+created locally and downloaded; RipWeaver never uploads or emails it
+automatically. Review it, then attach it to the prefilled GitHub issue or email
+draft.
 
 ### 4. Make Your First Match
 1.  Go to the **Dashboard**.

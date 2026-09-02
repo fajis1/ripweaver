@@ -1,9 +1,9 @@
-from typing import List, Any
 from fastapi import WebSocket
+
 
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: List[WebSocket] = []
+        self.active_connections: list[WebSocket] = []
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -21,7 +21,9 @@ class ConnectionManager:
                 # Handle disconnected clients gracefully
                 pass
 
+
 _manager = ConnectionManager()
+
 
 def get_manager() -> ConnectionManager:
     return _manager

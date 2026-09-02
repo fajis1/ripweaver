@@ -10,6 +10,7 @@ interface Config {
     open_subtitles_username?: string;
     open_subtitles_password?: string;
     tmdb_api_key?: string;
+    media_triage_folder?: string;
     sub_provider?: string;
 }
 
@@ -21,11 +22,12 @@ const OnboardingModal: React.FC<OnboardingModalProps> = ({ onComplete, onSkip })
         open_subtitles_username: '',
         open_subtitles_password: '',
         tmdb_api_key: '',
+        media_triage_folder: '',
     });
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
-    const totalSteps = 3;
+    const totalSteps = 4;
 
     const handleChange = (field: keyof Config, value: string) => {
         setConfig(prev => ({ ...prev, [field]: value }));
@@ -291,3 +293,4 @@ const OnboardingModal: React.FC<OnboardingModalProps> = ({ onComplete, onSkip })
 };
 
 export default OnboardingModal;
+

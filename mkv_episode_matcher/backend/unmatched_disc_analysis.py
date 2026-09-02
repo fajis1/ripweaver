@@ -2353,7 +2353,7 @@ def _rank_gemini_chunks(  # noqa: C901 - batched request/cache/audit boundary
             )
         )
     review = None
-    request_digest = None
+    request_digests = None
     if isinstance(dossier, IdentificationDossierStore):
         # The recorder is an execution-side diagnostic callback, not part of
         # the provider request. Passing it into the request builder both makes
@@ -2362,10 +2362,14 @@ def _rank_gemini_chunks(  # noqa: C901 - batched request/cache/audit boundary
         digest_kwargs = {
             key: value for key, value in kwargs.items() if key != "transaction_recorder"
         }
-        request_digest = gemini_request_digest(
-            ranker.model, files, chunk_catalog, **digest_kwargs
-        )
-        review = dossier.load_gemini_review(request_digest, model=ranker.model)
+        request_digests = {
+            model: gemini_request_digest(model, files, chunk_catalog, **digest_kwargs)
+            for model in getattr(ranker, "models", (ranker.model,))
+        }
+        for model, request_digest in request_digests.items():
+            review = dossier.load_gemini_review(request_digest, model=model)
+            if review is not None:
+                break
         if review is not None:
             cached_file_ids = [match.file_id for match in review.matches]
             cached_episode_ids = [
@@ -2383,7 +2387,10 @@ def _rank_gemini_chunks(  # noqa: C901 - batched request/cache/audit boundary
                 raise PipelineQueueError("Private Gemini cache is inconsistent")
     if review is None:
         review = ranker.rank_with_configured_keys(files, chunk_catalog, **kwargs)
-        if request_digest is not None:
+        if request_digests is not None:
+            request_digest = request_digests.get(review.model)
+            if request_digest is None:
+                raise PipelineQueueError("Gemini returned an unconfigured model")
             dossier.save_gemini_review(request_digest, review)
     for match in review.matches:
         matches[match.file_id] = match
@@ -2551,7 +2558,8 @@ def _resolve_series_with_gemini(
 
     try:
         resolution = GeminiSeriesResolver(
-            model=config.gemini_model
+            model=config.gemini_model,
+            fallback_models=getattr(config, "gemini_fallback_models", ()),
         ).resolve_with_configured_keys(series_name, candidates)
     except Exception as exc:
         raise classify_gemini_failure(exc) from exc
@@ -3535,7 +3543,10 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
                     ),
                 },
             )
-            ranker = GeminiEpisodeRanker(model=config.gemini_model)
+            ranker = GeminiEpisodeRanker(
+                model=config.gemini_model,
+                fallback_models=getattr(config, "gemini_fallback_models", ()),
+            )
             initial_matches = _rank_gemini_chunks(
                 ranker,
                 unresolved_for_gemini,
