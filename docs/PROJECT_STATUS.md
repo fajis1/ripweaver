@@ -9,6 +9,39 @@
 > *Note: A full snapshot of all uncommitted files as of 2026-08-23 has been safely saved to the local branch `emergency-backup-20260823`. If you accidentally destroy the working tree, you can recover from that branch.*
 
 
+## 2026-09-02 - Media triage metadata parsing, wrapper folder exclusion, and episode safety
+
+Media triage folder scanning and queue ingestion now accurately resolve television series,
+movie collections, companion extras, and raw rips from arbitrary directory hierarchies without
+defaulting to generic container folder names or false episode numbers:
+
+1. **Ancestor of Season Context (Rule 1):** When a `Season XX` directory exists, the series candidate
+   is derived from the immediate ancestor folder (e.g. `Eureka`, `Beatrix Potter Vol 1`, `Monk`)
+   rather than the top-level staging container.
+2. **Wrapper Folder Exclusion (Rule 2):** Intermediate staging directories (such as
+   `MKV_Matcher_Staging`, `Tobeconverted`, `ReadyToEncode`, `Encoded`, `To Be Placed`, `Staging`,
+   `unmatched`, `temp`, `queue`, `rips`) are systematically ignored when identifying series names.
+3. **Episode Number Safety (Rule 3):** Raw or unmatched disc rips (e.g. `..._t00.mkv`) are never
+   defaulted to `S01E01` or bypassed to `organize`. If a file lacks a confirmed `SxxExx` tag and is
+   not a movie or extra, it is safely routed to `identify` for Whisper audio fingerprinting and
+   subtitle alignment.
+4. **Sibling File Context & TV Movie / Extra Detection:**
+   - Multi-feature discs and box sets (e.g. `PSYCH_THREE MOVIES_t00.mkv`) cleanly resolve their
+     series identity (`Psych`) and content type (`is_movie = True`).
+   - Sibling generic files (`title_t04.mkv`) inherit candidate show identity from non-generic
+     MKV siblings in the same directory.
+   - Sibling size-cohort heuristics distinguish companion bonus material / extras (< 1.2 GB files
+     alongside > 4 GB feature titles) from main episodes/movies, avoiding false episode matches.
+5. **Canonical Series Name Resolution:**
+   Packaging descriptors (`Three Movies`, `Vol 1`, `Disc 1`) are stripped before querying TMDb
+   or Gemini. `GeminiSeriesResolver` was made resilient to markdown code blocks (````json ... ````)
+   and varying model payload schemas.
+6. **Validation:**
+   A full dry run against 278 real staging titles confirmed 0 items attributed to `MKV_Matcher_Staging`,
+   162 raw items safely routed to `identify`, and 116 items routed to `transcode`/`organize`. Unit
+   tests in `tests/test_media_triage.py` cover all rules and pass with 100% test coverage.
+
+
 ## 2026-08-29 - Portable RipWeaver release foundation
 
 The PyInstaller product and output directory are now branded `RipWeaver`.
