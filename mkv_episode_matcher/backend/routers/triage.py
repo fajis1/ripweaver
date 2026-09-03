@@ -47,9 +47,11 @@ def is_video_encoded(path: str) -> bool:
         return False
 
 
+import functools
 import hashlib
 import re
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -62,6 +64,267 @@ from mkv_episode_matcher.pipeline_queue import PipelineQueueStore
 
 router = APIRouter(prefix="/triage", tags=["triage"])
 
+WRAPPER_FOLDERS = {
+    "mkv_matcher_staging",
+    "staging",
+    "readytoencode",
+    "encoded",
+    "tobeconverted",
+    "to be placed",
+    "tobeplaced",
+    "to_be_placed",
+    "unmatched",
+    "temp",
+    "queue",
+    "rips",
+    "rip",
+}
+
+
+@functools.lru_cache(maxsize=128)
+def resolve_canonical_series_name(raw_name: str) -> str:
+    """Resolve a raw folder or disc name to canonical TMDb / Gemini show name."""
+    if not raw_name or raw_name.lower().replace(" ", "_") in WRAPPER_FOLDERS:
+        return raw_name
+
+    cleaned = re.sub(
+        r"(?i)\b(?:three movies|movie collection|collection|vol(?:ume)?\s*\d+|disc\s*\d+)\b",
+        "",
+        raw_name,
+    ).strip(" ._-")
+    query_target = cleaned if cleaned else raw_name
+
+    # 1. Direct TMDb TV search
+    try:
+        from mkv_episode_matcher.tmdb_client import _tmdb_get_json
+
+        results = _tmdb_get_json("/search/tv", query=query_target).get("results", [])
+        if results:
+            return results[0]["name"]
+    except Exception:
+        pass
+
+    # 2. Gemini fallback if configured
+    try:
+        from mkv_episode_matcher.core.environment import load_environment_settings
+        from mkv_episode_matcher.media.gemini_series_resolver import (
+            GeminiSeriesResolver,
+        )
+        from mkv_episode_matcher.tmdb_client import search_tv_show_candidates
+
+        env = load_environment_settings()
+        key = env.gemini_primary_api_key or env.gemini_paid_api_key
+        if key:
+            candidates = tuple(search_tv_show_candidates(query_target)[:5])
+            resolver = GeminiSeriesResolver(model="gemini-2.5-flash")
+            cred = "gemini-primary" if env.gemini_primary_api_key else "gemini-paid"
+            res = resolver.resolve_with_key(
+                raw_name, candidates, api_key=key, credential=cred
+            )
+            if res and res.series_name:
+                return res.series_name
+    except Exception:
+        pass
+
+    return query_target
+
+
+def parse_triage_metadata(  # noqa: C901
+    file_path: Path, triage_root: Path, config: Any = None
+) -> dict[str, Any]:
+    """Extract series, season, disc, episode, and content type from path & siblings."""
+    try:
+        rel = file_path.relative_to(triage_root)
+        parts = rel.parts
+    except ValueError:
+        parts = file_path.parts
+    folder_parts = parts[:-1]
+
+    season_num = None
+    season_idx = None
+    disc_num = 1
+    for i, part in enumerate(folder_parts):
+        sm = re.search(r"(?:Season|S)\s*(\d+)", part, re.IGNORECASE)
+        if sm:
+            season_num = int(sm.group(1))
+            season_idx = i
+        dm = re.search(r"(?:Disc|D)\s*(\d+)", part, re.IGNORECASE)
+        if dm:
+            disc_num = int(dm.group(1))
+
+    # Rule 1: Ancestor of Season Folder
+    # Rule 2: Skip Wrapper Folders
+    series_candidate = None
+    if season_idx is not None and season_idx > 0:
+        parent_candidate = folder_parts[season_idx - 1]
+        if parent_candidate.lower().replace(" ", "_") not in WRAPPER_FOLDERS:
+            series_candidate = parent_candidate
+
+    if not series_candidate:
+        non_wrappers = [
+            pt
+            for pt in folder_parts
+            if pt.lower().replace(" ", "_") not in WRAPPER_FOLDERS
+            and not re.search(r"^(?:Season|S)\s*\d+$", pt, re.IGNORECASE)
+            and not re.search(r"^(?:Disc|D)\s*\d+$", pt, re.IGNORECASE)
+        ]
+        if non_wrappers:
+            series_candidate = non_wrappers[-1]
+
+    fname = file_path.name
+    fname_stem = file_path.stem
+    name_lower = fname.lower()
+
+    # If still no series candidate, inspect the file's own name or sibling files
+    if not series_candidate:
+        m_ep = re.search(r"^(.+?)(?:[\s._-]*[sS]\d+[\s._-]*[eE]\d+)", fname)
+        if m_ep:
+            series_candidate = m_ep.group(1).replace(".", " ").replace("_", " ").strip()
+        else:
+            m_disc = re.match(r"^(.+?)_t\d+$", fname_stem, re.IGNORECASE)
+            if m_disc and m_disc.group(1).lower() not in {"title", "disc"}:
+                series_candidate = (
+                    m_disc.group(1).replace(".", " ").replace("_", " ").strip()
+                )
+            elif file_path.parent.exists():
+                for sib in file_path.parent.iterdir():
+                    if sib.is_file() and sib.suffix.lower() == ".mkv":
+                        ms = re.match(r"^(.+?)_t\d+$", sib.stem, re.IGNORECASE)
+                        if ms and ms.group(1).lower() not in {"title", "disc"}:
+                            series_candidate = (
+                                ms.group(1).replace(".", " ").replace("_", " ").strip()
+                            )
+                            break
+
+    if not series_candidate:
+        series_candidate = fname_stem
+
+    # Detect extras / bonus material
+    is_extra = (
+        any(
+            k in name_lower
+            for k in [
+                "extra",
+                "extras",
+                "trailer",
+                "deleted",
+                "featurette",
+                "behind the scenes",
+                "gag reel",
+                "bonus",
+                "making of",
+            ]
+        )
+        or "Extras" in folder_parts
+    )
+    # Sibling size cohort heuristic for extras
+    file_size = file_path.stat().st_size if file_path.exists() else 0
+    if (
+        not is_extra
+        and file_size > 0
+        and file_size < 1_200_000_000
+        and file_path.parent.exists()
+    ):
+        if any(
+            s.is_file() and s.stat().st_size > 4_000_000_000
+            for s in file_path.parent.iterdir()
+            if s.suffix.lower() in {".mkv", ".mp4", ".avi", ".mov"} and s != file_path
+        ):
+            is_extra = True
+
+    # Detect episode match
+    ep_match = None
+    m_ep = re.search(r"[sS](\d+)[\s._-]*[eE](\d+)(?:-?[eE]?(\d+))?", fname)
+    if m_ep:
+        s_int = int(m_ep.group(1))
+        e_s = int(m_ep.group(2))
+        ep_match = (
+            f"S{s_int:02d}E{e_s:02d}-E{int(m_ep.group(3)):02d}"
+            if m_ep.group(3)
+            else f"S{s_int:02d}E{e_s:02d}"
+        )
+        if season_num is None:
+            season_num = s_int
+
+    # Detect movie vs TV
+    is_movie = (season_num is None) and (ep_match is None) and (not is_extra)
+    if any(
+        k in series_candidate.lower()
+        for k in ["three movies", "movie collection", "movies"]
+    ):
+        is_movie = True
+
+    # Canonical series resolution
+    canonical_series = resolve_canonical_series_name(series_candidate)
+
+    # Determine recommended action
+    encoded = is_video_encoded(str(file_path.absolute()))
+    if "pxl_" in name_lower:
+        action = "exclude"
+        reason = "Home video (Pixel) - excluded from TV matcher"
+    elif is_extra:
+        action = "organize" if encoded else "transcode"
+        reason = "Detected as Special Feature / Extra."
+    elif "Encoded" in folder_parts:
+        action = "organize"
+        reason = "Located in Encoded directory; ready for Jellyfin"
+    elif "ReadyToEncode" in folder_parts:
+        action = "transcode"
+        reason = "Located in ReadyToEncode directory; bypass Identify"
+    elif is_movie:
+        action = "organize" if encoded else "identify"
+        reason = (
+            "Pre-encoded Movie."
+            if encoded
+            else "Raw Movie, requires audio/TMDb matching."
+        )
+    elif ep_match is not None:
+        action = "organize" if encoded else "transcode"
+        reason = f"Identified episode {ep_match} ({'Encoded' if encoded else 'Raw'})."
+    else:
+        # Rule 3: Raw / unmatched disc title without confirmed SxxExx
+        # NEVER assign S01E01 or bypass to organize! Must go to identify!
+        action = "identify"
+        reason = (
+            "Raw or unmatched disc title without episode tag, requires audio matching"
+        )
+
+    # Collision Detection (Jellyfin Check)
+    if action == "organize" and config:
+        try:
+            if is_movie:
+                lib = getattr(config, "movie_library_folder", None) or getattr(
+                    config, "jellyfin_movie_root", None
+                )
+                if lib and lib.exists() and any(lib.rglob(f"*{file_path.stem}*.mkv")):
+                    action = "exclude"
+                    reason = "File already exists in Jellyfin Movie Library!"
+            elif ep_match:
+                lib = getattr(config, "tv_library_folder", None) or getattr(
+                    config, "jellyfin_tv_root", None
+                )
+                if lib and lib.exists() and canonical_series:
+                    series_dir = lib / canonical_series
+                    if series_dir.exists() and any(
+                        series_dir.rglob(f"*{ep_match.lower()}*.mkv")
+                    ):
+                        action = "exclude"
+                        reason = f"Episode {ep_match.upper()} already exists in Jellyfin TV Library!"
+        except Exception:
+            pass
+
+    return {
+        "series_name": canonical_series,
+        "season_num": season_num,
+        "disc_num": disc_num,
+        "ep_match": ep_match,
+        "is_extra": is_extra,
+        "is_movie": is_movie,
+        "encoded": encoded,
+        "action": action,
+        "reason": reason,
+    }
+
 
 class TriageStatusResponse(BaseModel):
     configured: bool
@@ -72,7 +335,7 @@ class TriageItem(BaseModel):
     filename: str
     absolute_path: str
     size_bytes: int
-    recommended_action: str  # "identify", "transcode", "organize"
+    recommended_action: str  # "identify", "transcode", "organize", "exclude"
     reason: str
 
 
@@ -90,7 +353,9 @@ def get_triage_status():
 
 
 @router.get("/scan", response_model=TriageScanResponse)
-def scan_triage_folder(store: PipelineQueueStore = Depends(get_pipeline_queue_store)):
+def scan_triage_folder(
+    store: PipelineQueueStore = Depends(get_pipeline_queue_store),  # noqa: B008
+):
     config = get_config_manager().load()
     folder = config.media_triage_folder
 
@@ -120,179 +385,16 @@ def scan_triage_folder(store: PipelineQueueStore = Depends(get_pipeline_queue_st
         if file_path.suffix.lower() not in video_exts:
             continue
 
-        rel_path = file_path.relative_to(folder).as_posix()
-        action = "identify"
-        reason = "Unrecognized pattern or location, requires audio matching"
+        meta = parse_triage_metadata(file_path, folder, config)
+        action = meta["action"]
+        reason = meta["reason"]
 
-        # Parse context to match queueing logic
-        rel_parts = file_path.relative_to(folder).parts
-        s_name = None
-        s_num = None
-        if len(rel_parts) > 1:
-            s_name = rel_parts[0]
-            for p in rel_parts[1:-1]:
-                sm = re.search(r"(?:Season|S)\s*(\d+)", p, re.IGNORECASE)
-                if sm:
-                    s_num = int(sm.group(1))
-        if not s_name:
-            fm = re.match(r"^(.+?)(?:[\s._-]*[sS]\d+[\s._-]*[eE]\d+)", rel_parts[-1])
-            if fm:
-                s_name = fm.group(1).replace(".", " ").replace("_", " ").strip()
-
-        encoded = is_video_encoded(str(file_path.absolute()))
-        name_lower = file_path.name.lower()
-        is_extra = (
-            any(
-                k in name_lower
-                for k in [
-                    "extra",
-                    "trailer",
-                    "deleted",
-                    "featurette",
-                    "behind the scenes",
-                ]
-            )
-            or "Extras" in file_path.parts
-        )
-        has_multi_ep = re.search(r"s\d{2}e\d{2}-e\d{2}", name_lower) is not None
-        has_ep = re.search(r"s\d{2}e\d{2}", name_lower) is not None
-
-        # 2. Heuristics based on your folder structure and ffprobe!
-        if "pxl_" in name_lower:
-            action = "exclude"
-            reason = "Home video (Pixel) - excluded from TV matcher"
-        elif is_extra:
-            action = "organize" if encoded else "transcode"
-            reason = "Detected as Special Feature/Extra. Bypassing Identify."
-        elif "Encoded" in file_path.parts:
-            action = "organize"
-            reason = "Located in Encoded directory; ready for Jellyfin"
-        elif "ReadyToEncode" in file_path.parts:
-            action = "transcode"
-            reason = "Located in ReadyToEncode directory; bypass Identify"
-        else:
-            if has_multi_ep:
-                action = "organize" if encoded else "transcode"
-                reason = f"Multi-episode detected + {'Encoded' if encoded else 'Raw'}."
-            elif has_ep:
-                action = "organize" if encoded else "transcode"
-                reason = f"Standard episode format + {'Encoded' if encoded else 'Raw'}."
-            else:
-                action = "organize" if encoded else "identify"
-                reason = (
-                    f"{'Pre-encoded Movie' if encoded else 'Raw MakeMKV Movie/Show'}."
-                )
-
-        # 3. Collision Detection (Jellyfin Check)
-        if action == "organize":
-            is_movie = not (has_ep or has_multi_ep) and not is_extra
-            try:
-                if is_movie:
-                    lib = config.movie_library_folder
-                    if lib and lib.exists():
-                        if any(lib.rglob(f"*{file_path.stem}*.mkv")):
-                            action = "exclude"
-                            reason = "File already exists in Jellyfin Movie Library!"
-                else:
-                    lib = config.tv_library_folder
-                    if lib and lib.exists() and s_name:
-                        series_dir = lib / s_name
-                        if series_dir.exists():
-                            ep_match = re.search(
-                                r"(s\d{2}e\d{2}(?:-e\d{2})?)", name_lower
-                            )
-                            if ep_match:
-                                ep_str = ep_match.group(1)
-                                if any(series_dir.rglob(f"*{ep_str}*.mkv")):
-                                    action = "exclude"
-                                    reason = f"Episode {ep_str.upper()} already exists in Jellyfin TV Library!"
-            except Exception:
-                pass
-
-        # NOW compute media_id with the REAL action included
-        hash_in = f"{str(file_path.absolute())}|{s_name}|{s_num}|{action}"
+        hash_in = f"{str(file_path.absolute())}|{meta['series_name']}|{meta['season_num']}|{action}"
         media_id = f"triage-{hashlib.sha256(hash_in.encode('utf-8')).hexdigest()[:16]}"
 
         if media_id in active_media_ids:
             action = "in_pipeline"
             reason = "File is currently queued or running in the background pipeline"
-
-            name_lower = file_path.name.lower()
-            is_extra = (
-                any(
-                    k in name_lower
-                    for k in [
-                        "extra",
-                        "trailer",
-                        "deleted",
-                        "featurette",
-                        "behind the scenes",
-                    ]
-                )
-                or "Extras" in file_path.parts
-            )
-            has_multi_ep = re.search(r"s\d{2}e\d{2}-e\d{2}", name_lower) is not None
-            has_ep = re.search(r"s\d{2}e\d{2}", name_lower) is not None
-
-            # 2. Heuristics based on your folder structure and ffprobe!
-            if "pxl_" in name_lower:
-                action = "exclude"
-                reason = "Home video (Pixel) - excluded from TV matcher"
-            elif is_extra:
-                action = "organize" if encoded else "transcode"
-                reason = "Detected as Special Feature/Extra. Bypassing Identify."
-            elif "Encoded" in file_path.parts:
-                action = "organize"
-                reason = "Located in Encoded directory; ready for Jellyfin"
-            elif "ReadyToEncode" in file_path.parts:
-                action = "transcode"
-                reason = "Located in ReadyToEncode directory; bypass Identify"
-            else:
-                if has_multi_ep:
-                    action = "organize" if encoded else "transcode"
-                    reason = (
-                        f"Multi-episode detected + {'Encoded' if encoded else 'Raw'}."
-                    )
-                elif has_ep:
-                    action = "organize" if encoded else "transcode"
-                    reason = (
-                        f"Standard episode format + {'Encoded' if encoded else 'Raw'}."
-                    )
-                else:
-                    action = "organize" if encoded else "identify"
-                    reason = f"{'Pre-encoded Movie' if encoded else 'Raw MakeMKV Movie/Show'}."
-
-            # 3. Collision Detection (Jellyfin Check)
-            if action == "organize":
-                # Predict destination to see if it exists
-                # This is a basic predictive check, exact destination depends on TMDB validation during Queue step.
-                is_movie = not (has_ep or has_multi_ep) and not is_extra
-                try:
-                    if is_movie:
-                        lib = config.movie_library_folder
-                        if lib and lib.exists():
-                            # If any file exists with this stem
-                            if any(lib.rglob(f"*{file_path.stem}*.mkv")):
-                                action = "exclude"
-                                reason = (
-                                    "File already exists in Jellyfin Movie Library!"
-                                )
-                    else:
-                        lib = config.tv_library_folder
-                        if lib and lib.exists() and s_name:
-                            # Search inside the series folder
-                            series_dir = lib / s_name
-                            if series_dir.exists():
-                                ep_match = re.search(
-                                    r"(s\d{2}e\d{2}(?:-e\d{2})?)", name_lower
-                                )
-                                if ep_match:
-                                    ep_str = ep_match.group(1)
-                                    if any(series_dir.rglob(f"*{ep_str}*.mkv")):
-                                        action = "exclude"
-                                        reason = f"Episode {ep_str.upper()} already exists in Jellyfin TV Library!"
-                except Exception:
-                    pass
 
         size = file_path.stat().st_size
         items.append(
@@ -319,10 +421,10 @@ class QueueResponse(BaseModel):
 
 
 @router.post("/queue", response_model=QueueResponse)
-def queue_triage_items(
+def queue_triage_items(  # noqa: C901
     request: QueueRequest,
-    store: PipelineQueueStore = Depends(get_pipeline_queue_store),
-    contract_root: Path = Depends(get_pipeline_contract_root),
+    store: PipelineQueueStore = Depends(get_pipeline_queue_store),  # noqa: B008
+    contract_root: Path = Depends(get_pipeline_contract_root),  # noqa: B008
 ):
     queued = 0
     failed = 0
@@ -343,114 +445,31 @@ def queue_triage_items(
             continue
 
         try:
-            try:
-                rel = Path(item.absolute_path).relative_to(triage_folder)
-                parts = rel.parts
-            except ValueError:
-                parts = [Path(item.absolute_path).name]
+            file_path = Path(item.absolute_path)
+            meta = parse_triage_metadata(file_path, triage_folder, config)
+            series_name = meta["series_name"]
+            season_num = meta["season_num"]
+            disc_num = meta["disc_num"]
+            ep_match = meta["ep_match"]
+            is_extra = meta["is_extra"]
+            is_movie = meta["is_movie"]
+            action = item.recommended_action
 
-            series_name = None
-            season_num = None
-            disc_num = 1
-
-            is_movie = False
-            is_extra = False
-
-            if len(parts) > 1:
-                series_name = parts[0]
-                for p in parts[1:-1]:
-                    s_match = re.search(r"(?:Season|S)\s*(\d+)", p, re.IGNORECASE)
-                    if s_match:
-                        season_num = int(s_match.group(1))
-                    d_match = re.search(r"(?:Disc|D)\s*(\d+)", p, re.IGNORECASE)
-                    if d_match:
-                        disc_num = int(d_match.group(1))
-
-            if not series_name:
-                fname = parts[-1]
-                ep_match = None
-                m = re.match(
-                    r"^(.+?)(?:[\s._-]*[sS](\d+)[\s._-]*[eE](\d+)(?:-[eE]?(\d+))?)",
-                    fname,
-                )
-                is_extra = (
-                    any(
-                        k in fname.lower()
-                        for k in [
-                            "extra",
-                            "trailer",
-                            "deleted",
-                            "featurette",
-                            "behind the scenes",
-                        ]
-                    )
-                    or "Extras" in parts
-                )
-                if m and not is_extra:
-                    if m.group(4):
-                        ep_match = f"S{int(m.group(2)):02d}E{int(m.group(3)):02d}-E{int(m.group(4)):02d}"
-                    else:
-                        ep_match = f"S{int(m.group(2)):02d}E{int(m.group(3)):02d}"
-                    if season_num is None:
-                        season_num = int(m.group(2))
-                if m:
-                    series_name = m.group(1).replace(".", " ").replace("_", " ").strip()
-                else:
-                    series_name = Path(fname).stem
-                    is_movie = True
-
-            if series_name == "Encoded" or series_name == "ReadyToEncode":
-                if len(parts) > 2:
-                    series_name = parts[1]
-                else:
-                    series_name = Path(parts[-1]).stem
-                    is_movie = True
-
-            # --- TMDB TV LOOKUP INJECTION ---
+            # Rule 3 safety check when queuing:
+            # If an item has no confirmed episode tag and is not a movie or extra,
+            # NEVER assign S01E01 or send to organize! Divert to identify!
             if (
-                not is_movie
+                action == "organize"
+                and not is_movie
                 and not is_extra
-                and series_name
-                and series_name not in ["Encoded", "ReadyToEncode"]
+                and ep_match is None
             ):
-                try:
-                    from mkv_episode_matcher.tmdb_client import _tmdb_get_json
+                action = "identify"
 
-                    results = _tmdb_get_json("/search/tv", query=series_name).get(
-                        "results", []
-                    )
-                    if results:
-                        best = results[0]
-                        series_name = best["name"]  # Canonical Name
-                except Exception as e:
-                    print(f"TMDB TV search failed: {e}")
-            # -----------------------------------
-
-            # --- TMDB MOVIE LOOKUP INJECTION ---
-            if is_movie:
-                try:
-                    from mkv_episode_matcher.tmdb_client import _tmdb_get_json
-
-                    results = _tmdb_get_json("/search/movie", query=series_name).get(
-                        "results", []
-                    )
-                    if results:
-                        best = results[0]
-                        year = best.get("release_date", "").split("-")[0]
-                        if year:
-                            series_name = f"{best['title']} ({year})"
-                        else:
-                            series_name = best["title"]
-                except Exception as e:
-                    print(f"TMDB movie search failed: {e}")
-            # -----------------------------------
-
-            hash_input = f"{item.absolute_path}|{series_name}|{season_num}|{item.recommended_action}"
+            hash_input = f"{item.absolute_path}|{series_name}|{season_num}|{action}"
             media_id = (
                 f"triage-{hashlib.sha256(hash_input.encode('utf-8')).hexdigest()[:16]}"
             )
-
-            action = item.recommended_action
 
             if action == "organize":
                 height = 1080
@@ -462,7 +481,7 @@ def queue_triage_items(
                     )
 
                     exe = resolve_ffprobe_path()
-                    probe_res = inspect_mkv(exe, Path(item.absolute_path))
+                    probe_res = inspect_mkv(exe, file_path)
                     if probe_res.media.video_height:
                         height = probe_res.media.video_height
                     if probe_res.media.video_field_order:
@@ -478,20 +497,16 @@ def queue_triage_items(
                     "encoded_size_bytes": item.size_bytes,
                     "encoded_height": height,
                     "encoded_field_order": field_order,
-                    "library_relative": f"{series_name}/Extras/{Path(item.absolute_path).name}"
-                    if is_extra
-                    else (
-                        f"{series_name}/{series_name}.mkv"
-                        if is_movie
-                        else f"{series_name}/Season {season_num or 1:02d}/{Path(item.absolute_path).name}"
+                    "library_relative": (
+                        f"{series_name}/Extras/{file_path.name}"
+                        if is_extra
+                        else (
+                            f"{series_name}/{series_name}.mkv"
+                            if is_movie
+                            else f"{series_name}/Season {season_num or 1:02d}/{file_path.name}"
+                        )
                     ),
-                    "episode_id": None
-                    if is_movie
-                    else (
-                        ep_match
-                        if "ep_match" in locals() and ep_match
-                        else f"S{season_num or 1:02d}E01"
-                    ),
+                    "episode_id": ep_match if not is_movie and not is_extra else None,
                     "library_kind": "movie" if is_movie and not is_extra else "tv",
                     "existing_output_policy": "preserve",
                 }
@@ -505,20 +520,16 @@ def queue_triage_items(
                     "source_path": item.absolute_path,
                     "source_size_bytes": item.size_bytes,
                     "confidence": 1.0,
-                    "episode_id": None
-                    if is_movie
-                    else (
-                        ep_match
-                        if "ep_match" in locals() and ep_match
-                        else f"S{season_num or 1:02d}E01"
-                    ),
+                    "episode_id": ep_match if not is_movie and not is_extra else None,
                     "library_kind": "movie" if is_movie and not is_extra else "tv",
-                    "library_relative": f"{series_name}/Extras/{Path(item.absolute_path).name}"
-                    if is_extra
-                    else (
-                        f"{series_name}/{series_name}.mkv"
-                        if is_movie
-                        else f"{series_name}/Season {season_num or 1:02d}/{Path(item.absolute_path).name}"
+                    "library_relative": (
+                        f"{series_name}/Extras/{file_path.name}"
+                        if is_extra
+                        else (
+                            f"{series_name}/{series_name}.mkv"
+                            if is_movie
+                            else f"{series_name}/Season {season_num or 1:02d}/{file_path.name}"
+                        )
                     ),
                     "identification_order": ["manual-triage"],
                     "handbrake_profile_id": None,
