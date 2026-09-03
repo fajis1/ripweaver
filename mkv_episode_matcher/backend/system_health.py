@@ -149,7 +149,9 @@ def _provider_item(
     feature: str,
     required: bool,
 ) -> dict[str, Any]:
-    configured = bool(credential_is_configured and credential_is_configured(credential))
+    configured = bool(
+        credential_is_configured and credential_is_configured(credential)
+    )
     if configured:
         status = "ready"
         message = f"The {label} is configured."
