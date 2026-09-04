@@ -290,7 +290,13 @@ class IdentifyStageAdapter:
                     entry
                     for entry in episode_assignments
                     if isinstance(entry, dict)
-                    and entry.get("title_index") == title_index
+                    and (
+                        (
+                            title_index is not None
+                            and entry.get("title_index") == title_index
+                        )
+                        or entry.get("media_id") == item.media_id
+                    )
                 ),
                 None,
             )

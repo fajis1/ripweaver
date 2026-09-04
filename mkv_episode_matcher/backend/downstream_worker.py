@@ -147,6 +147,9 @@ class DownstreamWorker:
         self._last_automatic_transcode_plan: str | None = None
         self._automatic_transcode_media_ids: tuple[str, ...] = ()
         self._automatic_analysis_attempts: set[tuple[str, tuple[int, ...]]] = set()
+        self._automatic_triage_attempts: set[
+            tuple[tuple[str, int | None], tuple[str, ...]]
+        ] = set()
         self._version_coexistence_reconciled = False
         self._legacy_sequence_assignments_reconciled = False
 
@@ -183,7 +186,10 @@ class DownstreamWorker:
         """Run item and completed-disc fallbacks without waiting for queue idle."""
 
         self._apply_automatic_fallback(item)
-        return self._apply_automatic_disc_analysis()
+        handled = self._apply_automatic_disc_analysis()
+        if not handled:
+            handled = self._apply_automatic_triage_analysis()
+        return handled
 
     def _resume_version_coexistence_reviews(self) -> bool:
         """Requeue old broad episode collisions under the exact-version rule."""
@@ -447,6 +453,92 @@ class DownstreamWorker:
             )
         return True
 
+    def _apply_automatic_triage_analysis(self) -> bool:  # noqa: C901
+        """Recover automatic TV triage / loose-file items without a physical disc fingerprint."""
+
+        config = get_config_manager().load()
+        if not config.automatic_processing_enabled:
+            return False
+        if self._automatic_transcode_media_ids:
+            active = tuple(
+                self.dispatcher.store.get(media_id)
+                for media_id in self._automatic_transcode_media_ids
+            )
+            if any(
+                item.stage == "transcode" and item.state in {"queued", "running"}
+                for item in active
+            ):
+                return False
+            self._automatic_transcode_media_ids = ()
+
+        groups: dict[tuple[str, int | None], list[str]] = {}
+        pending: set[tuple[str, int | None]] = set()
+
+        items = tuple(self.dispatcher.store.list_items())
+        for item in items:
+            if item.stage != "identify":
+                continue
+            try:
+                payload = json.loads(
+                    item.artifact.contract_path.read_text(encoding="utf-8")
+                )
+            except (OSError, json.JSONDecodeError):
+                continue
+            if payload.get("disc_fingerprint") is not None:
+                continue
+            context = payload.get("media_context")
+            if not isinstance(context, dict):
+                continue
+            if context.get("content_hint") not in {None, "tv"}:
+                continue
+            series_name = context.get("series_name")
+            if not isinstance(series_name, str) or not series_name.strip():
+                continue
+            season = context.get("season")
+            if season is not None and (
+                isinstance(season, bool) or not isinstance(season, int) or season < 0
+            ):
+                season = None
+            key = (series_name.strip().casefold(), season)
+            if item.state in {"queued", "running"}:
+                pending.add(key)
+                continue
+            if (
+                item.state != "review_required"
+                or item.review_code not in _AUTOMATIC_DISC_COORDINATOR_CODES
+            ):
+                continue
+            groups.setdefault(key, []).append(item.media_id)
+
+        ready = next(
+            (
+                (key, tuple(ids))
+                for key, ids in groups.items()
+                if key not in pending
+                and (key, tuple(sorted(ids))) not in self._automatic_triage_attempts
+            ),
+            None,
+        )
+        if ready is None:
+            return False
+
+        ready_key, media_ids = ready
+        self._automatic_triage_attempts.add((ready_key, tuple(sorted(media_ids))))
+        from mkv_episode_matcher.backend.automatic_rip import (
+            _downstream_lock,
+            _resolve_automatic_unmatched_season,
+        )
+        from mkv_episode_matcher.backend.dependencies import get_pipeline_contract_root
+
+        with _downstream_lock:
+            _resolve_automatic_unmatched_season(
+                media_ids,
+                self.dispatcher.store,
+                config,
+                get_pipeline_contract_root(),
+            )
+        return True
+
     def _start_automatic_transcode_if_ready(self) -> bool:
         """Start one newly discovered, resolution-aware transcode batch."""
 
@@ -535,6 +627,15 @@ class DownstreamWorker:
                         type(exc).__name__,
                     )
                     handled = False
+                if not handled:
+                    try:
+                        handled = self._apply_automatic_triage_analysis()
+                    except Exception as exc:
+                        logger.error(
+                            "Automatic triage analysis could not run: {}",
+                            type(exc).__name__,
+                        )
+                        handled = False
                 if not handled:
                     try:
                         handled = self._start_automatic_transcode_if_ready()

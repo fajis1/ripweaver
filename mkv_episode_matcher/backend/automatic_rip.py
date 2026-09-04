@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 import time
@@ -642,6 +643,76 @@ def _resolve_automatic_unmatched_disc(  # noqa: C901
                 pass
 
 
+def _resolve_automatic_unmatched_season(  # noqa: C901
+    media_ids, store, config, contract_root
+) -> None:
+    """Run the season / triage fallback for automatic TV items without a disc fingerprint."""
+
+    from mkv_episode_matcher.backend.dependencies import get_engine
+    from mkv_episode_matcher.backend.unmatched_disc_analysis import (
+        GeminiAnalysisError,
+        execute_unmatched_season_analysis,
+    )
+    from mkv_episode_matcher.pipeline_queue import PipelineQueueError
+
+    held = [
+        store.get(media_id)
+        for media_id in media_ids
+        if store.get(media_id).stage == "identify"
+        and store.get(media_id).state == "review_required"
+        and store.get(media_id).review_code
+        in (_AUTOMATIC_UNMATCHED_CODES | _AUTOMATIC_DISC_RETRY_CODES)
+    ]
+    if not held:
+        return
+    try:
+        series_name, season = _automatic_season_tv_context(held)
+        if series_name is None:
+            return
+        for item in held:
+            store.choose_review_path(item.media_id, "all_season_analysis_running")
+        execute_unmatched_season_analysis(
+            store,
+            tuple(item.media_id for item in held),
+            series_name,
+            config,
+            get_engine().asr,
+            contract_root,
+            season=season,
+            allow_gemini=config.automatic_gemini_ambiguity_fallback,
+        )
+    except Exception as exc:
+        if isinstance(exc, GeminiAnalysisError):
+            logger.warning(
+                "Automatic Gemini season analysis stopped safely: {}", exc.diagnostic
+            )
+            code = exc.review_code
+        else:
+            logger.warning(
+                "Automatic season analysis stopped safely: {}",
+                type(exc).__name__,
+            )
+            code = (
+                "all_season_catalog_unavailable"
+                if str(exc) == "Episode catalogue is unavailable for the reviewed scope"
+                else (
+                    "independent_episode_evidence_required"
+                    if str(exc) == "Independent episode evidence requires review"
+                    else "all_season_analysis_failed"
+                )
+            )
+        for item in held:
+            try:
+                current = store.get(item.media_id)
+                if (
+                    current.state == "review_required"
+                    and current.review_code != "visual_content_review_required"
+                ):
+                    store.choose_review_path(item.media_id, code)
+            except PipelineQueueError:
+                pass
+
+
 automatic_rip_coordinator = AutomaticRipCoordinator(run_automatic_drive)
 
 
@@ -745,6 +816,48 @@ def _automatic_disc_tv_context(held) -> tuple[str | None, str | None, int | None
         raise PipelineQueueError("Automatic episode series context is inconsistent")
     return (
         next(iter(fingerprints)),
+        next(iter(series_by_key.values())),
+        next(iter(seasons)) if seasons else None,
+    )
+
+
+def _automatic_season_tv_context(held) -> tuple[str | None, int | None]:
+    """Reconcile non-disc TV context across held items in the same season group."""
+
+    from mkv_episode_matcher.pipeline_queue import PipelineQueueError
+
+    seasons: set[int] = set()
+    series_by_key: dict[str, str] = {}
+    for item in held:
+        try:
+            payload = json.loads(
+                item.artifact.contract_path.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            continue
+        context = payload.get("media_context", {})
+        if context.get("content_hint") in {"movie", "extras", "mixed"}:
+            return None, None
+        season = context.get("season")
+        if (
+            isinstance(season, int)
+            and not isinstance(season, bool)
+            and 0 <= season <= 999
+        ):
+            seasons.add(season)
+        series_name = context.get("series_name")
+        if isinstance(series_name, str) and series_name.strip():
+            series_by_key.setdefault(
+                re.sub(r"[^a-z0-9]+", "", series_name.casefold()),
+                series_name.strip(),
+            )
+    if not series_by_key:
+        return None, None
+    if len(series_by_key) != 1:
+        raise PipelineQueueError("Automatic episode series context is inconsistent")
+    if len(seasons) > 1:
+        raise PipelineQueueError("Automatic episode season context is inconsistent")
+    return (
         next(iter(series_by_key.values())),
         next(iter(seasons)) if seasons else None,
     )

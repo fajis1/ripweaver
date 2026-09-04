@@ -4069,3 +4069,300 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
         provider_branches=_matching_provider_branches(dossier, media_ids),
     )
     return tuple(applied)
+
+
+def execute_unmatched_season_analysis(  # noqa: C901 - guarded season-level triage workflow
+    store: PipelineQueueStore,
+    media_ids: tuple[str, ...],
+    series_name: str,
+    config: Config,
+    asr: object,
+    contract_root: Path,
+    *,
+    season: int | None = None,
+    allow_gemini: bool = True,
+    reviewer_scene_descriptions: Mapping[str, str] | None = None,
+) -> tuple[str, ...]:
+    """Recover loose television or triage files using season folder context and Gemini."""
+
+    if not media_ids:
+        return ()
+
+    analysis_run_id = uuid4().hex
+    held = [
+        store.get(media_id)
+        for media_id in media_ids
+        if store.get(media_id).stage == "identify"
+        and store.get(media_id).state == "review_required"
+    ]
+    if not held:
+        return ()
+
+    selected = []
+    for item in held:
+        try:
+            payload = json.loads(
+                item.artifact.contract_path.read_text(encoding="utf-8")
+            )
+            selected.append((item, payload))
+        except (OSError, json.JSONDecodeError):
+            continue
+
+    if not selected:
+        return ()
+
+    selected_ids = {item.media_id for item, _payload in selected}
+    dossier = IdentificationDossierStore(
+        contract_root.parent / "identification-evidence"
+    )
+
+    _record_workflow_audit_safely(
+        dossier,
+        tuple(selected_ids),
+        analysis_run_id=analysis_run_id,
+        phase="season-analysis-started",
+        disposition="started",
+        summary={
+            "item_count": len(selected),
+            "series_name": series_name.strip()[:240],
+            "season": season,
+            "gemini_enabled": allow_gemini,
+        },
+    )
+
+    selected_series, all_series_catalog = _resolve_series_catalog_details(
+        series_name, config, allow_gemini=allow_gemini
+    )
+    canonical_series_name = selected_series.name
+
+    if season is not None:
+        season_catalog = _reviewed_episode_catalog(all_series_catalog, season, None)
+    else:
+        season_catalog = all_series_catalog
+
+    if not season_catalog and all_series_catalog:
+        season_catalog = all_series_catalog
+
+    if not season_catalog:
+        raise PipelineQueueError(
+            "Episode catalogue is unavailable for the reviewed scope"
+        )
+
+    library_episodes = frozenset().union(
+        *(
+            existing_library_episodes(root, canonical_series_name)
+            for root in (
+                getattr(config, "jellyfin_tv_root", None),
+                getattr(config, "transcode_output_root", None),
+                getattr(config, "rip_output_root", None),
+            )
+        )
+    )
+    recorded_episodes = store.assigned_series_episodes(canonical_series_name)
+    known_episodes = library_episodes | recorded_episodes
+    known_existing_ids = frozenset(f"S{s:02d}E{e:02d}" for s, e in known_episodes)
+
+    try:
+        gemini_evidence, collected_dossier = collect_dossier_evidence(
+            tuple(selected), config, asr, contract_root
+        )
+        if collected_dossier is not None:
+            dossier = collected_dossier
+    except TranscriptBatchError as exc:
+        raise PipelineQueueError(
+            "Audio evidence collection failed before episode matching"
+        ) from exc
+
+    automatic_min_confidence = max(
+        AUTOMATIC_TV_MIN_CONFIDENCE, float(config.min_confidence)
+    )
+    applied: list[str] = []
+    proposed: dict[str, tuple[EpisodeCatalogEntry, float]] = {}
+
+    ranker = None
+    if allow_gemini and gemini_evidence:
+        for item, _payload in selected:
+            store.choose_review_path(item.media_id, "gemini_analysis_running")
+
+        ranker = GeminiEpisodeRanker(
+            model=config.gemini_model,
+            fallback_models=getattr(config, "gemini_fallback_models", ()),
+        )
+        catalog_by_id = {entry.episode_id: entry for entry in season_catalog}
+        duration_by_id = {
+            item.file_id: item.duration_seconds for item in gemini_evidence
+        }
+
+        initial_matches = _rank_gemini_chunks(
+            ranker,
+            gemini_evidence,
+            season_catalog,
+            dossier,
+            known_existing_ids,
+            reviewer_scene_descriptions,
+            analysis_run_id=analysis_run_id,
+            phase="gemini-initial",
+        )
+        confirmed_matches = _rank_gemini_chunks(
+            ranker,
+            gemini_evidence,
+            season_catalog,
+            dossier,
+            known_existing_ids,
+            reviewer_scene_descriptions,
+            analysis_run_id=analysis_run_id,
+            phase="gemini-confirmation",
+            proposed_assignments={
+                file_id: match.episode_id for file_id, match in initial_matches.items()
+            },
+        )
+
+        for item, _payload in selected:
+            file_id = item.media_id
+            match = confirmed_matches.get(file_id)
+            init_match = initial_matches.get(file_id)
+            if (
+                match is not None
+                and init_match is not None
+                and match.episode_id is not None
+                and match.episode_id == init_match.episode_id
+                and match.confidence >= automatic_min_confidence
+                and init_match.confidence >= automatic_min_confidence
+                and match.episode_id in catalog_by_id
+                and _episode_runtime_consistent(
+                    duration_by_id.get(file_id, 0.0),
+                    catalog_by_id[match.episode_id],
+                )
+            ):
+                proposed[file_id] = (catalog_by_id[match.episode_id], match.confidence)
+
+    # Step 2: If any item failed within season, try all-season matching as last resort
+    unresolved_items = [
+        (item, payload) for item, payload in selected if item.media_id not in proposed
+    ]
+    if (
+        unresolved_items
+        and allow_gemini
+        and ranker is not None
+        and season is not None
+        and len(all_series_catalog) > len(season_catalog)
+    ):
+        unresolved_evidence = tuple(
+            ev
+            for ev in gemini_evidence
+            if ev.file_id in {it.media_id for it, _ in unresolved_items}
+        )
+        all_catalog_by_id = {entry.episode_id: entry for entry in all_series_catalog}
+        duration_by_id = {
+            item.file_id: item.duration_seconds for item in gemini_evidence
+        }
+
+        all_initial = _rank_gemini_chunks(
+            ranker,
+            unresolved_evidence,
+            all_series_catalog,
+            dossier,
+            known_existing_ids,
+            reviewer_scene_descriptions,
+            analysis_run_id=analysis_run_id,
+            phase="gemini-initial",
+        )
+        all_confirmed = _rank_gemini_chunks(
+            ranker,
+            unresolved_evidence,
+            all_series_catalog,
+            dossier,
+            known_existing_ids,
+            reviewer_scene_descriptions,
+            analysis_run_id=analysis_run_id,
+            phase="gemini-confirmation",
+            proposed_assignments={
+                file_id: match.episode_id for file_id, match in all_initial.items()
+            },
+        )
+
+        for item, _payload in unresolved_items:
+            file_id = item.media_id
+            match = all_confirmed.get(file_id)
+            init_match = all_initial.get(file_id)
+            if (
+                match is not None
+                and init_match is not None
+                and match.episode_id is not None
+                and match.episode_id == init_match.episode_id
+                and match.confidence >= automatic_min_confidence
+                and init_match.confidence >= automatic_min_confidence
+                and match.episode_id in all_catalog_by_id
+                and _episode_runtime_consistent(
+                    duration_by_id.get(file_id, 0.0),
+                    all_catalog_by_id[match.episode_id],
+                )
+            ):
+                proposed[file_id] = (
+                    all_catalog_by_id[match.episode_id],
+                    match.confidence,
+                )
+
+    contract_root.mkdir(parents=True, exist_ok=True)
+    for item, payload in selected:
+        if item.media_id not in proposed:
+            continue
+        entry, confidence = proposed[item.media_id]
+        revised = dict(payload)
+        context = dict(revised.get("media_context", {}))
+        assignment = {
+            "media_id": item.media_id,
+            "season": entry.season,
+            "episode": entry.episode,
+            "title": entry.title,
+            "episode_id": entry.episode_id,
+            "confidence": confidence,
+            "evidence_source": GEMINI_TWO_PASS_SOURCE,
+        }
+        context.update(
+            series_name=canonical_series_name,
+            season=entry.season,
+            episode_assignments=[assignment],
+            episode_assignment_source=GEMINI_TWO_PASS_SOURCE,
+            identification_policy_version=AUTOMATIC_TV_IDENTIFICATION_POLICY_VERSION,
+        )
+        revised["media_context"] = context
+        path = contract_root / f"{item.media_id}.all-season-{uuid4().hex[:12]}.json"
+        path.write_text(
+            json.dumps(revised, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        store.apply_reviewed_identification_input(
+            item.media_id, build_artifact("rip", path)
+        )
+        applied.append(item.media_id)
+        _record_workflow_audit_safely(
+            dossier,
+            (item.media_id,),
+            analysis_run_id=analysis_run_id,
+            phase="analysis-finished",
+            disposition="matched",
+            summary={
+                "candidate_episode_id": entry.episode_id,
+                "candidate_episode_title": entry.title,
+                "candidate_series_name": canonical_series_name,
+                "confidence": round(confidence, 6),
+                "evidence_source": GEMINI_TWO_PASS_SOURCE,
+                "reason": "episode_assignment_applied",
+            },
+        )
+
+    for item, _payload in selected:
+        if item.media_id not in applied:
+            store.choose_review_path(
+                item.media_id, "independent_episode_evidence_required"
+            )
+            _record_workflow_audit_safely(
+                dossier,
+                (item.media_id,),
+                analysis_run_id=analysis_run_id,
+                phase="analysis-finished",
+                disposition="review",
+                summary={"reason": "identification_unresolved"},
+            )
+
+    return tuple(applied)

@@ -59,11 +59,12 @@ SAMPLING_VERSION = "timestamped-twelve-window-fallback-v4"
 
 @dataclass(frozen=True)
 class SourceIdentity:
-    disc_fingerprint: str
-    title_index: int
+    disc_fingerprint: str | None
+    title_index: int | None
     source_size_bytes: int
     source_mtime_ns: int
     asr_model: str
+    media_id: str | None = None
 
     def digest(self) -> str:
         payload = {
@@ -74,6 +75,8 @@ class SourceIdentity:
             "asr_model": self.asr_model,
             "sampling_version": SAMPLING_VERSION,
         }
+        if self.media_id is not None:
+            payload["media_id"] = self.media_id
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
 
@@ -83,12 +86,8 @@ def source_identity(payload: dict, source: Path, asr_model: str) -> SourceIdenti
     title_index = payload.get("title_index")
     expected_size = payload.get("source_size_bytes")
     if (
-        not isinstance(fingerprint, str)
-        or re.fullmatch(r"[0-9a-f]{16}", fingerprint) is None
-        or not isinstance(title_index, int)
-        or isinstance(title_index, bool)
-        or title_index < 0
-        or not isinstance(expected_size, int)
+        not isinstance(expected_size, int)
+        or isinstance(expected_size, bool)
         or expected_size <= 0
         or not source.is_file()
     ):
@@ -96,12 +95,32 @@ def source_identity(payload: dict, source: Path, asr_model: str) -> SourceIdenti
     stat = source.stat()
     if stat.st_size != expected_size:
         raise PipelineQueueError("Verified source size changed")
+    if fingerprint is not None:
+        if (
+            not isinstance(fingerprint, str)
+            or re.fullmatch(r"[0-9a-f]{16}", fingerprint) is None
+            or not isinstance(title_index, int)
+            or isinstance(title_index, bool)
+            or title_index < 0
+        ):
+            raise PipelineQueueError("Verified source identity is unavailable")
+        return SourceIdentity(
+            fingerprint,
+            title_index,
+            expected_size,
+            stat.st_mtime_ns,
+            asr_model,
+        )
+    media_id = payload.get("media_id")
+    if not isinstance(media_id, str) or not media_id.strip():
+        raise PipelineQueueError("Verified source identity is unavailable")
     return SourceIdentity(
-        fingerprint,
-        title_index,
+        None,
+        None,
         expected_size,
         stat.st_mtime_ns,
         asr_model,
+        media_id=media_id.strip(),
     )
 
 
@@ -913,7 +932,9 @@ def collect_dossier_evidence(  # noqa: C901 - linear cache/probe/audio guards
         if not isinstance(media_id, str):
             raise PipelineQueueError("Evidence item media ID is invalid")
         source = Path(str(payload.get("source_path", "")))
-        identity = source_identity(payload, source, config.asr_model_name)
+        payload_copy = dict(payload)
+        payload_copy.setdefault("media_id", media_id)
+        identity = source_identity(payload_copy, source, config.asr_model_name)
         ordered_ids.append(media_id)
         identities[media_id] = identity
         evidence = dossier.load_evidence(media_id, identity)
