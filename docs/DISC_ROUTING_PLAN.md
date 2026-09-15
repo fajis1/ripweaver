@@ -150,6 +150,19 @@ Deliverable: independently tested foundation; no new production routing yet.
   but remains open for provider-to-reassessment integration; R2-R5 remain
   under repair. No further repair work has started after this handoff note.
 
+### 2026-09-15 - Handoff validation completed
+
+- Validated the two changes listed above. Learned content evidence is retained
+  when an unchanged inventory is refreshed; the typed TV catalogue no-match
+  exception is named and handled consistently.
+- Focused routing, catalogue, automatic-rip, worker, and Gemini suites passed:
+  **184 tests**, exit code 0. Ruff passed for every modified module and test
+  file. No live provider, disc, or media operation was performed.
+- This closes the pending validation for the handoff changes. The next agent
+  should begin with R2/R3 integration: connect typed TV no-match outcomes to
+  durable route claims and verify exhausted/restart behavior before changing
+  worker lifecycle policy further.
+
 ### R1 conflict tests - implemented and run
 
 - Added seven parameterized integration cases using actual routing SQLite
