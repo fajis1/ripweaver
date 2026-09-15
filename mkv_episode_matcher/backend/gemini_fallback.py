@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from inspect import signature
 from pathlib import Path
 from uuid import uuid4
@@ -69,6 +70,7 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
     contract_root: Path,
     *,
     analysis_run_id: str | None = None,
+    outcome_recorder: Callable[[str, str], None] | None = None,
 ) -> tuple[str, ...]:
     """Read exact held MKVs, send bounded excerpts, then requeue confident matches."""
 
@@ -95,6 +97,10 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
         context = payload.get("media_context")
         if not isinstance(context, dict):
             raise PipelineQueueError("Special-feature context is unavailable")
+        if context.get("routing_assessment") is not None:
+            from mkv_episode_matcher.disc.routing import assessment_from_contract
+
+            assessment_from_contract(payload)
         current_catalog = context.get("special_feature_catalog_id")
         if current_catalog is not None and not isinstance(current_catalog, str):
             raise PipelineQueueError("Special-feature catalogue ID is invalid")
@@ -150,6 +156,8 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
     }
     for media_id in visually_held:
         store.choose_review_path(media_id, "visual_content_review_required")
+        if outcome_recorder is not None:
+            outcome_recorder(media_id, "review")
     eligible = tuple(
         (item, payload, item_evidence)
         for item, payload, item_evidence in zip(held, payloads, evidence, strict=True)
@@ -424,6 +432,24 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
             contract_root
             / f"{item.media_id}.gemini-{uuid4().hex[:12]}.verified-rip.json"
         )
+        # Persist the accepted content classification before handing off a new
+        # immutable contract. This is route evidence, not naming authority;
+        # the existing provisional/identity checks remain in the assignment.
+        if context.get("routing_assessment") is not None:
+            from mkv_episode_matcher.disc.routing import assessment_from_contract
+            from mkv_episode_matcher.disc.routing_store import DiscRoutingStore
+
+            base = assessment_from_contract(payload)
+            role = "movie" if descriptive and media_kind == "movie" else "extras"
+            routing = DiscRoutingStore(
+                config.cache_dir.parent / "orchestration" / "disc-routing.sqlite3"
+            ).record_content_role(base, title_index, role)
+            context.update(
+                routing_assessment=routing.to_dict(),
+                routing_assessment_digest=routing.digest,
+                routing_assessment_revision=routing.revision,
+                routing_composition=routing.composition,
+            )
         revised.write_text(
             json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
@@ -506,4 +532,8 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
         for media_id in unresolved:
             store.choose_review_path(media_id, "gemini_descriptive_review_required")
     handled = visually_held | set(applied)
+    if outcome_recorder is not None:
+        for media_id in requested_media_ids:
+            if media_id not in visually_held:
+                outcome_recorder(media_id, "matched" if media_id in applied else "review")
     return tuple(media_id for media_id in requested_media_ids if media_id in handled)

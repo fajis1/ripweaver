@@ -105,6 +105,32 @@ def test_catalogue_free_fallback_applies_mixed_provisional_results(
         _item(tmp_path, "disc-title-003-recovery-abcd", 300),
     ]
     store = FakeStore(items)
+    from mkv_episode_matcher.disc.routing import DiscRoutingAssessment
+    from mkv_episode_matcher.disc.routing_store import DiscRoutingStore
+    from mkv_episode_matcher.pipeline_queue import PipelineQueueStore, build_artifact
+
+    class RecordingQueue(PipelineQueueStore):
+        def apply_reviewed_identification_input(self, media_id, artifact):
+            result = super().apply_reviewed_identification_input(media_id, artifact)
+            self.applied[media_id] = artifact
+            return result
+
+    config = Config(gemini_model="test", cache_dir=tmp_path / "cache")
+    routing_path = tmp_path / "orchestration" / "disc-routing.sqlite3"
+    base = DiscRoutingAssessment("0123456789abcdef", (0, 3), user_hint="tv")
+    DiscRoutingStore(routing_path).append(base, expected_revision=0)
+    for item in items:
+        payload = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
+        payload["media_context"].update(
+            routing_assessment=base.to_dict(), routing_assessment_digest=base.digest,
+            routing_assessment_revision=base.revision,
+        )
+        item.artifact.contract_path.write_text(json.dumps(payload), encoding="utf-8")
+    store = RecordingQueue(tmp_path / "queue.sqlite3")
+    store.applied = {}
+    for item in items:
+        store.enqueue_verified_rip(item.media_id, build_artifact("rip", item.artifact.contract_path))
+        store.hold_for_review(item.media_id, "gemini_analysis_running")
     durations = {
         item.media_id: 7200 if "title-000" in item.media_id else 300 for item in items
     }
@@ -147,15 +173,24 @@ def test_catalogue_free_fallback_applies_mixed_provisional_results(
         ),
     )
 
+    outcomes = {}
     applied = execute_gemini_fallback(
         store,
         tuple(item.media_id for item in items),
-        Config(gemini_model="test"),
+        config,
         SimpleNamespace(),
         tmp_path / "contracts",
+        outcome_recorder=lambda media_id, outcome: outcomes.update({media_id: outcome}),
     )
 
     assert applied == ("disc-title-000", "disc-title-003-recovery-abcd")
+    assert set(outcomes.values()) == {"matched"}
+    revised = DiscRoutingStore(routing_path).latest(base.inventory_fingerprint)
+    assert revised.composition == "movies_with_extras"
+    assert revised.revision == 3
+    assert revised.user_hint == "tv"
+    restarted = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    assert all(restarted.get(item.media_id).state == "queued" for item in items)
     movie = json.loads(
         store.applied["disc-title-000"].contract_path.read_text(encoding="utf-8")
     )
@@ -492,15 +527,18 @@ def test_warning_screen_is_held_before_gemini_matching(tmp_path, monkeypatch):
         ),
     )
 
+    outcomes = {}
     handled = execute_gemini_fallback(
         store,
         (item.media_id,),
         Config(gemini_model="test"),
         SimpleNamespace(),
         tmp_path / "contracts",
+        outcome_recorder=lambda media_id, outcome: outcomes.update({media_id: outcome}),
     )
 
     assert handled == (item.media_id,)
+    assert outcomes == {item.media_id: "review"}
     assert store.visual_reviews == {item.media_id: "likely_warning_screen"}
     assert item.review_code == "visual_content_review_required"
     assert store.applied == {}

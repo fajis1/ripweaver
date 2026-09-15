@@ -33,6 +33,8 @@ def test_automatic_extras_route_persists_provider_outcome(
         media_id="movie-1", review_code="special_feature_evidence_required",
         artifact=SimpleNamespace(contract_path=contract),
     )
+    store.is_paused = lambda: False
+    store.get = lambda _media_id: item
     config = SimpleNamespace(
         automatic_gemini_ambiguity_fallback=True,
         automatic_gemini_movie_classification=False,
@@ -44,13 +46,25 @@ def test_automatic_extras_route_persists_provider_outcome(
     routing_store.append(
         DiscRoutingAssessment(fingerprint, (1,), None, (), 1), expected_revision=0
     )
+    assessment = routing_store.latest(fingerprint)
+    contract.write_text(json.dumps({
+        "title_index": 1, "disc_fingerprint": fingerprint,
+        "media_context": {
+            "routing_assessment": assessment.to_dict(),
+            "routing_assessment_digest": assessment.digest,
+            "routing_assessment_revision": assessment.revision,
+        },
+    }), encoding="utf-8")
     monkeypatch.setattr(
         "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
         lambda: SimpleNamespace(load=lambda: config),
     )
     monkeypatch.setattr(
         "mkv_episode_matcher.backend.gemini_fallback.execute_gemini_fallback",
-        lambda *args: (_ for _ in ()).throw(error) if error else result_ids,
+        lambda *args, outcome_recorder: (
+            (_ for _ in ()).throw(error) if error else
+            outcome_recorder("movie-1", expected_outcome)
+        ),
     )
     monkeypatch.setattr(
         "mkv_episode_matcher.backend.dependencies.get_engine",
@@ -68,11 +82,44 @@ def test_automatic_extras_route_persists_provider_outcome(
     monkeypatch.setattr("mkv_episode_matcher.backend.downstream_worker.threading.Thread", ImmediateThread)
     worker = DownstreamWorker(SimpleNamespace(store=store), allowed_stages=("identify",))
     worker._apply_automatic_fallback(item)
-    assert transitions[0] == ("movie-1", "gemini_evidence_required")
+    assert transitions[0] == ("movie-1", "gemini_analysis_running")
     if expected_review:
         assert transitions[-1] == ("movie-1", expected_review)
     attempts = routing_store.attempts(fingerprint, 1, 1)
     assert attempts[-1].outcome == expected_outcome
+
+
+@pytest.mark.parametrize("paused,stopping", [(False, False), (True, False), (False, True)])
+def test_movie_worker_uses_durable_queue_and_obeys_pause_stop(tmp_path, monkeypatch, paused, stopping):
+    from mkv_episode_matcher.pipeline_queue import PipelineQueueStore, build_artifact
+
+    contract = tmp_path / "synthetic.json"
+    contract.write_text(json.dumps({"mode": "verified-rip-contract", "media_context": {}}), encoding="utf-8")
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    store.enqueue_verified_rip("synthetic", build_artifact("rip", contract))
+    item = store.hold_for_review("synthetic", "movie_identification_required")
+    store.set_paused(paused)
+    worker = DownstreamWorker(SimpleNamespace(store=store), allowed_stages=("identify",))
+    if stopping:
+        worker._stop.set()
+    config = SimpleNamespace(automatic_gemini_ambiguity_fallback=True, automatic_gemini_movie_classification=True)
+    monkeypatch.setattr("mkv_episode_matcher.backend.downstream_worker.get_config_manager", lambda: SimpleNamespace(load=lambda: config))
+    monkeypatch.setattr("mkv_episode_matcher.backend.dependencies.get_engine", lambda: SimpleNamespace(asr=None))
+    monkeypatch.setattr("mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root", lambda: tmp_path)
+    calls = []
+
+    def provider(queue, ids, *_args, outcome_recorder):
+        calls.append(ids)
+        assert queue.get(ids[0]).review_code == "gemini_analysis_running"
+        queue.choose_review_path(ids[0], "visual_content_review_required")
+        outcome_recorder(ids[0], "review")
+
+    monkeypatch.setattr("mkv_episode_matcher.backend.gemini_fallback.execute_gemini_fallback", provider)
+    worker._apply_automatic_fallback(item)
+    assert len(calls) == (0 if paused or stopping else 1)
+    assert store.get("synthetic").review_code == (
+        "movie_identification_required" if paused or stopping else "visual_content_review_required"
+    )
 
 
 def test_worker_quarantines_legacy_sequence_only_downstream_assignments(

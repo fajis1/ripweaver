@@ -630,6 +630,12 @@ def _resolve_automatic_unmatched_disc(  # noqa: C901
                     else "all_season_analysis_failed"
                 )
             )
+            from mkv_episode_matcher.backend.unmatched_disc_analysis import (
+                SeriesCatalogueNoMatchError,
+            )
+
+            if isinstance(exc, SeriesCatalogueNoMatchError):
+                code = "routing_tv_no_match"
         for item in held:
             try:
                 current = store.get(item.media_id)

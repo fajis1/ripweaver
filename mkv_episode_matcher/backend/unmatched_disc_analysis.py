@@ -2609,6 +2609,10 @@ def _resolve_series_with_gemini(
     )
 
 
+class SeriesCatalogueNoMatchError(PipelineQueueError):
+    """A successful catalogue search produced no usable series candidate."""
+
+
 def _resolve_series_catalog_details(
     series_name: str,
     config: Config,
@@ -2632,6 +2636,8 @@ def _resolve_series_catalog_details(
         # this inexact label before reaching this branch.
         selected = candidates[0]
     if selected is None:
+        if not candidates:
+            raise SeriesCatalogueNoMatchError("No TV series matched the reviewed series name")
         raise PipelineQueueError("No TV series matched the reviewed series name")
     catalog = tuple(fetch_aired_episode_catalog(selected.tmdb_id) or ())
     if not catalog and allow_gemini:

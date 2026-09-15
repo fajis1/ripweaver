@@ -149,7 +149,6 @@ class DownstreamWorker:
         self._automatic_analysis_attempts: set[tuple[str, tuple[int, ...]]] = set()
         self._version_coexistence_reconciled = False
         self._legacy_sequence_assignments_reconciled = False
-        self._automatic_route_tasks: dict[str, threading.Thread] = {}
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -166,21 +165,17 @@ class DownstreamWorker:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=max(2.0, self.poll_seconds * 2))
-        self._thread = None
-        # Route tasks are bounded provider work. Do not launch a second task for
-        # the same item while an earlier attempt is still settling.
-        self._automatic_route_tasks = {
-            media_id: task
-            for media_id, task in self._automatic_route_tasks.items()
-            if task.is_alive()
-        }
+        # Keep the live worker reference until bounded provider work settles.
+        # start() must not create a competing consumer during shutdown.
+        if self._thread is not None and not self._thread.is_alive():
+            self._thread = None
 
     def _apply_automatic_fallback(self, item) -> None:
         if not get_config_manager().load().automatic_gemini_ambiguity_fallback:
             return
         if item.review_code == "special_feature_evidence_required":
             self._start_automatic_gemini_route(item, "extras", "gemini_evidence_required")
-        elif item.review_code == "all_season_analysis_failed":
+        elif item.review_code == "routing_tv_no_match":
             # A catalogue outage must not force every title back through TV.
             # Only an already-persisted movie/mixed assessment may opt into the
             # classifier; legacy TV contracts remain explicit review.
@@ -194,10 +189,9 @@ class DownstreamWorker:
                 assessment_from_contract(payload)
             except (OSError, ValueError, AttributeError, RoutingError):
                 return
-            # This legacy failure code conflates provider outages and content
-            # mismatch. Neither composition nor a hint proves a no-match.
-            # Keep review until the producer records a typed routing outcome.
-            return
+            if getattr(get_config_manager().load(), "automatic_gemini_movie_classification", False):
+                self._record_routing_attempt(item, "tv", "no_match")
+                self._start_automatic_gemini_route(item, "mixed-classifier", "gemini_analysis_running")
         elif item.review_code in (
             "mixed_classifier_identification_required",
             "movie_identification_required",
@@ -207,10 +201,6 @@ class DownstreamWorker:
             self._start_automatic_gemini_route(item, "mixed-classifier", "gemini_analysis_running")
 
     def _start_automatic_gemini_route(self, item, route: str, running_code: str) -> None:
-        prior = self._automatic_route_tasks.get(item.media_id)
-        if prior is not None and prior.is_alive():
-            return
-        self.dispatcher.store.choose_review_path(item.media_id, running_code)
 
         def run_gemini():
             from loguru import logger
@@ -223,22 +213,51 @@ class DownstreamWorker:
                 execute_gemini_fallback,
             )
             try:
-                result = execute_gemini_fallback(
+                execute_gemini_fallback(
                     self.dispatcher.store, (item.media_id,), get_config_manager().load(),
                     get_engine().asr, get_pipeline_contract_root(),
+                    outcome_recorder=lambda media_id, outcome: self._record_routing_attempt(
+                        item, route, outcome
+                    ),
                 )
-                self._record_routing_attempt(item, route, "matched" if item.media_id in result else "no_match")
             except Exception as exc:
-                logger.error("Automatic Gemini route failed: {}", exc)
+                logger.error("Automatic Gemini route failed: {}", type(exc).__name__)
                 self._record_routing_attempt(item, route, "service_failed")
                 try:
                     self.dispatcher.store.choose_review_path(item.media_id, "gemini_provider_failed")
                 except Exception:
                     pass
 
-        task = threading.Thread(target=run_gemini, name="gemini-auto-route", daemon=True)
-        self._automatic_route_tasks[item.media_id] = task
-        task.start()
+        from mkv_episode_matcher.backend.automatic_rip import _downstream_lock
+
+        # Execute on the identification consumer, sharing its lifetime and ASR
+        # serialization. A pause/stop prevents new work after the lock wait.
+        with _downstream_lock:
+            if self._stop.is_set() or self.dispatcher.store.is_paused():
+                return
+            current = self.dispatcher.store.get(item.media_id)
+            if current.review_code != item.review_code:
+                return
+            payload = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
+            if payload.get("media_context", {}).get("routing_assessment") is not None:
+                from mkv_episode_matcher.disc.routing import assessment_from_contract
+                from mkv_episode_matcher.disc.routing_store import DiscRoutingStore
+
+                assessment = assessment_from_contract(payload)
+                selected = DiscRoutingStore(
+                    get_config_manager().load().cache_dir.parent / "orchestration" / "disc-routing.sqlite3"
+                ).claim_next(assessment, payload["title_index"])
+                if selected is None:
+                    return
+                if selected == "tv":
+                    # TV needs disc coordination and its independent identity
+                    # checks, never a Gemini invocation labelled as TV.
+                    self._record_routing_attempt(item, selected, "review")
+                    self.dispatcher.store.choose_review_path(item.media_id, "unmatched_disc_analysis_required")
+                    return
+                route = selected
+            self.dispatcher.store.choose_review_path(item.media_id, "gemini_analysis_running")
+            run_gemini()
 
     @staticmethod
     def _record_routing_attempt(item, route: str, outcome: str) -> None:
@@ -531,6 +550,10 @@ class DownstreamWorker:
                 config,
                 get_pipeline_contract_root(),
             )
+        # Provider work above settles before any alternate classification.
+        for current in self.dispatcher.store.list_items():
+            if current.media_id in media_ids and current.review_code == "routing_tv_no_match":
+                self._apply_automatic_fallback(current)
         return True
 
     def _start_automatic_transcode_if_ready(self) -> bool:
@@ -587,6 +610,9 @@ class DownstreamWorker:
     def _run(self) -> None:  # noqa: C901 - isolated worker recovery boundaries
         logger.info("Downstream identification worker started")
         while not self._stop.is_set():
+            if self.dispatcher.store.is_paused():
+                self._stop.wait(self.poll_seconds)
+                continue
             try:
                 if self._reconcile_legacy_sequence_assignments():
                     continue

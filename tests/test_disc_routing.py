@@ -180,6 +180,42 @@ def test_observation_refresh_reuses_revision_two_and_attempt_history(tmp_path):
     assert store.latest(FINGERPRINT).revision == 2
 
 
+def test_content_revision_merges_siblings_but_refuses_stale_title(tmp_path):
+    store = DiscRoutingStore(tmp_path / "routing.sqlite3")
+    base = assessment("unknown", "unknown")
+    store.append(base, expected_revision=0)
+    store.record_content_role(base, 0, "movie")
+    latest = store.record_content_role(base, 1, "extras")
+    assert latest.composition == "movies_with_extras"
+    assert store.save_observation(base) == latest
+    assert store.record_content_role(base, 0, "movie") == latest
+    with pytest.raises(RoutingError, match="changed"):
+        store.record_content_role(base, 0, "tv")
+
+
+def test_route_claim_is_atomic_and_survives_restart(tmp_path):
+    path = tmp_path / "routing.sqlite3"
+    base = assessment("unknown")
+    DiscRoutingStore(path).append(base, expected_revision=0)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: DiscRoutingStore(path).claim_next(base, 0), range(2)))
+    assert results.count("mixed-classifier") == 1
+    assert results.count(None) == 1
+    restarted = DiscRoutingStore(path)
+    assert restarted.claim_next(base, 0) is None
+    restarted.record_attempt(FINGERPRINT, 0, 1, "mixed-classifier", "service_failed")
+    assert restarted.claim_next(base, 0) is None
+
+
+def test_route_claim_rejects_superseded_title_evidence(tmp_path):
+    store = DiscRoutingStore(tmp_path / "routing.sqlite3")
+    base = assessment("unknown")
+    store.append(base, expected_revision=0)
+    store.record_content_role(base, 0, "movie")
+    with pytest.raises(RoutingError, match="stale"):
+        store.claim_next(base, 0)
+
+
 def test_stale_worker_cannot_replace_another_workers_decision(tmp_path):
     path = tmp_path / "routing.sqlite3"
     first, second = DiscRoutingStore(path), DiscRoutingStore(path)

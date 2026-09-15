@@ -2975,3 +2975,20 @@ def test_all_season_analysis_uses_independent_evidence_not_sequence(  # noqa: C9
     ]
     assert len(sequence_attempts) == 2
     assert {attempt["disposition"] for attempt in sequence_attempts} == {"review"}
+
+
+@pytest.mark.parametrize("provider_error", [False, True])
+def test_empty_series_search_is_distinct_from_provider_failure(monkeypatch, provider_error):
+    from types import SimpleNamespace
+
+    from mkv_episode_matcher.backend import unmatched_disc_analysis as module
+
+    def search(_name):
+        if provider_error:
+            raise ConnectionError("synthetic unavailable service")
+        return ()
+
+    monkeypatch.setattr(module, "_initial_series_candidates", search)
+    error = ConnectionError if provider_error else module.SeriesCatalogueNoMatchError
+    with pytest.raises(error):
+        module.resolve_series_catalog("Synthetic Movie", SimpleNamespace(), allow_gemini=False)

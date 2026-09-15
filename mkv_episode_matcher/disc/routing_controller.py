@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from mkv_episode_matcher.disc.routing import DiscRoutingAssessment, RoutingError
 
-_OUTCOMES = frozenset({"matched", "no_match", "review", "service_failed"})
+_OUTCOMES = frozenset({"matched", "no_match", "review", "service_failed", "running"})
 
 
 @dataclass(frozen=True)
@@ -43,15 +43,18 @@ def next_route(
     )
     if any(item.outcome == "matched" for item in relevant):
         return None
-    if any(item.outcome == "service_failed" for item in relevant):
+    if any(item.outcome in {"service_failed", "running"} for item in relevant):
         return None
     tried = {item.route for item in relevant}
     if any(item.outcome not in {"no_match", "review"} for item in relevant):
         raise RoutingError("Route attempt history is invalid")
+    order = route.investigation_order
+    if route.role == "unknown":
+        order = ("mixed-classifier",) + tuple(candidate for candidate in order if candidate != "mixed-classifier")
     return next(
         (
             candidate
-            for candidate in route.investigation_order
+            for candidate in order
             if candidate not in tried
         ),
         None,

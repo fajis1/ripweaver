@@ -9,7 +9,11 @@ from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 
-from mkv_episode_matcher.disc.routing import DiscRoutingAssessment, RoutingError
+from mkv_episode_matcher.disc.routing import (
+    DiscRoutingAssessment,
+    RoutingError,
+    TitleRoutingEvidence,
+)
 
 
 class DiscRoutingStore:
@@ -124,6 +128,9 @@ class DiscRoutingStore:
         """Reuse identical evidence across revisions; reject competing changes."""
         previous = self.latest(assessment.inventory_fingerprint)
         if previous is not None:
+            # A fresh inventory cannot revoke content learned from staged media.
+            retained = tuple(e for e in previous.evidence if e.source == "content" and e not in assessment.evidence)
+            assessment = replace(assessment, evidence=assessment.evidence + retained)
             candidate = replace(assessment, revision=previous.revision)
             if candidate.digest == previous.digest:
                 return previous
@@ -148,9 +155,54 @@ class DiscRoutingStore:
             raise RoutingError("Route attempt revision is invalid")
         with self._connect() as connection:
             connection.execute(
+                "UPDATE disc_routing_attempts SET outcome=? WHERE inventory_fingerprint=? "
+                "AND title_index=? AND assessment_revision=? AND route=? AND outcome='running'",
+                (outcome, fingerprint, title_index, revision, route),
+            )
+            connection.execute(
                 "INSERT OR IGNORE INTO disc_routing_attempts VALUES (?, ?, ?, ?, ?)",
                 (fingerprint, title_index, revision, route, outcome),
             )
+
+    def claim_next(self, assessment: DiscRoutingAssessment, title_index: int) -> str | None:
+        """Atomically choose and reserve a route; interrupted reservations hold."""
+        from mkv_episode_matcher.disc.routing_controller import RouteAttempt, next_route
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM disc_routing_revisions WHERE inventory_fingerprint=? AND revision=?",
+                (assessment.inventory_fingerprint, assessment.revision),
+            ).fetchone()
+            if row is None or self._decode(row).digest != assessment.digest:
+                raise RoutingError("Routing claim assessment is unavailable")
+            latest_row = connection.execute(
+                "SELECT * FROM disc_routing_revisions WHERE inventory_fingerprint=? ORDER BY revision DESC LIMIT 1",
+                (assessment.inventory_fingerprint,),
+            ).fetchone()
+            latest = self._decode(latest_row)
+            if {e for e in latest.evidence if e.title_index == title_index} != {
+                e for e in assessment.evidence if e.title_index == title_index
+            }:
+                raise RoutingError("Routing claim title evidence is stale")
+            running = connection.execute(
+                "SELECT 1 FROM disc_routing_attempts WHERE inventory_fingerprint=? AND title_index=? AND outcome='running'",
+                (assessment.inventory_fingerprint, title_index),
+            ).fetchone()
+            if running is not None:
+                return None
+            rows = connection.execute(
+                "SELECT assessment_revision, route, outcome FROM disc_routing_attempts "
+                "WHERE inventory_fingerprint=? AND title_index=? AND assessment_revision=?",
+                (assessment.inventory_fingerprint, title_index, assessment.revision),
+            ).fetchall()
+            route = next_route(assessment, title_index=title_index, attempts=tuple(
+                RouteAttempt(row[0], row[1], row[2]) for row in rows
+            ))
+            if route is not None:
+                connection.execute("INSERT INTO disc_routing_attempts VALUES (?, ?, ?, ?, 'running')",
+                    (assessment.inventory_fingerprint, title_index, assessment.revision, route))
+            return route
 
     def attempts(
         self, fingerprint: str, title_index: int, revision: int
@@ -166,3 +218,24 @@ class DiscRoutingStore:
                 (fingerprint, title_index, revision),
             ).fetchall()
         return tuple(RouteAttempt(row[0], row[1], row[2]) for row in rows)
+
+    def record_content_role(
+        self, base: DiscRoutingAssessment, title_index: int, role: str
+    ) -> DiscRoutingAssessment:
+        """Merge independent sibling results, refusing stale same-title evidence."""
+        latest = self.latest(base.inventory_fingerprint)
+        if latest is None or latest.title_indexes != base.title_indexes:
+            raise RoutingError("Routing evidence has no matching inventory")
+        if title_index not in base.title_indexes:
+            raise RoutingError("Routing evidence title is outside inventory")
+        old_title = {e for e in base.evidence if e.title_index == title_index}
+        new_title = {e for e in latest.evidence if e.title_index == title_index}
+        incoming = TitleRoutingEvidence(title_index, role, "content")
+        if old_title != new_title and incoming not in new_title:
+            raise RoutingError("Routing title evidence changed during analysis")
+        if incoming in new_title:
+            return latest
+        return self.append(
+            replace(latest, revision=latest.revision + 1, evidence=latest.evidence + (incoming,)),
+            expected_revision=latest.revision,
+        )

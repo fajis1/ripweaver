@@ -129,6 +129,27 @@ Deliverable: independently tested foundation; no new production routing yet.
 
 ## Progress log
 
+### 2026-09-15 - Handoff state before continuing integration repairs
+
+- Last recovery checkpoint before this repair batch: `4ebd0f6135a7`.
+- Since that checkpoint, the integration repair work has added provider-result
+  callbacks that append movie/extras content evidence, explicit review versus
+  match outcomes, durable route claims with revision/concurrency checks, queue
+  support for movie identification, pause/stop guards, and typed TV catalogue
+  no-match handling.
+- Synthetic validation reached **1,245 passing tests** with a successful exit.
+  The tested areas include routing, preparation, identification, Gemini
+  fallback, downstream worker behavior, queue pause/restart, and concurrent
+  claims. No live disc, media, or provider operation was performed.
+- After that validation, two follow-up changes were started and are currently
+  uncheckpointed: preserving learned content evidence during an unchanged
+  inventory refresh, and renaming the typed catalogue exception to the
+  project's `Error` convention. These changes still require focused tests,
+  lint, and a new recovery checkpoint.
+- Current repair status: R6 is implemented; R1 has its core conflict coverage
+  but remains open for provider-to-reassessment integration; R2-R5 remain
+  under repair. No further repair work has started after this handoff note.
+
 ### R1 conflict tests - implemented and run
 
 - Added seven parameterized integration cases using actual routing SQLite

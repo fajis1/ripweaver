@@ -2851,6 +2851,8 @@ class PipelineQueueStore:
 
         if code not in {
             "gemini_evidence_required",
+            "routing_tv_no_match",
+            "unmatched_disc_analysis_required",
             "gemini_analysis_running",
             "gemini_analysis_interrupted",
             "gemini_analysis_failed",
@@ -2895,6 +2897,7 @@ class PipelineQueueStore:
                 not in {
                     "episode_match_review",
                     "special_feature_evidence_required",
+                    "routing_tv_no_match",
                     "gemini_evidence_required",
                     "gemini_analysis_running",
                     "gemini_analysis_interrupted",
@@ -2923,6 +2926,7 @@ class PipelineQueueStore:
                     "visual_content_review_required",
                     "routing_assessment_review",
                     "mixed_classifier_identification_required",
+                    "movie_identification_required",
                     "gemini_series_resolution_uncertain",
                 }
             ):
