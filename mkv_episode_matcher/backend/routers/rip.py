@@ -2134,20 +2134,7 @@ def prepare_drive_pipeline(  # noqa: C901
         routing_store = DiscRoutingStore(
             config.cache_dir.parent / "orchestration" / "disc-routing.sqlite3"
         )
-        previous_routing = routing_store.latest(disc_fingerprint)
-        if (
-            previous_routing is not None
-            and previous_routing.to_dict() == routing_assessment.to_dict()
-        ):
-            routing_assessment = previous_routing
-        else:
-            expected_revision = previous_routing.revision if previous_routing else 0
-            routing_assessment = replace(
-                routing_assessment, revision=expected_revision + 1
-            )
-            routing_store.append(
-                routing_assessment, expected_revision=expected_revision
-            )
+        routing_assessment = routing_store.save_observation(routing_assessment)
         # Acquisition may expand to every zero-minimum MakeMKV title below,
         # but disc-aware episode reasoning must retain the classifier-derived
         # relevant scope calculated above.

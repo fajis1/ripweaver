@@ -6,6 +6,7 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 
 from mkv_episode_matcher.disc.routing import DiscRoutingAssessment, RoutingError
@@ -118,6 +119,18 @@ class DiscRoutingStore:
                 ),
             )
         return assessment
+
+    def save_observation(self, assessment: DiscRoutingAssessment) -> DiscRoutingAssessment:
+        """Reuse identical evidence across revisions; reject competing changes."""
+        previous = self.latest(assessment.inventory_fingerprint)
+        if previous is not None:
+            candidate = replace(assessment, revision=previous.revision)
+            if candidate.digest == previous.digest:
+                return previous
+        expected = previous.revision if previous else 0
+        return self.append(
+            replace(assessment, revision=expected + 1), expected_revision=expected
+        )
 
     def record_attempt(
         self,

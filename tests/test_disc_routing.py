@@ -163,6 +163,23 @@ def test_routing_revisions_survive_restart_and_exact_retries(tmp_path):
     assert restarted.latest(FINGERPRINT) == revised
 
 
+def test_observation_refresh_reuses_revision_two_and_attempt_history(tmp_path):
+    path = tmp_path / "routing.sqlite3"
+    store = DiscRoutingStore(path)
+    initial = assessment("unknown")
+    store.save_observation(initial)
+    # The inventory must stay identical when its evidence changes.
+    changed = assessment("movie")
+    saved = store.save_observation(changed)
+    assert saved.revision == 2
+    store.record_attempt(FINGERPRINT, 0, 2, "movie", "no_match")
+    for _ in range(3):
+        restarted = DiscRoutingStore(path)
+        assert restarted.save_observation(changed) == saved
+        assert restarted.attempts(FINGERPRINT, 0, 2)[0].outcome == "no_match"
+    assert store.latest(FINGERPRINT).revision == 2
+
+
 def test_stale_worker_cannot_replace_another_workers_decision(tmp_path):
     path = tmp_path / "routing.sqlite3"
     first, second = DiscRoutingStore(path), DiscRoutingStore(path)

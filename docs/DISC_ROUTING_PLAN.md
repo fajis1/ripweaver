@@ -27,7 +27,7 @@ as complete.** No live queue migration or media processing is part of validation
       test pause, shutdown, shared ASR serialization, and restart.
 - [ ] R5: Record matched, visual review, no-match, and service failure using
       actual outcomes rather than membership in a handled-ID tuple.
-- [ ] R6: Compare observation content independently of revision numbers;
+- [x] R6: Compare observation content independently of revision numbers;
       retain transactional stale-writer protection and test repeated refresh
       after revision 2.
 
@@ -128,6 +128,20 @@ Deliverable: independently tested foundation; no new production routing yet.
       not permission to read or alter the user's discs or staged files.
 
 ## Progress log
+
+### Review repairs - R6 revision stability completed
+
+- Pulled R6 forward because stable revisions are a prerequisite for R3 retry
+  limits. Preparation now calls `DiscRoutingStore.save_observation`; equivalent
+  observations compare at the saved revision and retain its digest/history.
+  Changed observations still use transactional expected-revision append checks.
+- Added regression coverage for repeated identical refreshes after revision 2,
+  reopening SQLite each time and verifying the earlier route attempt survives.
+  Routing and real preparation suites: 74 tests passed, exit code 0.
+- R1 still needs contradictory independent-evidence cases. R2 remains open:
+  catalogue failure typing must distinguish successful empty searches from
+  exceptions and Gemini resolution failures. R3-R5 remain pending. This
+  milestone does not enable an automatic fallback after a generic failure.
 
 ### Review repairs - connected R1 regression; R2 started
 
