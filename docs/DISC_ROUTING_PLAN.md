@@ -163,6 +163,24 @@ Deliverable: independently tested foundation; no new production routing yet.
   durable route claims and verify exhausted/restart behavior before changing
   worker lifecycle policy further.
 
+### 2026-09-15 - R2/R3 durable route claim integration
+
+- Typed `SeriesCatalogueNoMatchError` now produces `routing_tv_no_match`,
+  distinct from provider/service failures. The worker validates the nested
+  contract assessment before considering the alternate classifier.
+- `DiscRoutingStore.claim_next` now atomically reserves one route, refuses a
+  stale assessment/title, treats an existing running attempt as occupied, and
+  preserves service-failure/exhaustion holds across restart. The worker uses
+  that claim before Gemini work and records completion through the same route.
+- Gemini fallback now reports actual match/review outcomes and appends accepted
+  movie/extras content evidence to a new immutable routing revision. Existing
+  learned content evidence is retained on later inventory refreshes.
+- Focused routing, worker, Gemini, automatic-rip, and catalogue suites pass:
+  **184 tests**; Ruff passes. Full synthetic suite had already reached 1,245
+  tests before this latest focused wiring and must be rerun before sign-off.
+- Next agent should run the full suite and inspect R4/R5 lifecycle/outcome edge
+  cases. No live media, provider, optical drive, or RipWeaver queue was used.
+
 ### R1 conflict tests - implemented and run
 
 - Added seven parameterized integration cases using actual routing SQLite
