@@ -8,12 +8,33 @@ execution authority. Preserve the established TV evidence and coherence rules.
 
 ## Current phase
 
-**Phase 2 in progress: preparation now carries the routing identity into the
-immutable media context.**
+**Repair review in progress. Earlier completion claims are superseded by the
+six integration defects below. Production wiring exists but is not approved
+as complete.** No live queue migration or media processing is part of validation.
 
-Production routing remains unchanged until the handoff and worker phases pass
-their integration tests. No live queue migration or media processing is part of
-implementation validation.
+## Review repair sequence
+
+- [ ] R1: Stop converting movie-hint runtime selection into TV evidence. Keep
+      structural guesses unknown without independent TV context; verify real
+      preparation and identification, including contradictory hints.
+- [ ] R2: Read nested assessment fields through schema/digest/fingerprint
+      validation and derive composition. Distinguish catalogue no-match from
+      service failure before allowing an alternate route.
+- [ ] R3: Connect the alternate controller and durable attempt history to
+      production dispatch; enforce revision checks, atomic claims, restart
+      reconciliation, exhaustion, and provider-failure holds.
+- [ ] R4: Replace detached per-item threads with bounded queue-compatible work;
+      test pause, shutdown, shared ASR serialization, and restart.
+- [ ] R5: Record matched, visual review, no-match, and service failure using
+      actual outcomes rather than membership in a handled-ID tuple.
+- [ ] R6: Compare observation content independently of revision numbers;
+      retain transactional stale-writer protection and test repeated refresh
+      after revision 2.
+
+Acceptance: exercise the real durable queue with synthetic providers and saved
+inventories, complete the full suite with a recorded exit result, and reconcile
+the outstanding original dashboard/legacy-recovery gates. Existing passing unit
+tests do not establish that these integration defects are resolved.
 
 ## Invariants
 
@@ -107,6 +128,21 @@ Deliverable: independently tested foundation; no new production routing yet.
       not permission to read or alter the user's discs or staged files.
 
 ## Progress log
+
+### Review repairs - R1 first implementation milestone
+
+- Preparation no longer converts runtime-selected titles into TV/extras
+  evidence without independent TV label context. Trusted database episode
+  assignments are retained as database evidence. Movie hints remain hints;
+  uncorroborated titles remain unknown for content classification.
+- Added a synthetic test through the real preparation and private binding
+  boundary asserting that a movie hint cannot become TV evidence. Existing TV
+  preparation and identify adapter regressions pass: 76 tests, exit code 0.
+  Ruff checks pass for both modified Python files.
+- R1 remains open pending a directly connected prepared-contract-to-identify
+  test and contradictory database/label cases. R2-R6 remain pending. Earlier
+  final-review statements below are historical and superseded by this audit.
+- No live application, disc, media, provider, or queue operation was performed.
 
 ### 2026-09-15 — Plan created; Phase 1 started
 

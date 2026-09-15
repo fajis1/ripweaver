@@ -541,6 +541,42 @@ def _faerie_result(source: str) -> CommandResult:
     )
 
 
+def test_movie_hint_preparation_does_not_create_tv_evidence(monkeypatch, tmp_path):
+    from mkv_episode_matcher.disc.routing import DiscRoutingAssessment
+
+    executable = tmp_path / "makemkvcon64.exe"
+    executable.write_bytes(b"synthetic")
+    output_root = tmp_path / "rips"
+    output_root.mkdir()
+    watcher = DriveWatcher(lambda _exe, source, **_kwargs: _result(source))
+    watcher.refresh(executable)
+    monkeypatch.setattr(
+        rip, "get_config_manager", lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                makemkv_path=executable, rip_output_root=output_root,
+                cache_dir=tmp_path / "cache",
+            )
+        ),
+    )
+    private = PrivateBindingStore(tmp_path / "private.sqlite3")
+    response = rip.prepare_drive_pipeline(
+        rip.PrepareDrivePipelineRequest(
+            drive_index=0, content_hint="movie", confirm_read=True,
+        ),
+        "movie-routing-test-0001", watcher,
+        OrchestrationStore(tmp_path / "public.sqlite3"), private,
+        PipelineQueueStore(tmp_path / "pipeline.sqlite3"),
+        lambda _exe, source, **_kwargs: _result(
+            source, inventory=True, label="SYNTHETIC_MOVIE"
+        ),
+    )
+    context = private.get(response["job_id"]).media_contexts["disc-01"]
+    assessment = DiscRoutingAssessment.from_dict(context.routing_assessment)
+    assert assessment.user_hint == "movie"
+    assert all(route.role == "unknown" for route in assessment.title_routes())
+    assert context.routing_assessment_digest == assessment.digest
+
+
 def test_loaded_drive_can_prepare_non_authorized_pipeline(monkeypatch, tmp_path):
     executable = tmp_path / "makemkvcon64.exe"
     executable.write_bytes(b"synthetic")

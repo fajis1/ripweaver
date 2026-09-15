@@ -2116,6 +2116,14 @@ def prepare_drive_pipeline(  # noqa: C901
             )
             for decision in episode_plan.decisions
             if decision.classification in {"episode", "extra"}
+            # Runtime selection (including the movie-hint longest title) is
+            # not TV evidence. Preserve the existing label-backed TV path;
+            # otherwise let the content classifier resolve these titles.
+            and explicit_tv_context is not None
+        )
+        routing_evidence += tuple(
+            TitleRoutingEvidence(int(assignment["title_index"]), "tv", "database")
+            for assignment in discdb_episode_assignments
         )
         routing_assessment = DiscRoutingAssessment(
             inventory_fingerprint=disc_fingerprint,
