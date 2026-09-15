@@ -16,6 +16,7 @@ class DiscRoutingStore:
 
     def __init__(self, database_path: Path):
         self.database_path = database_path
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS disc_routing_revisions (

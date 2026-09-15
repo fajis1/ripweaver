@@ -152,6 +152,22 @@ Deliverable: independently tested foundation; no new production routing yet.
   preparation and bind the expected revision to job creation, then implement
   the bounded alternate-route controller.
 
+### 2026-09-15 — Phase 2 durable preparation persistence
+
+- Preparation now writes the path-free assessment to the explicit local
+  `orchestration/disc-routing.sqlite3` store after computing the exact inventory
+  fingerprint. Unchanged observations reuse the existing revision; changed
+  evidence appends a new revision with transactional stale-write protection.
+- The immutable media context carries the persisted assessment object, digest,
+  revision, and composition. Identification validates that object before route
+  selection, so a stale or tampered handoff stops for review.
+- The persisted store is private control-plane data and contains no report path,
+  output root, command, credential, label, or dialogue. No live backend or
+  physical disc was used.
+- Follow-up validation fixed store initialization for fresh application-data
+  roots by creating only the routing database's parent directory. Preparation,
+  adapter, and routing regression tests now pass (105 focused tests).
+
 ### 2026-09-15 — Phase 2 handoff milestone
 
 - Added routing identity fields to `MediaContext`: assessment digest, revision,
