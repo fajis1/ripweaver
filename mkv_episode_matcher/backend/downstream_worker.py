@@ -184,16 +184,20 @@ class DownstreamWorker:
             # A catalogue outage must not force every title back through TV.
             # Only an already-persisted movie/mixed assessment may opt into the
             # classifier; legacy TV contracts remain explicit review.
+            from mkv_episode_matcher.disc.routing import (
+                RoutingError,
+                assessment_from_contract,
+            )
+
             try:
                 payload = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
-                assessment = payload.get("routing_assessment")
-                composition = assessment.get("composition") if isinstance(assessment, dict) else None
-            except (OSError, json.JSONDecodeError, AttributeError):
-                composition = None
-            if composition in {"movies", "movies_with_extras", "mixed", "unknown"} and getattr(
-                get_config_manager().load(), "automatic_gemini_movie_classification", False
-            ):
-                self._start_automatic_gemini_route(item, "mixed-classifier", "gemini_analysis_running")
+                assessment_from_contract(payload)
+            except (OSError, ValueError, AttributeError, RoutingError):
+                return
+            # This legacy failure code conflates provider outages and content
+            # mismatch. Neither composition nor a hint proves a no-match.
+            # Keep review until the producer records a typed routing outcome.
+            return
         elif item.review_code in (
             "mixed_classifier_identification_required",
             "movie_identification_required",

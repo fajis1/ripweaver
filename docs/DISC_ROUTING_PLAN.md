@@ -129,6 +129,27 @@ Deliverable: independently tested foundation; no new production routing yet.
 
 ## Progress log
 
+### Review repairs - connected R1 regression; R2 started
+
+- R1: The real preparation test now serializes the saved private binding into
+  a verified contract, enqueues it in SQLite, claims identification, and proves
+  the adapter requests mixed classification without invoking the TV engine.
+  It covers movie, TV, mixed, and extras hints with an unrecognized label.
+  Existing TV label/database preparation tests remain in the regression suite.
+  Contradictory label/database combinations still need explicit coverage before
+  closing the full R1 acceptance gate.
+- R2: Added a nested-contract assessment validator checking schema, digest,
+  revision, exact fingerprint and title membership, deriving composition from
+  evidence. Six tests cover correct binding and substituted identity fields.
+- The generic all-season failure handler remains review-only: its producer
+  conflates service failures and content mismatch. Removed the incorrect
+  top-level/composition lookup; do not enable automatic fallback on this generic
+  code. Next: introduce a typed no-match outcome at the catalogue producer and
+  wire the validated assessment into that path, with real queue tests.
+- R3-R6 remain pending. No live provider, drive, or media operations performed.
+- Validation: 136 routing, worker, preparation and adapter tests passed with
+  exit code 0; Ruff checks passed for all four files changed in this milestone.
+
 ### Review repairs - R1 first implementation milestone
 
 - Preparation no longer converts runtime-selected titles into TV/extras

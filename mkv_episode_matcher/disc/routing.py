@@ -22,6 +22,25 @@ class RoutingError(ValueError):
     """A saved routing proposal is invalid or stale."""
 
 
+def assessment_from_contract(payload: object) -> DiscRoutingAssessment:
+    """Validate the routing identity at an immutable contract boundary."""
+    if not isinstance(payload, dict):
+        raise RoutingError("Routing contract is invalid")
+    context = payload.get("media_context")
+    if not isinstance(context, dict):
+        raise RoutingError("Routing context is unavailable")
+    assessment = DiscRoutingAssessment.from_dict(context.get("routing_assessment"))
+    if (
+        context.get("routing_assessment_digest") != assessment.digest
+        or context.get("routing_assessment_revision") != assessment.revision
+        or payload.get("disc_fingerprint") != assessment.inventory_fingerprint
+        or type(payload.get("title_index")) is not int
+        or payload["title_index"] not in assessment.title_indexes
+    ):
+        raise RoutingError("Routing contract identity is inconsistent")
+    return assessment
+
+
 @dataclass(frozen=True)
 class TitleRoutingEvidence:
     title_index: int

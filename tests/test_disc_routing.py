@@ -15,6 +15,36 @@ from mkv_episode_matcher.disc.routing_store import DiscRoutingStore
 FINGERPRINT = "0123456789abcdef"
 
 
+@pytest.mark.parametrize("corruption", [None, "digest", "revision", "fingerprint", "title", "top_level"])
+def test_contract_assessment_binding(corruption):
+    from mkv_episode_matcher.disc.routing import assessment_from_contract
+
+    saved = DiscRoutingAssessment(
+        FINGERPRINT, (0,), evidence=(TitleRoutingEvidence(0, "movie", "content"),)
+    )
+    context = {
+        "routing_assessment": saved.to_dict(),
+        "routing_assessment_digest": saved.digest,
+        "routing_assessment_revision": saved.revision,
+    }
+    payload = {"disc_fingerprint": FINGERPRINT, "title_index": 0, "media_context": context}
+    if corruption == "digest":
+        context["routing_assessment_digest"] = "invalid"
+    elif corruption == "revision":
+        context["routing_assessment_revision"] = 2
+    elif corruption == "fingerprint":
+        payload["disc_fingerprint"] = "fedcba9876543210"
+    elif corruption == "title":
+        payload["title_index"] = 1
+    elif corruption == "top_level":
+        payload["routing_assessment"] = context.pop("routing_assessment")
+    if corruption:
+        with pytest.raises(RoutingError):
+            assessment_from_contract(payload)
+    else:
+        assert assessment_from_contract(payload).composition == "movies"
+
+
 def assessment(*roles, hint=None, source="database"):
     return DiscRoutingAssessment(
         FINGERPRINT,

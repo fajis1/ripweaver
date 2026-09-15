@@ -541,7 +541,8 @@ def _faerie_result(source: str) -> CommandResult:
     )
 
 
-def test_movie_hint_preparation_does_not_create_tv_evidence(monkeypatch, tmp_path):
+@pytest.mark.parametrize("hint", ["movie", "tv", "mixed", "extras"])
+def test_movie_hint_preparation_does_not_create_tv_evidence(monkeypatch, tmp_path, hint):
     from mkv_episode_matcher.disc.routing import DiscRoutingAssessment
 
     executable = tmp_path / "makemkvcon64.exe"
@@ -561,7 +562,7 @@ def test_movie_hint_preparation_does_not_create_tv_evidence(monkeypatch, tmp_pat
     private = PrivateBindingStore(tmp_path / "private.sqlite3")
     response = rip.prepare_drive_pipeline(
         rip.PrepareDrivePipelineRequest(
-            drive_index=0, content_hint="movie", confirm_read=True,
+            drive_index=0, content_hint=hint, confirm_read=True,
         ),
         "movie-routing-test-0001", watcher,
         OrchestrationStore(tmp_path / "public.sqlite3"), private,
@@ -572,9 +573,30 @@ def test_movie_hint_preparation_does_not_create_tv_evidence(monkeypatch, tmp_pat
     )
     context = private.get(response["job_id"]).media_contexts["disc-01"]
     assessment = DiscRoutingAssessment.from_dict(context.routing_assessment)
-    assert assessment.user_hint == "movie"
+    assert assessment.user_hint == hint
     assert all(route.role == "unknown" for route in assessment.title_routes())
     assert context.routing_assessment_digest == assessment.digest
+
+    # Follow the actual saved preparation context into a durable identify claim.
+    from dataclasses import asdict
+
+    from mkv_episode_matcher.pipeline_adapters import IdentifyStageAdapter
+    from mkv_episode_matcher.pipeline_queue import PipelineReviewRequiredError
+
+    source = tmp_path / "synthetic.mkv"
+    source.write_bytes(b"synthetic")
+    contract = tmp_path / "verified.json"
+    contract.write_text(json.dumps({
+        "mode": "verified-rip-contract", "source_path": str(source),
+        "source_size_bytes": source.stat().st_size,
+        "disc_fingerprint": assessment.inventory_fingerprint,
+        "title_index": assessment.title_indexes[0],
+        "media_context": asdict(context),
+    }), encoding="utf-8")
+    queue = PipelineQueueStore(tmp_path / "identify.sqlite3")
+    queue.enqueue_verified_rip("synthetic-movie", build_artifact("rip", contract))
+    with pytest.raises(PipelineReviewRequiredError, match="mixed_classifier"):
+        IdentifyStageAdapter(object(), tmp_path / "contracts")(queue.claim_next())
 
 
 def test_loaded_drive_can_prepare_non_authorized_pipeline(monkeypatch, tmp_path):
