@@ -133,6 +133,7 @@ from mkv_episode_matcher.disc.ripweaver_catalogue import (
     RipWeaverCatalogueError,
     RipWeaverCatalogueSupportRequiredError,
 )
+from mkv_episode_matcher.disc.routing import DiscRoutingAssessment, TitleRoutingEvidence
 from mkv_episode_matcher.disc.special_feature_binder import (
     SpecialFeatureBindError,
     load_bound_special_feature_manifest,
@@ -1966,7 +1967,7 @@ def prepare_drive_pipeline(  # noqa: C901
         )
         release_name = infer_release_name_from_disc_label(matching_drive.disc_name)
         disc_id = "disc-01"
-        
+
         trusted_discdb_match = disc_resolution.status == "matched"
         discdb_episode_assignments = (
             disc_resolution.episode_assignments if trusted_discdb_match else ()
@@ -1991,10 +1992,14 @@ def prepare_drive_pipeline(  # noqa: C901
                     if movie_hits and not tv_hits:
                         effective_content_hint = "movie"
                 except Exception as exc:
-                    logger.warning("Automatic TMDb content-hint fallback failed: {}", exc)
+                    logger.warning(
+                        "Automatic TMDb content-hint fallback failed: {}", exc
+                    )
 
-        episode_plan = load_title_plan(report_path, report_id=disc_id, content_hint=effective_content_hint)
-        
+        episode_plan = load_title_plan(
+            report_path, report_id=disc_id, content_hint=effective_content_hint
+        )
+
         planned_titles = select_pipeline_titles(
             episode_plan,
             effective_content_hint,
@@ -2098,6 +2103,25 @@ def prepare_drive_pipeline(  # noqa: C901
                     for job in diagnostic.jobs
                 )
         disc_fingerprint = inventory_fingerprint_from_report(report_path)
+        routing_evidence = tuple(
+            TitleRoutingEvidence(
+                decision.title.index,
+                "tv"
+                if decision.classification == "episode"
+                else "extras"
+                if decision.classification == "extra"
+                else "tv",
+                "inventory",
+            )
+            for decision in episode_plan.decisions
+            if decision.classification in {"episode", "extra"}
+        )
+        routing_assessment = DiscRoutingAssessment(
+            inventory_fingerprint=disc_fingerprint,
+            title_indexes=tuple(sorted(title.index for title in inventory.titles)),
+            user_hint=request.content_hint,
+            evidence=routing_evidence,
+        )
         # Acquisition may expand to every zero-minimum MakeMKV title below,
         # but disc-aware episode reasoning must retain the classifier-derived
         # relevant scope calculated above.
@@ -2197,7 +2221,7 @@ def prepare_drive_pipeline(  # noqa: C901
                 else None
             ),
             tmdb_id=(disc_resolution.tmdb_id if trusted_discdb_match else None),
-            content_hint=request.content_hint
+            content_hint=effective_content_hint
             or (
                 inferred_content_hint(disc_resolution.media_type)
                 if trusted_discdb_match
@@ -2236,6 +2260,9 @@ def prepare_drive_pipeline(  # noqa: C901
                 if request.library_policy == "missing-only"
                 else "preserve"
             ),
+            routing_assessment_digest=routing_assessment.digest,
+            routing_assessment_revision=routing_assessment.revision,
+            routing_composition=routing_assessment.composition,
         )
         preview, context = _build_prepared_preview(
             report_path,

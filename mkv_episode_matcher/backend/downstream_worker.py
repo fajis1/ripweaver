@@ -181,13 +181,11 @@ class DownstreamWorker:
             self.dispatcher.store.choose_review_path(
                 item.media_id, "gemini_analysis_running"
             )
-            
             # Fire the Gemini analysis in a separate thread so we don't block the worker loop
             def run_gemini():
                 from mkv_episode_matcher.backend.gemini_fallback import execute_gemini_fallback
                 from mkv_episode_matcher.backend.dependencies import get_pipeline_contract_root, get_engine
                 from loguru import logger
-                
                 try:
                     execute_gemini_fallback(
                         self.dispatcher.store,
@@ -202,7 +200,6 @@ class DownstreamWorker:
                         self.dispatcher.store.choose_review_path(item.media_id, "gemini_provider_failed")
                     except Exception:
                         pass
-                        
             threading.Thread(target=run_gemini, name="gemini-auto-classifier", daemon=True).start()
 
     def _apply_post_item_automation(self, item) -> bool:

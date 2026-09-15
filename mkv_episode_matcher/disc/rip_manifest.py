@@ -57,6 +57,9 @@ class MediaContext:
     disc_metadata_status: str | None = None
     disc_metadata_matched_title_count: int = 0
     existing_output_policy: str = "preserve"
+    routing_assessment_digest: str | None = None
+    routing_assessment_revision: int | None = None
+    routing_composition: str | None = None
 
 
 def media_context_from_dict(value: dict[str, object]) -> MediaContext:
@@ -401,9 +404,9 @@ def build_rip_manifest(  # noqa: C901
         context = media_contexts.get(disc_id) if media_contexts else None
         try:
             plan = load_title_plan(
-                report_path, 
+                report_path,
                 report_id=disc_id,
-                content_hint=context.content_hint if context else None
+                content_hint=context.content_hint if context else None,
             )
         except TitlePlanError as exc:
             skipped.append(
