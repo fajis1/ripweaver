@@ -181,6 +181,21 @@ Deliverable: independently tested foundation; no new production routing yet.
 - Next agent should run the full suite and inspect R4/R5 lifecycle/outcome edge
   cases. No live media, provider, optical drive, or RipWeaver queue was used.
 
+### 2026-09-15 - Full synthetic validation after R2/R3 wiring
+
+- The complete repository suite passed: **1,245 tests**, exit code 0, with only
+  existing dependency/framework warnings. This includes routing revisions,
+  concurrent claims, typed catalogue outcomes, Gemini evidence updates, queue
+  pause/restart behavior, worker transitions, and optical-drive safeguards.
+- R2/R3 implementation is validated for the current synthetic interfaces.
+  R4/R5 remain subject to explicit lifecycle and outcome acceptance review:
+  worker shutdown must account for in-flight provider work, and visual/review
+  results must never be counted as matches. No live provider, drive, media, or
+  RipWeaver queue was used.
+- A future agent should not start Short Circuit 2 from this test result alone.
+  The existing job and staged files still require a read-only operational review
+  and a fresh saved inventory before any separately authorized recovery.
+
 ### R1 conflict tests - implemented and run
 
 - Added seven parameterized integration cases using actual routing SQLite
