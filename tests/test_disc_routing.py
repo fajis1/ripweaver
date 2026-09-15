@@ -167,6 +167,19 @@ def test_other_disc_has_independent_revision_history(tmp_path):
     assert store.latest(second.inventory_fingerprint) == second
 
 
+def test_route_attempts_survive_restart_and_are_idempotent(tmp_path):
+    path = tmp_path / "routing.sqlite3"
+    store = DiscRoutingStore(path)
+    store.append(assessment("unknown"), expected_revision=0)
+    store.record_attempt(FINGERPRINT, 0, 1, "mixed-classifier", "no_match")
+    store.record_attempt(FINGERPRINT, 0, 1, "mixed-classifier", "no_match")
+    restarted = DiscRoutingStore(path)
+    attempts = restarted.attempts(FINGERPRINT, 0, 1)
+    assert len(attempts) == 1
+    assert attempts[0].route == "mixed-classifier"
+    assert restarted.attempts(FINGERPRINT, 0, 2) == ()
+
+
 def test_concurrent_revisions_have_exactly_one_winner(tmp_path):
     path = tmp_path / "routing.sqlite3"
     store = DiscRoutingStore(path)

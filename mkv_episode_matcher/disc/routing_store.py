@@ -27,6 +27,17 @@ class DiscRoutingStore:
                     PRIMARY KEY (inventory_fingerprint, revision)
                 )"""
             )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS disc_routing_attempts (
+                    inventory_fingerprint TEXT NOT NULL,
+                    title_index INTEGER NOT NULL,
+                    assessment_revision INTEGER NOT NULL,
+                    route TEXT NOT NULL,
+                    outcome TEXT NOT NULL,
+                    PRIMARY KEY (inventory_fingerprint, title_index,
+                                 assessment_revision, route)
+                )"""
+            )
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -107,3 +118,38 @@ class DiscRoutingStore:
                 ),
             )
         return assessment
+
+    def record_attempt(
+        self,
+        fingerprint: str,
+        title_index: int,
+        revision: int,
+        route: str,
+        outcome: str,
+    ) -> None:
+        """Append one idempotent route outcome for restart-safe fallback."""
+        from mkv_episode_matcher.disc.routing_controller import RouteAttempt
+
+        attempt = RouteAttempt(revision, route, outcome)
+        if attempt.assessment_revision != revision:
+            raise RoutingError("Route attempt revision is invalid")
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO disc_routing_attempts VALUES (?, ?, ?, ?, ?)",
+                (fingerprint, title_index, revision, route, outcome),
+            )
+
+    def attempts(
+        self, fingerprint: str, title_index: int, revision: int
+    ) -> tuple[object, ...]:
+        """Load only attempts belonging to the exact assessment revision."""
+        from mkv_episode_matcher.disc.routing_controller import RouteAttempt
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT assessment_revision, route, outcome FROM disc_routing_attempts "
+                "WHERE inventory_fingerprint=? AND title_index=? AND assessment_revision=? "
+                "ORDER BY route",
+                (fingerprint, title_index, revision),
+            ).fetchall()
+        return tuple(RouteAttempt(row[0], row[1], row[2]) for row in rows)

@@ -169,6 +169,15 @@ Deliverable: independently tested foundation; no new production routing yet.
 - Next: integrate route attempts with the durable worker and provider result
   boundaries, including movie-with-extras and early TV-catalogue failure cases.
 
+### 2026-09-15 — Phase 4 durable route-attempt handoff
+
+- Automatic Gemini classification now records matched, no-match, and provider
+  failure outcomes in the private routing store when an assessment is present.
+  Repeated polls remain deduplicated, and persistence failures cannot change a
+  provider decision. TV coordination remains unchanged.
+- Durable route history and worker regressions pass (48 focused tests). Broader
+  movie/extras automatic admission still requires end-to-end transition tests.
+
 ### 2026-09-15 — Phase 4 worker handoff guard
 
 - The automatic movie/mixed Gemini route task now has per-item in-process task

@@ -211,15 +211,23 @@ class DownstreamWorker:
                 )
 
                 try:
-                    execute_gemini_fallback(
+                    result = execute_gemini_fallback(
                         self.dispatcher.store,
                         (item.media_id,),
                         get_config_manager().load(),
                         get_engine().asr,
                         get_pipeline_contract_root(),
                     )
+                    self._record_routing_attempt(
+                        item,
+                        "mixed-classifier",
+                        "matched" if item.media_id in result else "no_match",
+                    )
                 except Exception as exc:
                     logger.error("Automatic Gemini classification failed: {}", exc)
+                    self._record_routing_attempt(
+                        item, "mixed-classifier", "service_failed"
+                    )
                     try:
                         self.dispatcher.store.choose_review_path(
                             item.media_id, "gemini_provider_failed"
@@ -232,6 +240,31 @@ class DownstreamWorker:
             )
             self._automatic_route_tasks[item.media_id] = task
             task.start()
+
+    @staticmethod
+    def _record_routing_attempt(item, route: str, outcome: str) -> None:
+        """Persist route outcomes for restart-safe fallback decisions."""
+        try:
+            payload = json.loads(
+                item.artifact.contract_path.read_text(encoding="utf-8")
+            )
+            assessment = payload.get("media_context", {}).get("routing_assessment")
+            if not isinstance(assessment, dict):
+                return
+            from mkv_episode_matcher.disc.routing_store import DiscRoutingStore
+
+            config = get_config_manager().load()
+            DiscRoutingStore(
+                config.cache_dir.parent / "orchestration" / "disc-routing.sqlite3"
+            ).record_attempt(
+                str(assessment["inventory_fingerprint"]),
+                int(payload["title_index"]),
+                int(assessment["revision"]),
+                route,
+                outcome,
+            )
+        except Exception:
+            logger.warning("Automatic route outcome persistence failed: RoutingError")
 
     def _apply_post_item_automation(self, item) -> bool:
         """Run item and completed-disc fallbacks without waiting for queue idle."""
