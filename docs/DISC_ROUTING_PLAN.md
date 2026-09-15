@@ -260,3 +260,18 @@ Deliverable: independently tested foundation; no new production routing yet.
   passes 20 tests; modified-module Ruff checks pass.
 - Next: run the broader routing/identification suite and review any remaining
   movie-with-extras admission gaps before finalizing this phase.
+
+### 2026-09-15 - Final routing review
+
+- Reviewed the preparation boundary, persisted assessment schema, identify
+  adapter, and downstream worker handoff together. Movie and extras routes are
+  now selected from one immutable assessment; user hints influence ordering
+  only, and legacy TV contracts remain protected when catalogue resolution
+  fails.
+- The focused routing/identification/worker suites pass (127 tests), and the
+  full synthetic run completed through the routing and pipeline sections with
+  no observed failures. No physical media, optical drive, or live provider
+  was accessed.
+- Remaining work is operational validation with a newly saved Short Circuit 2
+  inventory/log bundle and separate authorization; code changes are not a
+  substitute for that live diagnostic.
