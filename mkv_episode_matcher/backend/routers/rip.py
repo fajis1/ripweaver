@@ -2263,6 +2263,7 @@ def prepare_drive_pipeline(  # noqa: C901
             routing_assessment_digest=routing_assessment.digest,
             routing_assessment_revision=routing_assessment.revision,
             routing_composition=routing_assessment.composition,
+            routing_assessment=routing_assessment.to_dict(),
         )
         preview, context = _build_prepared_preview(
             report_path,

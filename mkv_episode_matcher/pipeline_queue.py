@@ -2875,6 +2875,8 @@ class PipelineQueueStore:
             "independent_episode_evidence_required",
             "whole_disc_coherence_review_required",
             "visual_content_review_required",
+            "routing_assessment_review",
+            "mixed_classifier_identification_required",
             "gemini_series_resolution_uncertain",
             "play_all_aggregate_detected",
         }:
@@ -2919,6 +2921,8 @@ class PipelineQueueStore:
                     "independent_episode_evidence_required",
                     "whole_disc_coherence_review_required",
                     "visual_content_review_required",
+                    "routing_assessment_review",
+                    "mixed_classifier_identification_required",
                     "gemini_series_resolution_uncertain",
                 }
             ):

@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +11,10 @@ from mkv_episode_matcher.core.tv_identification_policy import (
     AUTOMATIC_TV_IDENTIFICATION_POLICY_VERSION,
     LOCAL_DIALOGUE_DISC_CORROBORATED_SOURCE,
     LOCAL_DIALOGUE_TWO_WINDOW_SOURCE,
+)
+from mkv_episode_matcher.disc.routing import (
+    DiscRoutingAssessment,
+    TitleRoutingEvidence,
 )
 from mkv_episode_matcher.media.handbrake import (
     HandBrakeError,
@@ -37,6 +42,66 @@ def _queued_item(tmp_path, payload):
     store = PipelineQueueStore(tmp_path / "queue.sqlite3")
     store.enqueue_verified_rip("media-1", build_artifact("rip", contract))
     return store.claim_next()
+
+
+def _routing(role="tv"):
+    return DiscRoutingAssessment(
+        "0123456789abcdef",
+        (0,),
+        user_hint="movie" if role == "movie" else None,
+        evidence=(TitleRoutingEvidence(0, role, "content"),),
+    )
+
+
+def test_identify_adapter_honors_persisted_movie_routing_assessment(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    routing = _routing("movie")
+    item = _queued_item(
+        tmp_path,
+        {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "title_index": 0,
+            "media_context": {
+                "series_name": "Short Circuit 2",
+                "content_hint": "tv",
+                "routing_assessment": routing.to_dict(),
+                "routing_assessment_digest": routing.digest,
+            },
+        },
+    )
+
+    with pytest.raises(
+        PipelineReviewRequiredError, match="movie_identification_required"
+    ):
+        IdentifyStageAdapter(object(), tmp_path / "contracts")(item)
+
+
+def test_identify_adapter_holds_unknown_persisted_route_for_classification(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    routing = _routing("tv")
+    routing = replace(routing, evidence=())
+    item = _queued_item(
+        tmp_path,
+        {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "title_index": 0,
+            "media_context": {
+                "series_name": "Unmatched",
+                "content_hint": None,
+                "routing_assessment": routing.to_dict(),
+                "routing_assessment_digest": routing.digest,
+            },
+        },
+    )
+
+    with pytest.raises(PipelineReviewRequiredError, match="mixed_classifier"):
+        IdentifyStageAdapter(object(), tmp_path / "contracts")(item)
 
 
 def test_identify_adapter_runs_engine_in_dry_run_and_writes_handoff(tmp_path):

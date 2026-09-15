@@ -138,6 +138,20 @@ Deliverable: independently tested foundation; no new production routing yet.
 - Next: wire one assessment through preparation and the immutable identification
   handoff, with synthetic integration tests before changing live behavior.
 
+### 2026-09-15 — Phase 2 identify validation
+
+- The identify adapter now validates the embedded assessment digest and exact
+  title membership before routing. A persisted movie role overrides a stale TV
+  hint; an unknown role enters `mixed_classifier_identification_required`
+  instead of silently entering TV. Legacy contracts without an assessment keep
+  their compatibility behavior until migration is implemented.
+- Added durable queue support for the two new review codes and synthetic tests
+  for movie correction, unknown classification, digest mismatch, and existing
+  TV compatibility. Focused adapter/routing tests pass after this handoff.
+- Next: persist assessment revisions through `DiscRoutingStore` during
+  preparation and bind the expected revision to job creation, then implement
+  the bounded alternate-route controller.
+
 ### 2026-09-15 — Phase 2 handoff milestone
 
 - Added routing identity fields to `MediaContext`: assessment digest, revision,

@@ -23,6 +23,7 @@ from mkv_episode_matcher.core.tv_identification_policy import (
     identification_order_for_assignment,
 )
 from mkv_episode_matcher.disc.content_policy import identification_order
+from mkv_episode_matcher.disc.routing import DiscRoutingAssessment, RoutingError
 from mkv_episode_matcher.media.handbrake import (
     HandBrakeError,
     HandBrakeJob,
@@ -452,8 +453,36 @@ class IdentifyStageAdapter:
                 },
             )
         hint = context.get("content_hint")
+        routing_payload = context.get("routing_assessment")
+        if routing_payload is not None:
+            try:
+                routing = DiscRoutingAssessment.from_dict(routing_payload)
+            except (RoutingError, TypeError, ValueError) as exc:
+                raise PipelineReviewRequiredError("routing_assessment_review") from exc
+            if context.get("routing_assessment_digest") != routing.digest:
+                raise PipelineReviewRequiredError("routing_assessment_review")
+            title_index = payload.get("title_index")
+            route = next(
+                (
+                    item
+                    for item in routing.title_routes()
+                    if item.title_index == title_index
+                ),
+                None,
+            )
+            if route is None:
+                raise PipelineReviewRequiredError("routing_assessment_review")
+            if route.role == "unknown":
+                raise PipelineReviewRequiredError(
+                    "mixed_classifier_identification_required"
+                )
+            hint = route.role
         strategy_order = (
-            ("tv", "movie", "extras") if hint is None else identification_order(hint)
+            ("mixed-classifier", "tv", "movie", "extras")
+            if routing_payload is not None and hint is None
+            else ("tv", "movie", "extras")
+            if hint is None
+            else identification_order(hint)
         )
         if strategy_order[0] == "extras":
             raise PipelineReviewRequiredError("special_feature_evidence_required")

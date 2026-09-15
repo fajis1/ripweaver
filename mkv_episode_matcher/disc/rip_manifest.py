@@ -60,6 +60,7 @@ class MediaContext:
     routing_assessment_digest: str | None = None
     routing_assessment_revision: int | None = None
     routing_composition: str | None = None
+    routing_assessment: dict[str, object] | None = None
 
 
 def media_context_from_dict(value: dict[str, object]) -> MediaContext:
