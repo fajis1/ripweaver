@@ -32,6 +32,7 @@ These rules are non-negotiable:
   organization must stop on an existing destination and route the conflict to
   deduplication/review; it must never overwrite.
 - Preserve existing user files and unrelated working-tree changes.
+- Triage files (files with a `triage-` prefix in their generated media ID) must never be moved to the deletion staging queue or moved out of their original staging location. The user must be able to see the original files in their original triage location after processing.
 
 Treat disc scans and media libraries as user data. Reports, logs, test fixtures,
 and documentation must not contain drive serial numbers, personal paths,

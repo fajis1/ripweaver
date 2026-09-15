@@ -308,10 +308,15 @@ def test_read_only_verifier_accepts_inventory_predicted_tiny_control_output(
     assert [size for _path, size in verified] == list(actual_sizes)
 
 
+@pytest.mark.parametrize("duration_seconds", [None, 30])
 def test_read_only_verifier_rejects_incomplete_inventory_predicted_tiny_output(
     tmp_path,
+    duration_seconds,
 ):
-    jobs = (_job(0), replace(_job(1), estimated_bytes=18_432))
+    jobs = (
+        _job(0),
+        replace(_job(1), estimated_bytes=18_432, duration_seconds=duration_seconds),
+    )
     plan = plan_single_open_batch(
         jobs,
         tuple(
@@ -328,6 +333,22 @@ def test_read_only_verifier_rejects_incomplete_inventory_predicted_tiny_output(
 
     with pytest.raises(RipError, match="less than half"):
         verify_single_open_batch_outputs(workspace, plan)
+
+
+def test_short_batch_title_still_requires_half_its_inventory_size(tmp_path):
+    job = replace(_job(0), estimated_bytes=100_000_000, duration_seconds=90)
+    plan = plan_single_open_batch(
+        (job, _job(1)),
+        (
+            BatchInventoryTitle(0, 90, "disc_t00.mkv"),
+            BatchInventoryTitle(1, 600, "disc_t01.mkv"),
+        ),
+    )
+    (tmp_path / plan.batch_output_names[0]).write_bytes(b"x" * 1_000_000)
+    (tmp_path / plan.batch_output_names[1]).write_bytes(b"x" * 2_000_000)
+
+    with pytest.raises(RipError, match="less than half"):
+        verify_single_open_batch_outputs(tmp_path, plan)
 
 
 def test_read_only_verifier_rejects_partially_written_small_outputs(

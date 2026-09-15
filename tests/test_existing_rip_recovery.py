@@ -234,6 +234,54 @@ def test_recovery_keeps_original_batch_ordinals_after_scope_is_narrowed(tmp_path
     assert plan.missing_title_indexes == ()
 
 
+def test_narrowed_whole_disc_recovery_never_falls_back_to_compact_ordinals(tmp_path):
+    jobs = tuple(
+        RipJob(**{**_job(index).__dict__, "estimated_bytes": 2_000_000})
+        for index in (1, 3)
+    )
+    parent = (
+        tmp_path
+        / ".staging"
+        / "disc-01"
+        / "attempt-abc123"
+        / "0123456789abcdef"
+        / "title-000"
+    )
+    parent.mkdir(parents=True)
+    for ordinal in (0, 1):
+        (parent / f"Synthetic_t{ordinal:02d}.mkv").write_bytes(b"x" * 2_000_000)
+
+    plan = discover_existing_rips(tmp_path, jobs)
+
+    assert [(c.title_index, c.basename) for c in plan.candidates] == [
+        (1, "Synthetic_t01.mkv")
+    ]
+    assert plan.missing_title_indexes == (3,)
+
+
+def test_short_recovery_title_still_requires_normal_size_cohort(tmp_path):
+    job = RipJob(**{
+        **_job(0).__dict__,
+        "estimated_bytes": 100_000_000,
+        "duration_seconds": 90,
+    })
+    parent = (
+        tmp_path
+        / ".staging"
+        / "disc-01"
+        / "attempt-abc123"
+        / "0123456789abcdef"
+        / "title-000"
+    )
+    parent.mkdir(parents=True)
+    (parent / "Synthetic_t00.mkv").write_bytes(b"x" * 1_000_000)
+
+    plan = discover_existing_rips(tmp_path, (job,))
+
+    assert plan.candidates == ()
+    assert plan.missing_title_indexes == (0,)
+
+
 def test_recovery_stops_failed_batch_mapping_at_first_missing_suffix(tmp_path):
     jobs = tuple(
         RipJob(**{**_job(index).__dict__, "estimated_bytes": 10_000_000})

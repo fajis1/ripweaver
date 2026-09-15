@@ -398,8 +398,13 @@ def build_rip_manifest(  # noqa: C901
         disc_id = f"disc-{ordinal:02d}"
         fingerprint = _inventory_fingerprint(payload)
         disc_label_slug = _disc_label_slug(payload)
+        context = media_contexts.get(disc_id) if media_contexts else None
         try:
-            plan = load_title_plan(report_path, report_id=disc_id)
+            plan = load_title_plan(
+                report_path, 
+                report_id=disc_id,
+                content_hint=context.content_hint if context else None
+            )
         except TitlePlanError as exc:
             skipped.append(
                 SkippedDisc(
@@ -410,7 +415,6 @@ def build_rip_manifest(  # noqa: C901
             )
             continue
 
-        context = media_contexts.get(disc_id) if media_contexts else None
         selected = list(select_rippable_titles(plan))
         if context is not None and context.selected_title_indexes is not None:
             decisions_by_index = {

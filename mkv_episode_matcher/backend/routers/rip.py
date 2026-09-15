@@ -1966,7 +1966,7 @@ def prepare_drive_pipeline(  # noqa: C901
         )
         release_name = infer_release_name_from_disc_label(matching_drive.disc_name)
         disc_id = "disc-01"
-        episode_plan = load_title_plan(report_path, report_id=disc_id)
+        
         trusted_discdb_match = disc_resolution.status == "matched"
         discdb_episode_assignments = (
             disc_resolution.episode_assignments if trusted_discdb_match else ()
@@ -1974,11 +1974,27 @@ def prepare_drive_pipeline(  # noqa: C901
         use_special_features = request.content_hint in {"extras", "mixed"} or (
             request.content_hint is None and not discdb_episode_assignments
         )
-        effective_content_hint = (
-            "tv"
-            if explicit_tv_context and request.content_hint is None
-            else request.content_hint
-        )
+
+        effective_content_hint = request.content_hint
+        if effective_content_hint is None:
+            if explicit_tv_context or discdb_episode_assignments:
+                effective_content_hint = "tv"
+            elif release_name:
+                try:
+                    from mkv_episode_matcher.tmdb_client import (
+                        search_movie_candidates,
+                        search_tv_show_candidates,
+                    )
+
+                    movie_hits = search_movie_candidates(release_name, limit=1)
+                    tv_hits = search_tv_show_candidates(release_name, limit=1)
+                    if movie_hits and not tv_hits:
+                        effective_content_hint = "movie"
+                except Exception as exc:
+                    logger.warning("Automatic TMDb content-hint fallback failed: {}", exc)
+
+        episode_plan = load_title_plan(report_path, report_id=disc_id, content_hint=effective_content_hint)
+        
         planned_titles = select_pipeline_titles(
             episode_plan,
             effective_content_hint,

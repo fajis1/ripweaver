@@ -32,10 +32,6 @@ def is_complete_batch_output_size(
     ):
         return False
 
-    # Bypass strict 50% ratio check for titles under 2 minutes
-    if duration_seconds is not None and duration_seconds < 120:
-        return True
-
     if estimated_bytes is not None and estimated_bytes > 0:
         return actual_bytes * 2 >= estimated_bytes
     return True

@@ -122,6 +122,10 @@ class Config(BaseModel):
     automatic_processing_enabled: bool = False
     automatic_eject_after_rip: bool = False
     automatic_gemini_ambiguity_fallback: bool = False
+    automatic_gemini_movie_classification: bool = Field(
+        default=False,
+        description="Automatically use Gemini to classify ambiguous TV/Movie titles (consumes API tokens)",
+    )
     automatic_organization_enabled: bool = False
     thediscdb_lookup_enabled: bool = False
     ripweaver_catalogue_enabled: bool = False

@@ -962,10 +962,15 @@ class OrganizeStageAdapter:
         original_source = None
         original_size = None
         original_source_unavailable = False
-        if self.deletion_staging_root is not None and {
-            "original_source_path",
-            "original_source_size_bytes",
-        }.issubset(payload):
+        is_triage = item.media_id.startswith("triage-")
+        if (
+            self.deletion_staging_root is not None
+            and not is_triage
+            and {
+                "original_source_path",
+                "original_source_size_bytes",
+            }.issubset(payload)
+        ):
             try:
                 original_source = Path(str(payload["original_source_path"])).resolve()
                 original_size = int(payload["original_source_size_bytes"])

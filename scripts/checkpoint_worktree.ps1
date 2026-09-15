@@ -75,6 +75,7 @@ try {
         'patch.js',
         'check_drives.py',
         'check_jobs.py',
+        'test_output.txt',
         '**/*.log',
         '.mkv-preflight/**',
         '**/*.mkv',

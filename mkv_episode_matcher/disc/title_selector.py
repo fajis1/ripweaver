@@ -219,6 +219,7 @@ def _apply_selection_hints(
     expected_episode_count: int | None,
     expected_runtime_seconds: int | None,
     runtime_tolerance_seconds: int,
+    content_hint: str | None = None,
 ) -> tuple[list[NormalizedTitle], tuple[str, ...]]:
     if expected_episode_count is not None and expected_episode_count < 1:
         raise TitlePlanError("Expected episode count must be at least 1")
@@ -228,6 +229,10 @@ def _apply_selection_hints(
         raise TitlePlanError("Runtime tolerance must be positive")
 
     if expected_episode_count is None and expected_runtime_seconds is None:
+        if content_hint in ("movie", "mixed") and len(automatic_cluster) == 1:
+            return automatic_cluster, (
+                "Selected the single longest main feature automatically based on movie hint.",
+            )
         return automatic_cluster, (
             "Selected the dominant runtime cluster automatically.",
         )
@@ -432,6 +437,7 @@ def build_title_plan(
     expected_episode_count: int | None = None,
     expected_runtime_seconds: int | None = None,
     runtime_tolerance_seconds: int = 5 * 60,
+    content_hint: str | None = None,
 ) -> DiscTitlePlan:
     """Build a deterministic recommendation without producing execution data."""
 
@@ -445,12 +451,24 @@ def build_title_plan(
         if isinstance(raw_title, dict)
     ]
     automatic_cluster = _episode_cluster(titles)
+    if content_hint in ("movie", "mixed") and not automatic_cluster:
+        eligible = [
+            title
+            for title in titles
+            if title.duration_seconds is not None
+            and title.duration_seconds >= MIN_EPISODE_SECONDS
+        ]
+        if eligible:
+            longest = max(eligible, key=lambda title: title.duration_seconds)
+            automatic_cluster = [longest]
+
     cluster, planning_notes = _apply_selection_hints(
         titles,
         automatic_cluster,
         expected_episode_count=expected_episode_count,
         expected_runtime_seconds=expected_runtime_seconds,
         runtime_tolerance_seconds=runtime_tolerance_seconds,
+        content_hint=content_hint,
     )
     cluster_indexes = {title.index for title in cluster}
     episode_runtime = (
@@ -541,6 +559,7 @@ def load_title_plan(
     expected_episode_count: int | None = None,
     expected_runtime_seconds: int | None = None,
     runtime_tolerance_seconds: int = 5 * 60,
+    content_hint: str | None = None,
 ) -> DiscTitlePlan:
     """Load one saved JSON inventory and produce a plan without changing it."""
 
@@ -558,4 +577,5 @@ def load_title_plan(
         expected_episode_count=expected_episode_count,
         expected_runtime_seconds=expected_runtime_seconds,
         runtime_tolerance_seconds=runtime_tolerance_seconds,
+        content_hint=content_hint,
     )

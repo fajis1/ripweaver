@@ -151,6 +151,17 @@ def _failed_batch_cohorts(  # noqa: C901 - linear identity and prefix guards
         ordinal = int(match.group("ordinal"))
         parent_match = re.fullmatch(r"title-(\d{3})", path.parent.name)
         first_title_index = int(parent_match.group(1)) if parent_match else None
+        largest_possible_ordinal = len(ordered) - 1
+        if (
+            first_title_index is not None
+            and first_title_index != ordered[0].title_index
+        ):
+            largest_possible_ordinal = max(
+                largest_possible_ordinal,
+                max(job.title_index for job in ordered) - first_title_index,
+            )
+        if ordinal > largest_possible_ordinal:
+            continue
         key = (path.parent.resolve(), match.group("prefix"))
         if ordinal in grouped.setdefault(key, {}):
             grouped[key].pop(ordinal, None)
@@ -167,6 +178,7 @@ def _failed_batch_cohorts(  # noqa: C901 - linear identity and prefix guards
         ]
         if (
             first_title_index is not None
+            and first_title_index != ordered[0].title_index
             and all(job.title_index >= first_title_index for job in ordered)
         ):
             # Fresh whole-disc acquisition selects every title in index order.
@@ -175,14 +187,14 @@ def _failed_batch_cohorts(  # noqa: C901 - linear identity and prefix guards
             # ordinals. The isolated batch directory identifies the first
             # original title, allowing that narrowed plan to recover _t01,
             # _t03, etc. without treating its first relevant title as _t00.
-            ordinal_maps.insert(
-                0,
+            # Never fall back to compact ordinals merely because they recover
+            # more files: that would bind another physical title's output.
+            ordinal_maps = [
                 {
                     job.title_index: job.title_index - first_title_index
                     for job in ordered
                 }
-            )
-        best_recovered: dict[int, Path] | None = None
+            ]
         for ordinal_map in ordinal_maps:
             recovered: dict[int, Path] = {}
             accepted_ratios: list[float] = []
@@ -193,8 +205,7 @@ def _failed_batch_cohorts(  # noqa: C901 - linear identity and prefix guards
                         continue
                     break
                 actual_bytes = path.stat().st_size
-                is_short_bypass = job.duration_seconds is not None and job.duration_seconds < 120
-                if is_short_bypass or is_inventory_planned_tiny_output(job.estimated_bytes):
+                if is_inventory_planned_tiny_output(job.estimated_bytes):
                     if not is_complete_batch_output_size(
                         actual_bytes=actual_bytes,
                         estimated_bytes=job.estimated_bytes,
@@ -212,13 +223,9 @@ def _failed_batch_cohorts(  # noqa: C901 - linear identity and prefix guards
                         break
                 recovered[job.title_index] = path
                 accepted_ratios.append(ratio)
-            if best_recovered is None or len(recovered) > len(best_recovered):
-                best_recovered = recovered
-
-        if best_recovered:
-            identity = tuple(sorted(best_recovered.items()))
-            if identity not in seen_cohorts:
-                cohorts.append(best_recovered)
+            identity = tuple(sorted(recovered.items()))
+            if recovered and identity not in seen_cohorts:
+                cohorts.append(recovered)
                 seen_cohorts.add(identity)
     return tuple(cohorts)
 

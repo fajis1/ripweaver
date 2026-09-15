@@ -1,5 +1,54 @@
 # Project Status
 
+## 2026-09-15 - Optical preparation and recovery regression repair
+
+- Restored normal preparation when staged outputs are absent, incomplete, or
+  fail read-only verification. Auto-admission returns no result so the guarded
+  preparation/recovery plan can continue; it no longer emits path-bearing
+  diagnostic exceptions for those expected conditions.
+- Short titles again require the existing inventory-size completion threshold.
+  Runtime below two minutes is not evidence that a partial MKV is complete.
+  Inventory-predicted tiny outputs retain their existing size-aware exception;
+  failed-batch recovery keeps the ordinary content-size cohort checks.
+- Narrowed whole-disc recovery retains original MakeMKV ordinals and never
+  switches to compact ordinals because doing so finds more files. Existing
+  selected-cutoff batch behavior remains intact. Synthetic regression tests
+  cover an absent later ordinal and similarly sized wrong-title candidates.
+- Checkpoints now exclude the ad-hoc `test_output.txt` log, preserving it locally
+  without publishing test diagnostics.
+- Validation: all 1,176 tests pass with coverage disabled, including the new
+  partial-size and ordinal regressions, existing fresh-disc preparation, drive
+  ownership/refresh tests, and TV/movie identification tests. Focused Ruff checks
+  pass for the size/recovery modules and regression tests. Existing unrelated
+  uncommitted formatting/lint findings remain outside this repair.
+
+### Movie routing investigation (saved state only)
+
+A saved movie-disc incident has two distinct identification stops. An earlier
+extras-hinted attempt retained the main feature and two extras at
+`gemini_evidence_required`. A later attempt admitted additional titles with no
+content hint or season, then entered TV all-season analysis and stopped with
+`all_season_analysis_failed`. The application log records only
+`PipelineQueueError`, so the exact underlying provider/catalogue error is not
+recoverable from that diagnostic alone.
+
+The source explains the routing risk: `IdentifyStageAdapter` treats a missing
+hint as TV-first, and automatic TV context accepts a release name without a
+season. The descriptive movie/extras fallback occurs after TV catalogue
+resolution, so an early catalogue failure cannot reach it. The extras worker
+branch records the Gemini evidence choice without executing the analysis.
+The existing uncommitted movie-classifier worker is also incomplete: its
+movie/mixed source review codes are not accepted by `choose_review_path`.
+
+The three optical/recovery repairs do not alter TV identification policy,
+movie-routing policy, automatic provider authority, or the live queue. Follow-up
+movie work should resolve unknown content before TV dispatch, retain per-title
+movie/extra distinctions, and allow bounded evidence-based alternate routes
+without weakening TV confidence, range, or whole-disc coherence checks. Test
+the durable review transitions and worker handoff together before enabling
+automatic classification. No disc/media reads or provider requests were used
+for this diagnosis, and no held live item was retried or changed.
+
 > [!CAUTION]
 > **FRONTEND CODE LOSS ALERT (2026-08-23)**
 > Approximately 1,200 lines of uncommitted frontend changes (implementing the "Existing rip recovery" UI) in `mkv_episode_matcher/frontend/src/components/RipPipelineView.tsx` were accidentally wiped out via a `git checkout` command.

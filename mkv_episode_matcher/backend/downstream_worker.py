@@ -165,16 +165,45 @@ class DownstreamWorker:
         self._thread = None
 
     def _apply_automatic_fallback(self, item) -> None:
-        if (
-            item.review_code == "special_feature_evidence_required"
-            and get_config_manager().load().automatic_gemini_ambiguity_fallback
-        ):
+        if not get_config_manager().load().automatic_gemini_ambiguity_fallback:
+            return
+        if item.review_code == "special_feature_evidence_required":
             # This records the opted-in fallback path only. Evidence
             # preparation and every external provider call remain separate
             # guarded operations.
             self.dispatcher.store.choose_review_path(
                 item.media_id, "gemini_evidence_required"
             )
+        elif (
+            item.review_code in ("mixed_classifier_identification_required", "movie_identification_required")
+            and getattr(get_config_manager().load(), "automatic_gemini_movie_classification", False)
+        ):
+            self.dispatcher.store.choose_review_path(
+                item.media_id, "gemini_analysis_running"
+            )
+            
+            # Fire the Gemini analysis in a separate thread so we don't block the worker loop
+            def run_gemini():
+                from mkv_episode_matcher.backend.gemini_fallback import execute_gemini_fallback
+                from mkv_episode_matcher.backend.dependencies import get_pipeline_contract_root, get_engine
+                from loguru import logger
+                
+                try:
+                    execute_gemini_fallback(
+                        self.dispatcher.store,
+                        (item.media_id,),
+                        get_config_manager().load(),
+                        get_engine().asr,
+                        get_pipeline_contract_root(),
+                    )
+                except Exception as exc:
+                    logger.error("Automatic Gemini classification failed: {}", exc)
+                    try:
+                        self.dispatcher.store.choose_review_path(item.media_id, "gemini_provider_failed")
+                    except Exception:
+                        pass
+                        
+            threading.Thread(target=run_gemini, name="gemini-auto-classifier", daemon=True).start()
 
     def _apply_post_item_automation(self, item) -> bool:
         """Run item and completed-disc fallbacks without waiting for queue idle."""
