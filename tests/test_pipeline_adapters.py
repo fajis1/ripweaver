@@ -53,6 +53,54 @@ def _routing(role="tv"):
     )
 
 
+@pytest.mark.parametrize(
+    "hint,evidence,title_index,expected",
+    [
+        ("movie", ((0, "tv", "database"),), 0, "unmatched_disc_analysis_required"),
+        ("tv", ((0, "movie", "content"),), 0, "movie_identification_required"),
+        ("tv", ((0, "tv", "label"), (0, "movie", "content")), 0, "movie_identification_required"),
+        ("movie", ((0, "tv", "database"), (0, "movie", "database")), 0, "mixed_classifier_identification_required"),
+        ("tv", ((0, "tv", "database"), (1, "movie", "content"), (2, "extras", "content")), 1, "movie_identification_required"),
+        ("tv", ((0, "tv", "database"), (1, "movie", "content"), (2, "extras", "content")), 2, "special_feature_evidence_required"),
+        ("movie", ((0, "tv", "database"), (1, "movie", "content"), (2, "extras", "content")), 0, "unmatched_disc_analysis_required"),
+    ],
+)
+def test_conflicting_routes_survive_store_and_queue_restart(
+    tmp_path, hint, evidence, title_index, expected
+):
+    from mkv_episode_matcher.disc.routing_store import DiscRoutingStore
+
+    routing_path = tmp_path / "routing.sqlite3"
+    proposed = DiscRoutingAssessment(
+        "0123456789abcdef", tuple(sorted({row[0] for row in evidence})),
+        user_hint=hint, evidence=tuple(TitleRoutingEvidence(*row) for row in evidence),
+    )
+    DiscRoutingStore(routing_path).append(proposed, expected_revision=0)
+    saved = DiscRoutingStore(routing_path).latest(proposed.inventory_fingerprint)
+    assert saved.user_hint == hint
+    source = tmp_path / "synthetic.mkv"
+    source.write_bytes(b"synthetic")
+    contract = tmp_path / "verified.json"
+    contract.write_text(json.dumps({
+        "mode": "verified-rip-contract", "source_path": str(source),
+        "source_size_bytes": source.stat().st_size, "title_index": title_index,
+        "disc_fingerprint": saved.inventory_fingerprint,
+        "media_context": {
+            "series_name": "Synthetic Release", "content_hint": hint,
+            "routing_assessment": saved.to_dict(),
+            "routing_assessment_revision": saved.revision,
+            "routing_assessment_digest": saved.digest,
+        },
+    }), encoding="utf-8")
+    queue_path = tmp_path / "queue.sqlite3"
+    PipelineQueueStore(queue_path).enqueue_verified_rip("synthetic", build_artifact("rip", contract))
+    item = PipelineQueueStore(queue_path).claim_next()
+    # No season is supplied: only the TV role may request disc-level TV analysis.
+    # Any unexpected legacy matching call fails because this engine has no API.
+    with pytest.raises(PipelineReviewRequiredError, match=f"^{expected}$"):
+        IdentifyStageAdapter(object(), tmp_path / "contracts")(item)
+
+
 def test_identify_adapter_honors_persisted_movie_routing_assessment(tmp_path):
     source = tmp_path / "source.mkv"
     source.write_bytes(b"synthetic")

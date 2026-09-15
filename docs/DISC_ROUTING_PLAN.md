@@ -129,6 +129,25 @@ Deliverable: independently tested foundation; no new production routing yet.
 
 ## Progress log
 
+### R1 conflict tests - implemented and run
+
+- Added seven parameterized integration cases using actual routing SQLite
+  persistence, reopening the store, serialized verified contracts, durable queue
+  admission/reopening/claiming, and IdentifyStageAdapter. Covers movie hint vs
+  TV database evidence, TV hint vs movie content, label vs stronger content,
+  equal-strength conflicts, and each TV/movie/extras title in a mixed disc.
+- Extended the actual database-backed drive preparation regression to run with
+  an explicit conflicting movie hint. The hint is preserved and trusted title
+  evidence remains TV. Existing preparation-through-identify hint tests remain.
+- Validation completed: 87 adapter/preparation tests passed (exit 0); Ruff
+  passed for both changed test modules. No live media/provider/disc operation.
+- Coverage limit: content evidence cases seed the persisted assessment directly.
+  They verify consumers and restart persistence, not a Gemini-to-assessment
+  producer. Production currently does not append Gemini content evidence to
+  routing revisions. Keep R1's full end-to-end gate open until that connection
+  is implemented/tested with R3; do not describe these as complete real
+  preparation-to-provider-to-reassessment tests. R2 remains the next repair.
+
 ### Review repairs - R6 revision stability completed
 
 - Pulled R6 forward because stable revisions are a prerequisite for R3 retry

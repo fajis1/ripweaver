@@ -1574,8 +1574,9 @@ def test_faerie_drive_preparation_requires_fresh_cross_season_analysis(
     assert context.episode_assignments == ()
 
 
+@pytest.mark.parametrize("hint", [None, "movie"])
 def test_drive_preparation_uses_thediscdb_episode_assignments_when_enabled(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, hint
 ):
     executable = tmp_path / "makemkvcon64.exe"
     executable.write_bytes(b"synthetic")
@@ -1622,7 +1623,7 @@ def test_drive_preparation_uses_thediscdb_episode_assignments_when_enabled(
     private = PrivateBindingStore(tmp_path / "private.sqlite3")
 
     response = rip.prepare_drive_pipeline(
-        rip.PrepareDrivePipelineRequest(drive_index=0, confirm_read=True),
+        rip.PrepareDrivePipelineRequest(drive_index=0, content_hint=hint, confirm_read=True),
         "prepare-thediscdb-test-0001",
         watcher,
         OrchestrationStore(tmp_path / "public.sqlite3"),
@@ -1636,7 +1637,12 @@ def test_drive_preparation_uses_thediscdb_episode_assignments_when_enabled(
     assert context.series_name == "Example Series"
     assert context.season == 2
     assert context.tmdb_id == 123
-    assert context.content_hint == "tv"
+    assert context.content_hint == (hint or "tv")
+    from mkv_episode_matcher.disc.routing import DiscRoutingAssessment
+
+    routing = DiscRoutingAssessment.from_dict(context.routing_assessment)
+    assert routing.user_hint == hint
+    assert routing.title_routes()[0].role == "tv"
     assert context.disc_metadata_source == "thediscdb"
     assert context.disc_metadata_status == "matched"
     assert context.disc_metadata_matched_title_count == 1
