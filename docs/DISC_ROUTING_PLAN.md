@@ -152,6 +152,23 @@ Deliverable: independently tested foundation; no new production routing yet.
   preparation and bind the expected revision to job creation, then implement
   the bounded alternate-route controller.
 
+### 2026-09-15 — Phase 3 bounded alternate-route controller
+
+- Added `disc/routing_controller.py` with an immutable `RouteAttempt` record and
+  deterministic `next_route` selection for one title and assessment revision.
+- A matched title stops routing. A provider/service failure also stops routing
+  and remains reviewable; only a genuine no-match or review result permits the
+  next configured route. A route cannot repeat within one revision, while a new
+  assessment revision gets a fresh bounded route history.
+- The controller operates on the persisted assessment's per-title route order,
+  so wrong hints do not force a route and unknown/conflicting titles begin with
+  the classifier. It performs no provider, media, queue, or execution work.
+- Added synthetic tests for unknown, movie/TV alternates, provider failure,
+  matched completion, repeated routes, old revisions, invalid history, and
+  revision changes. Controller, routing, and adapter tests pass (79 tests).
+- Next: integrate route attempts with the durable worker and provider result
+  boundaries, including movie-with-extras and early TV-catalogue failure cases.
+
 ### 2026-09-15 — Phase 2 durable preparation persistence
 
 - Preparation now writes the path-free assessment to the explicit local
