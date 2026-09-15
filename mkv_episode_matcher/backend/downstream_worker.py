@@ -179,67 +179,47 @@ class DownstreamWorker:
         if not get_config_manager().load().automatic_gemini_ambiguity_fallback:
             return
         if item.review_code == "special_feature_evidence_required":
-            # This records the opted-in fallback path only. Evidence
-            # preparation and every external provider call remain separate
-            # guarded operations.
-            self.dispatcher.store.choose_review_path(
-                item.media_id, "gemini_evidence_required"
-            )
+            self._start_automatic_gemini_route(item, "extras", "gemini_evidence_required")
         elif item.review_code in (
             "mixed_classifier_identification_required",
             "movie_identification_required",
         ) and getattr(
             get_config_manager().load(), "automatic_gemini_movie_classification", False
         ):
-            prior = self._automatic_route_tasks.get(item.media_id)
-            if prior is not None and prior.is_alive():
-                return
-            self.dispatcher.store.choose_review_path(
-                item.media_id, "gemini_analysis_running"
+            self._start_automatic_gemini_route(item, "mixed-classifier", "gemini_analysis_running")
+
+    def _start_automatic_gemini_route(self, item, route: str, running_code: str) -> None:
+        prior = self._automatic_route_tasks.get(item.media_id)
+        if prior is not None and prior.is_alive():
+            return
+        self.dispatcher.store.choose_review_path(item.media_id, running_code)
+
+        def run_gemini():
+            from loguru import logger
+            from mkv_episode_matcher.backend.dependencies import (
+                get_engine,
+                get_pipeline_contract_root,
             )
-
-            # Fire the Gemini analysis in a separate thread so we don't block the worker loop
-            def run_gemini():
-                from loguru import logger
-
-                from mkv_episode_matcher.backend.dependencies import (
-                    get_engine,
-                    get_pipeline_contract_root,
+            from mkv_episode_matcher.backend.gemini_fallback import (
+                execute_gemini_fallback,
+            )
+            try:
+                result = execute_gemini_fallback(
+                    self.dispatcher.store, (item.media_id,), get_config_manager().load(),
+                    get_engine().asr, get_pipeline_contract_root(),
                 )
-                from mkv_episode_matcher.backend.gemini_fallback import (
-                    execute_gemini_fallback,
-                )
-
+                self._record_routing_attempt(item, route, "matched" if item.media_id in result else "no_match")
+            except Exception as exc:
+                logger.error("Automatic Gemini route failed: {}", exc)
+                self._record_routing_attempt(item, route, "service_failed")
                 try:
-                    result = execute_gemini_fallback(
-                        self.dispatcher.store,
-                        (item.media_id,),
-                        get_config_manager().load(),
-                        get_engine().asr,
-                        get_pipeline_contract_root(),
-                    )
-                    self._record_routing_attempt(
-                        item,
-                        "mixed-classifier",
-                        "matched" if item.media_id in result else "no_match",
-                    )
-                except Exception as exc:
-                    logger.error("Automatic Gemini classification failed: {}", exc)
-                    self._record_routing_attempt(
-                        item, "mixed-classifier", "service_failed"
-                    )
-                    try:
-                        self.dispatcher.store.choose_review_path(
-                            item.media_id, "gemini_provider_failed"
-                        )
-                    except Exception:
-                        pass
+                    self.dispatcher.store.choose_review_path(item.media_id, "gemini_provider_failed")
+                except Exception:
+                    pass
 
-            task = threading.Thread(
-                target=run_gemini, name="gemini-auto-classifier", daemon=True
-            )
-            self._automatic_route_tasks[item.media_id] = task
-            task.start()
+        task = threading.Thread(target=run_gemini, name="gemini-auto-route", daemon=True)
+        self._automatic_route_tasks[item.media_id] = task
+        task.start()
 
     @staticmethod
     def _record_routing_attempt(item, route: str, outcome: str) -> None:

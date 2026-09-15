@@ -223,3 +223,15 @@ Deliverable: independently tested foundation; no new production routing yet.
 - The remaining Phase 2 work is to persist the assessment in the explicit
   routing store and make the identify adapter consume its revision before any
   route starts. That handoff is deliberately not enabled yet.
+
+### 2026-09-15 - Phase 4 alternate extras execution
+
+- Automatic fallback now executes the approved Gemini route for
+  `special_feature_evidence_required` items instead of merely relabeling them.
+  It uses bounded per-item task tracking, records `extras` route outcomes, and
+  converts provider failures to explicit review without touching the TV path.
+- The existing ambiguity-fallback setting remains the opt-in gate; disabled
+  fallback leaves the item in explicit review. Focused worker/controller tests
+  pass (23 tests).
+- Next: add synthetic end-to-end extras outcome tests and address early TV
+  catalogue failure handoff to the unified classifier.
