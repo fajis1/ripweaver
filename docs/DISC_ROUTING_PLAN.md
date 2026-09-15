@@ -248,3 +248,15 @@ Deliverable: independently tested foundation; no new production routing yet.
   pass (50 tests).
 - Remaining: add direct synthetic assertions for extras provider outcomes and
   validate the complete persisted assessment-to-worker transition.
+
+### 2026-09-15 - Phase 4 persisted transition tests
+
+- Added synthetic worker tests for extras Gemini success, no-match, and
+  provider-failure outcomes. Each test seeds an immutable routing revision,
+  runs the worker task synchronously with a fake provider, verifies review
+  transitions, and reads the persisted route attempt.
+- This confirms the assessment-to-worker-to-routing-store handoff without
+  accessing media, providers, or optical drives. The focused worker suite now
+  passes 20 tests; modified-module Ruff checks pass.
+- Next: run the broader routing/identification suite and review any remaining
+  movie-with-extras admission gaps before finalizing this phase.

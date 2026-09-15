@@ -1,10 +1,78 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from mkv_episode_matcher.backend.downstream_worker import (
     DownstreamWorker,
     _contract_disc_title_identity,
 )
+
+
+@pytest.mark.parametrize(
+    ("result_ids", "error", "expected_outcome", "expected_review"),
+    [(("movie-1",), None, "matched", None), ((), None, "no_match", None),
+     ((), RuntimeError("provider"), "service_failed", "gemini_provider_failed")],
+)
+def test_automatic_extras_route_persists_provider_outcome(
+    tmp_path, monkeypatch, result_ids, error, expected_outcome, expected_review
+):
+    fingerprint = "0123456789abcdef"
+    contract = tmp_path / "contract.json"
+    contract.write_text(json.dumps({
+        "title_index": 1,
+        "media_context": {"routing_assessment": {
+            "inventory_fingerprint": fingerprint, "revision": 1,
+        }},
+    }), encoding="utf-8")
+    transitions = []
+    store = SimpleNamespace(
+        choose_review_path=lambda media_id, code: transitions.append((media_id, code)),
+    )
+    item = SimpleNamespace(
+        media_id="movie-1", review_code="special_feature_evidence_required",
+        artifact=SimpleNamespace(contract_path=contract),
+    )
+    config = SimpleNamespace(
+        automatic_gemini_ambiguity_fallback=True,
+        automatic_gemini_movie_classification=False,
+        cache_dir=tmp_path / "cache",
+    )
+    from mkv_episode_matcher.disc.routing import DiscRoutingAssessment
+    from mkv_episode_matcher.disc.routing_store import DiscRoutingStore
+    routing_store = DiscRoutingStore(config.cache_dir.parent / "orchestration" / "disc-routing.sqlite3")
+    routing_store.append(
+        DiscRoutingAssessment(fingerprint, (1,), None, (), 1), expected_revision=0
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
+        lambda: SimpleNamespace(load=lambda: config),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.gemini_fallback.execute_gemini_fallback",
+        lambda *args: (_ for _ in ()).throw(error) if error else result_ids,
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_engine",
+        lambda: SimpleNamespace(asr=None),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root",
+        lambda: tmp_path,
+    )
+
+    class ImmediateThread:
+        def __init__(self, target, **kwargs): self.target = target
+        def is_alive(self): return False
+        def start(self): self.target()
+    monkeypatch.setattr("mkv_episode_matcher.backend.downstream_worker.threading.Thread", ImmediateThread)
+    worker = DownstreamWorker(SimpleNamespace(store=store), allowed_stages=("identify",))
+    worker._apply_automatic_fallback(item)
+    assert transitions[0] == ("movie-1", "gemini_evidence_required")
+    if expected_review:
+        assert transitions[-1] == ("movie-1", expected_review)
+    attempts = routing_store.attempts(fingerprint, 1, 1)
+    assert attempts[-1].outcome == expected_outcome
 
 
 def test_worker_quarantines_legacy_sequence_only_downstream_assignments(
