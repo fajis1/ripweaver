@@ -180,6 +180,20 @@ class DownstreamWorker:
             return
         if item.review_code == "special_feature_evidence_required":
             self._start_automatic_gemini_route(item, "extras", "gemini_evidence_required")
+        elif item.review_code == "all_season_analysis_failed":
+            # A catalogue outage must not force every title back through TV.
+            # Only an already-persisted movie/mixed assessment may opt into the
+            # classifier; legacy TV contracts remain explicit review.
+            try:
+                payload = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
+                assessment = payload.get("routing_assessment")
+                composition = assessment.get("composition") if isinstance(assessment, dict) else None
+            except (OSError, json.JSONDecodeError, AttributeError):
+                composition = None
+            if composition in {"movies", "movies_with_extras", "mixed", "unknown"} and getattr(
+                get_config_manager().load(), "automatic_gemini_movie_classification", False
+            ):
+                self._start_automatic_gemini_route(item, "mixed-classifier", "gemini_analysis_running")
         elif item.review_code in (
             "mixed_classifier_identification_required",
             "movie_identification_required",
@@ -196,6 +210,7 @@ class DownstreamWorker:
 
         def run_gemini():
             from loguru import logger
+
             from mkv_episode_matcher.backend.dependencies import (
                 get_engine,
                 get_pipeline_contract_root,

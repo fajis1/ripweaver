@@ -235,3 +235,16 @@ Deliverable: independently tested foundation; no new production routing yet.
   pass (23 tests).
 - Next: add synthetic end-to-end extras outcome tests and address early TV
   catalogue failure handoff to the unified classifier.
+
+### 2026-09-15 - Phase 4 catalogue-failure guard
+
+- An `all_season_analysis_failed` item may now enter the bounded mixed
+  classifier only when its immutable routing assessment says `movies`,
+  `movies_with_extras`, `mixed`, or `unknown`, and movie classification is
+  explicitly enabled. Legacy TV contracts remain review-only, preventing a
+  catalogue outage from silently changing the working TV pipeline.
+- The handoff reuses the existing per-item task tracking and durable route
+  outcome recording. Synthetic worker, automatic-rip, and controller tests
+  pass (50 tests).
+- Remaining: add direct synthetic assertions for extras provider outcomes and
+  validate the complete persisted assessment-to-worker transition.
