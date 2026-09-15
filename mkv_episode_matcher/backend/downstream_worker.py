@@ -18,12 +18,15 @@ from mkv_episode_matcher.pipeline_queue import DownstreamDispatcher, PipelineQue
 _DISC_TITLE_ID = re.compile(
     r"-disc-\d+-([0-9a-f]{16})-title-(\d{3})(?:-|$)", re.IGNORECASE
 )
-_AUTOMATIC_DISC_COORDINATOR_CODES = _AUTOMATIC_UNMATCHED_CODES | frozenset({
-    "all_season_analysis_running",
-}) | _AUTOMATIC_DISC_RETRY_CODES
-_AUTOMATIC_DISC_IMMEDIATE_CODES = (
+_AUTOMATIC_DISC_COORDINATOR_CODES = (
     _AUTOMATIC_UNMATCHED_CODES
-    - frozenset({"all_season_sequence_review_required"})
+    | frozenset({
+        "all_season_analysis_running",
+    })
+    | _AUTOMATIC_DISC_RETRY_CODES
+)
+_AUTOMATIC_DISC_IMMEDIATE_CODES = (
+    _AUTOMATIC_UNMATCHED_CODES - frozenset({"all_season_sequence_review_required"})
     | _AUTOMATIC_DISC_RETRY_CODES
 )
 
@@ -146,6 +149,7 @@ class DownstreamWorker:
         self._automatic_analysis_attempts: set[tuple[str, tuple[int, ...]]] = set()
         self._version_coexistence_reconciled = False
         self._legacy_sequence_assignments_reconciled = False
+        self._automatic_route_tasks: dict[str, threading.Thread] = {}
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -163,6 +167,13 @@ class DownstreamWorker:
         if self._thread is not None:
             self._thread.join(timeout=max(2.0, self.poll_seconds * 2))
         self._thread = None
+        # Route tasks are bounded provider work. Do not launch a second task for
+        # the same item while an earlier attempt is still settling.
+        self._automatic_route_tasks = {
+            media_id: task
+            for media_id, task in self._automatic_route_tasks.items()
+            if task.is_alive()
+        }
 
     def _apply_automatic_fallback(self, item) -> None:
         if not get_config_manager().load().automatic_gemini_ambiguity_fallback:
@@ -174,18 +185,31 @@ class DownstreamWorker:
             self.dispatcher.store.choose_review_path(
                 item.media_id, "gemini_evidence_required"
             )
-        elif (
-            item.review_code in ("mixed_classifier_identification_required", "movie_identification_required")
-            and getattr(get_config_manager().load(), "automatic_gemini_movie_classification", False)
+        elif item.review_code in (
+            "mixed_classifier_identification_required",
+            "movie_identification_required",
+        ) and getattr(
+            get_config_manager().load(), "automatic_gemini_movie_classification", False
         ):
+            prior = self._automatic_route_tasks.get(item.media_id)
+            if prior is not None and prior.is_alive():
+                return
             self.dispatcher.store.choose_review_path(
                 item.media_id, "gemini_analysis_running"
             )
+
             # Fire the Gemini analysis in a separate thread so we don't block the worker loop
             def run_gemini():
-                from mkv_episode_matcher.backend.gemini_fallback import execute_gemini_fallback
-                from mkv_episode_matcher.backend.dependencies import get_pipeline_contract_root, get_engine
                 from loguru import logger
+
+                from mkv_episode_matcher.backend.dependencies import (
+                    get_engine,
+                    get_pipeline_contract_root,
+                )
+                from mkv_episode_matcher.backend.gemini_fallback import (
+                    execute_gemini_fallback,
+                )
+
                 try:
                     execute_gemini_fallback(
                         self.dispatcher.store,
@@ -197,10 +221,17 @@ class DownstreamWorker:
                 except Exception as exc:
                     logger.error("Automatic Gemini classification failed: {}", exc)
                     try:
-                        self.dispatcher.store.choose_review_path(item.media_id, "gemini_provider_failed")
+                        self.dispatcher.store.choose_review_path(
+                            item.media_id, "gemini_provider_failed"
+                        )
                     except Exception:
                         pass
-            threading.Thread(target=run_gemini, name="gemini-auto-classifier", daemon=True).start()
+
+            task = threading.Thread(
+                target=run_gemini, name="gemini-auto-classifier", daemon=True
+            )
+            self._automatic_route_tasks[item.media_id] = task
+            task.start()
 
     def _apply_post_item_automation(self, item) -> bool:
         """Run item and completed-disc fallbacks without waiting for queue idle."""

@@ -169,6 +169,19 @@ Deliverable: independently tested foundation; no new production routing yet.
 - Next: integrate route attempts with the durable worker and provider result
   boundaries, including movie-with-extras and early TV-catalogue failure cases.
 
+### 2026-09-15 — Phase 4 worker handoff guard
+
+- The automatic movie/mixed Gemini route task now has per-item in-process task
+  tracking. Repeated queue polls cannot start duplicate provider tasks for one
+  title while an earlier route is settling.
+- Worker shutdown retains only still-running task references; no task is
+  re-launched merely because the queue was polled again. Provider exceptions
+  remain typed review outcomes and do not silently switch the TV pipeline.
+- Existing worker, adapter, routing-controller, and TV identification tests pass
+  (66 focused tests), and modified-module Ruff checks pass. This guard does not
+  yet attach durable route-attempt history; that remains the next integration
+  step before enabling broader automatic movie classification.
+
 ### 2026-09-15 — Phase 2 durable preparation persistence
 
 - Preparation now writes the path-free assessment to the explicit local
