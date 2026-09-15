@@ -196,6 +196,25 @@ Deliverable: independently tested foundation; no new production routing yet.
   The existing job and staged files still require a read-only operational review
   and a fresh saved inventory before any separately authorized recovery.
 
+### 2026-09-15 - R4/R5 lifecycle and outcome validation
+
+- The worker now executes automatic Gemini work under the shared downstream
+  identification lock, checks pause/stop state before claiming work, and uses
+  the durable route claim before provider execution. This prevents duplicate
+  route claims and keeps identification work serialized with the existing TV
+  coordinator.
+- Queue restart reconciliation already converts interrupted Gemini work to
+  `gemini_analysis_interrupted` while preserving a paused queue. Provider
+  outcomes are reported through a callback so visual review is recorded as
+  `review`, while accepted assignments are recorded as `matched`.
+- Added synthetic tests for paused/stopped worker admission, restart-safe route
+  claims, concurrent claims, visual review, provider failure, and persisted
+  movie/extras evidence. Focused lifecycle/routing suites pass: **100 tests**;
+  Ruff passes for the changed modules.
+- R4/R5 are implemented for the current queue boundary. A live canary remains
+  prohibited until the exact Short Circuit 2 inventory and recovery plan are
+  reviewed separately.
+
 ### R1 conflict tests - implemented and run
 
 - Added seven parameterized integration cases using actual routing SQLite
