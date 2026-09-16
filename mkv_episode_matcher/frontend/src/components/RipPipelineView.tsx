@@ -4085,6 +4085,7 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                 .sort((left, right) => left - right);
               const inventoryRecoveryJob = missingInventoryTitleIndexes.length > 0
                 && inventoryPlanJob?.state === 'awaiting_review'
+                && Boolean(failedRipJob)
                 ? inventoryPlanJob
                 : undefined;
               const currentReviewRecoveryJob = (job?.state === 'awaiting_review' || (job?.state === 'queued' && job.executor_attached === false))

@@ -549,3 +549,12 @@ Deliverable: independently tested foundation; no new production routing yet.
 - Eject/reinsert was needed only to refresh the detached cached identity; the
   current fingerprint was restored and the new plan was created. Next is an
   explicit review/authorization of the 11-title physical plan before ripping.
+
+### 2026-09-16 - Dashboard correction served
+
+- The current checkout is running with automatic work held and serves the
+  rebuilt frontend bundle.
+- The sole Short Circuit 2 job remains `awaiting_review` with 11 acquisition
+  jobs; its persisted substantial routing scope remains `[0,2,3,4,5,6,7]`.
+- Queue pause and startup hold remain active. No rip or provider work has
+  started. Refresh the browser fully before reviewing the plan.
