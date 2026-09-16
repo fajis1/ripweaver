@@ -535,3 +535,17 @@ Deliverable: independently tested foundation; no new production routing yet.
 - The current 11-title awaiting-review job predates this correction. It must be
   cleared as metadata only and freshly prepared before any execution decision;
   no MKVs are present to delete and no rerip should be selected.
+
+### 2026-09-15 - Fresh scope verified after reinsertion
+
+- The owner reinserted the disc. Manual restart initially launched the stale
+  packaged checkout again; it was replaced with this workspace's server.
+- After clearing one stale awaiting-review job (no staged MKVs existed), fresh
+  automatic preparation completed successfully. The physical plan contains all
+  11 MakeMKV titles and remains non-authorized/awaiting review.
+- Persisted downstream matching and recovery scopes are exactly
+  `[0,2,3,4,5,6,7]`: all substantial titles, with four tiny navigation titles
+  excluded. The durable queue remains paused and no rip has executed.
+- Eject/reinsert was needed only to refresh the detached cached identity; the
+  current fingerprint was restored and the new plan was created. Next is an
+  explicit review/authorization of the 11-title physical plan before ripping.

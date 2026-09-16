@@ -2162,6 +2162,8 @@ def prepare_drive_pipeline(  # noqa: C901
             unknown_disc_scope = tuple(
                 decision.title.index
                 for decision in select_rippable_titles(episode_plan)
+                if decision.title.duration_seconds is not None
+                and decision.title.duration_seconds >= DEFAULT_SHORT_TITLE_REVIEW_SECONDS
             )
             selected_title_indexes = unknown_disc_scope
             recovery_title_indexes = unknown_disc_scope

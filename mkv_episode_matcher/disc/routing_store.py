@@ -79,6 +79,27 @@ class DiscRoutingStore:
             ).fetchone()
             return self._decode(row) if row is not None else None
 
+    def forget(self, fingerprint: str) -> tuple[int, int]:
+        """Remove routing revisions and attempts for one explicitly forgotten disc."""
+        with self._connect() as connection:
+            revisions = connection.execute(
+                "SELECT COUNT(*) FROM disc_routing_revisions WHERE inventory_fingerprint=?",
+                (fingerprint,),
+            ).fetchone()[0]
+            attempts = connection.execute(
+                "SELECT COUNT(*) FROM disc_routing_attempts WHERE inventory_fingerprint=?",
+                (fingerprint,),
+            ).fetchone()[0]
+            connection.execute(
+                "DELETE FROM disc_routing_attempts WHERE inventory_fingerprint=?",
+                (fingerprint,),
+            )
+            connection.execute(
+                "DELETE FROM disc_routing_revisions WHERE inventory_fingerprint=?",
+                (fingerprint,),
+            )
+            return int(revisions), int(attempts)
+
     def append(
         self,
         assessment: DiscRoutingAssessment,
