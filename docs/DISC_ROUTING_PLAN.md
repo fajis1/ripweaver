@@ -451,3 +451,32 @@ Deliverable: independently tested foundation; no new production routing yet.
 - Remaining work is operational validation with a newly saved Short Circuit 2
   inventory/log bundle and separate authorization; code changes are not a
   substitute for that live diagnostic.
+
+### 2026-09-15 - Authorized live reset; fresh-disc validation not started
+
+- The owner explicitly approved permanent deletion after reviewing seven
+  retained staging MKVs (title indexes 0, 2, 3, 4, 5, 6, 7; 36,227,319,850
+  bytes) and this disc's saved state. Deleted only those exact files after
+  verifying original contract hashes, fingerprint, sizes, staging containment,
+  exclusion from encoded/library roots, paused queue, and inactive rip work.
+- Dashboard drive numbers are not MakeMKV/API indexes. Resolve the current
+  mapping from cached drive status and verify the exact fingerprint; do not
+  reuse a historical ordinal. The earlier identity refusal was a mapping error.
+- The built-in media deletion preview returned zero files because these legacy
+  filenames lack the fingerprint marker. Exact contract-bound files were
+  deleted separately, then the guarded metadata-only forget API removed one
+  completed job, its private binding, and eleven queue records.
+- Read-only verification confirmed zero remaining disc jobs, queue records,
+  title history, skip dispositions, matching scopes, and recovery scopes.
+  Cached identity was detached. No routing database existed at the checked
+  default application orchestration location. Historical evidence/contracts
+  were not purged; no unrelated media or library files were targeted.
+- Queue remains paused and automatic processing disabled. No physical disc
+  scan, rerip, Gemini call, transcode, organization, or eject was performed.
+  The deleted MKVs were not sent to the Recycle Bin; recovery requires another
+  rip or an independent backup.
+- Next: verify the running backend contains the intended routing changes,
+  prepare a fresh inventory through the application's confirmed read boundary,
+  review the exact rip scope, and obtain execution authorization. This reset
+  does not establish that the new live automatic pipeline works and does not
+  complete the unfinished general legacy-reassessment feature.
