@@ -4560,6 +4560,8 @@ The test-worktree compatibility audit is now complete. Its plan records which
 earlier routing ideas are reusable and which old file edits must not be copied
 over this branch's triage and recovery changes. The next phase is a new
 persisted-assessment design integrated with this branch's existing contracts.
-The implementation is now broken into M0–M7 gates in that plan; M0 and the
-synthetic fresh-preparation prerequisite M1 are complete, while M2–M7 remain
-unimplemented and the live canary remains separately authorization-gated.
+The implementation is broken into M0–M7 gates in that plan. M0–M2 now pass
+synthetic validation in the active test worktree, including a queue-owned
+routing assessment foundation. No production preparation, identification,
+Gemini, or worker path consumes that foundation yet; M3–M7 and the separately
+authorization-gated live canary remain outstanding.

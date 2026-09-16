@@ -8,7 +8,7 @@ import re
 import sqlite3
 import threading
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from uuid import uuid4
@@ -21,6 +21,7 @@ from mkv_episode_matcher.disc.ripper import (
     resolve_final_output,
     resolve_job_output,
 )
+from mkv_episode_matcher.disc.routing import DiscAssessment, RouteAttempt, RoutingError
 from mkv_episode_matcher.pipeline import PipelineArtifact
 
 
@@ -611,6 +612,21 @@ class PipelineQueueStore:
                     required_title_indexes_json TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS disc_routing_revisions (
+                    disc_fingerprint TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    assessment_json TEXT NOT NULL,
+                    assessment_sha256 TEXT NOT NULL,
+                    PRIMARY KEY (disc_fingerprint, revision)
+                );
+                CREATE TABLE IF NOT EXISTS disc_route_attempts (
+                    disc_fingerprint TEXT NOT NULL,
+                    title_index INTEGER NOT NULL,
+                    revision INTEGER NOT NULL,
+                    route TEXT NOT NULL,
+                    outcome TEXT NOT NULL,
+                    PRIMARY KEY (disc_fingerprint, title_index, revision, route)
+                );
                 """
             )
             matching_columns = {
@@ -695,6 +711,234 @@ class PipelineQueueStore:
                 "SELECT media_id, classification FROM silent_video_reviews"
             ).fetchall()
         return {row["media_id"]: row["classification"] for row in rows}
+
+    @staticmethod
+    def _decode_routing_assessment(row: sqlite3.Row) -> DiscAssessment:
+        try:
+            assessment = DiscAssessment.from_dict(json.loads(row["assessment_json"]))
+        except (ValueError, TypeError) as exc:
+            raise RoutingError("Stored routing assessment is invalid") from exc
+        if (
+            assessment.digest != row["assessment_sha256"]
+            or assessment.inventory_fingerprint != row["disc_fingerprint"]
+            or assessment.revision != row["revision"]
+        ):
+            raise RoutingError("Stored routing identity is invalid")
+        return assessment
+
+    def _latest_routing_in(
+        self, connection: sqlite3.Connection, fingerprint: str
+    ) -> DiscAssessment | None:
+        row = connection.execute(
+            "SELECT * FROM disc_routing_revisions WHERE disc_fingerprint = ? "
+            "ORDER BY revision DESC LIMIT 1",
+            (fingerprint,),
+        ).fetchone()
+        return self._decode_routing_assessment(row) if row is not None else None
+
+    def routing_latest(self, fingerprint: str) -> DiscAssessment | None:
+        if re.fullmatch(r"[0-9a-f]{16}", fingerprint) is None:
+            raise RoutingError("Routing fingerprint is invalid")
+        with self._connect() as connection:
+            return self._latest_routing_in(connection, fingerprint)
+
+    def routing_append(
+        self, assessment: DiscAssessment, *, expected_revision: int
+    ) -> DiscAssessment:
+        """Append one exact revision; retrying the same write is idempotent."""
+
+        if (
+            type(expected_revision) is not int
+            or expected_revision < 0
+            or assessment.revision != expected_revision + 1
+        ):
+            raise RoutingError("Routing expected revision is invalid")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            latest = self._latest_routing_in(
+                connection, assessment.inventory_fingerprint
+            )
+            if latest is not None and latest.revision == assessment.revision:
+                if latest.digest == assessment.digest:
+                    connection.commit()
+                    return latest
+                raise RoutingError("Routing revision is stale")
+            if (latest.revision if latest else 0) != expected_revision:
+                raise RoutingError("Routing revision is stale")
+            if latest and latest.title_indexes != assessment.title_indexes:
+                raise RoutingError("Routing inventory changed")
+            if latest and not {
+                item for item in latest.evidence if item.source == "content"
+            }.issubset(assessment.evidence):
+                raise RoutingError("Routing content evidence cannot be revoked")
+            connection.execute(
+                "INSERT INTO disc_routing_revisions VALUES (?, ?, ?, ?)",
+                (
+                    assessment.inventory_fingerprint,
+                    assessment.revision,
+                    assessment.to_json(),
+                    assessment.digest,
+                ),
+            )
+            connection.commit()
+        return assessment
+
+    def routing_save_observation(self, observed: DiscAssessment) -> DiscAssessment:
+        """Refresh structural evidence without discarding accepted content evidence."""
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            latest = self._latest_routing_in(connection, observed.inventory_fingerprint)
+            if latest is not None:
+                if latest.title_indexes != observed.title_indexes:
+                    raise RoutingError("Routing inventory changed")
+                retained = tuple(
+                    item
+                    for item in latest.evidence
+                    if item.source == "content" and item not in observed.evidence
+                )
+                observed = replace(observed, evidence=observed.evidence + retained)
+                if replace(observed, revision=latest.revision).digest == latest.digest:
+                    connection.commit()
+                    return latest
+            revision = latest.revision + 1 if latest else 1
+            saved = replace(observed, revision=revision)
+            connection.execute(
+                "INSERT INTO disc_routing_revisions VALUES (?, ?, ?, ?)",
+                (
+                    saved.inventory_fingerprint,
+                    saved.revision,
+                    saved.to_json(),
+                    saved.digest,
+                ),
+            )
+            connection.commit()
+        return saved
+
+    def routing_attempts(
+        self, fingerprint: str, title_index: int
+    ) -> tuple[RouteAttempt, ...]:
+        if re.fullmatch(r"[0-9a-f]{16}", fingerprint) is None:
+            raise RoutingError("Routing fingerprint is invalid")
+        if type(title_index) is not int or title_index < 0:
+            raise RoutingError("Route attempt title index is invalid")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT title_index, revision, route, outcome FROM disc_route_attempts "
+                "WHERE disc_fingerprint = ? AND title_index = ? "
+                "ORDER BY revision, route",
+                (fingerprint, title_index),
+            ).fetchall()
+        return tuple(RouteAttempt(**dict(row)) for row in rows)
+
+    def routing_claim(
+        self, assessment: DiscAssessment, title_index: int, route: str
+    ) -> bool:
+        """Reserve one route once for the latest assessment revision."""
+
+        RouteAttempt(title_index, assessment.revision, route, "running")
+        if title_index not in assessment.title_indexes:
+            raise RoutingError("Route title is outside the inventory")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            latest = self._latest_routing_in(
+                connection, assessment.inventory_fingerprint
+            )
+            if latest is None or latest.digest != assessment.digest:
+                raise RoutingError("Routing claim assessment is stale")
+            existing = connection.execute(
+                "SELECT revision, route, outcome FROM disc_route_attempts WHERE disc_fingerprint = ? "
+                "AND title_index = ?",
+                (assessment.inventory_fingerprint, title_index),
+            ).fetchall()
+            if any(row["outcome"] in {"running", "matched"} for row in existing):
+                connection.commit()
+                return False
+            current = [
+                row for row in existing if row["revision"] == assessment.revision
+            ]
+            if any(row["outcome"] == "service_failed" for row in current):
+                connection.commit()
+                return False
+            if any(
+                row["route"] == route and row["outcome"] != "interrupted"
+                for row in current
+            ):
+                connection.commit()
+                return False
+            if any(
+                row["route"] == route and row["outcome"] == "interrupted"
+                for row in current
+            ):
+                # An interrupted attempt needs reviewed evidence or a new
+                # assessment revision; never silently repeat the same route.
+                connection.commit()
+                return False
+            connection.execute(
+                "INSERT INTO disc_route_attempts VALUES (?, ?, ?, ?, 'running')",
+                (
+                    assessment.inventory_fingerprint,
+                    title_index,
+                    assessment.revision,
+                    route,
+                ),
+            )
+            connection.commit()
+        return True
+
+    def routing_settle(
+        self, assessment: DiscAssessment, title_index: int, route: str, outcome: str
+    ) -> RouteAttempt:
+        """Settle only a claimed route; never replace a conflicting outcome."""
+
+        attempt = RouteAttempt(title_index, assessment.revision, route, outcome)
+        if outcome == "running":
+            raise RoutingError("A route cannot settle as running")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            latest = self._latest_routing_in(
+                connection, assessment.inventory_fingerprint
+            )
+            if latest is None or latest.digest != assessment.digest:
+                raise RoutingError("Routing settlement assessment is stale")
+            row = connection.execute(
+                "SELECT outcome FROM disc_route_attempts WHERE disc_fingerprint = ? "
+                "AND title_index = ? AND revision = ? AND route = ?",
+                (
+                    assessment.inventory_fingerprint,
+                    title_index,
+                    assessment.revision,
+                    route,
+                ),
+            ).fetchone()
+            if row is None or row["outcome"] not in {"running", outcome}:
+                raise RoutingError("Route claim or outcome is inconsistent")
+            if row["outcome"] == "running":
+                connection.execute(
+                    "UPDATE disc_route_attempts SET outcome = ? WHERE disc_fingerprint = ? "
+                    "AND title_index = ? AND revision = ? AND route = ?",
+                    (
+                        outcome,
+                        assessment.inventory_fingerprint,
+                        title_index,
+                        assessment.revision,
+                        route,
+                    ),
+                )
+            connection.commit()
+        return attempt
+
+    def routing_reconcile_interrupted(self) -> int:
+        """Hold unfinished route claims after restart; never launch a retry."""
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            changed = connection.execute(
+                "UPDATE disc_route_attempts SET outcome = 'interrupted' "
+                "WHERE outcome = 'running'"
+            ).rowcount
+            connection.commit()
+        return int(changed)
 
     def title_dispositions(self, disc_fingerprint: str) -> dict[int, dict[str, str]]:
         """Return explicit future-rip decisions for one exact disc identity."""
@@ -1347,6 +1591,13 @@ class PipelineQueueStore:
             raise PipelineQueueError("Disc fingerprint is invalid")
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            active_route = connection.execute(
+                "SELECT 1 FROM disc_route_attempts WHERE disc_fingerprint = ? "
+                "AND outcome = 'running' LIMIT 1",
+                (disc_fingerprint,),
+            ).fetchone()
+            if active_route is not None:
+                raise PipelineQueueError("A route for this disc is currently running")
             rows = connection.execute(
                 "SELECT media_id, state, rip_artifact_path FROM pipeline_items"
             ).fetchall()
@@ -1391,6 +1642,14 @@ class PipelineQueueStore:
             )
             connection.execute(
                 "DELETE FROM disc_recovery_scopes WHERE disc_fingerprint = ?",
+                (disc_fingerprint,),
+            )
+            connection.execute(
+                "DELETE FROM disc_route_attempts WHERE disc_fingerprint = ?",
+                (disc_fingerprint,),
+            )
+            connection.execute(
+                "DELETE FROM disc_routing_revisions WHERE disc_fingerprint = ?",
                 (disc_fingerprint,),
             )
             connection.commit()
@@ -2393,7 +2652,8 @@ class PipelineQueueStore:
                 checked,
             ).fetchall()
             if len(rows) != len(checked) or any(
-                row["state"] not in {"failed", "review_required", "queued"} for row in rows
+                row["state"] not in {"failed", "review_required", "queued"}
+                for row in rows
             ):
                 connection.rollback()
                 raise PipelineQueueError(

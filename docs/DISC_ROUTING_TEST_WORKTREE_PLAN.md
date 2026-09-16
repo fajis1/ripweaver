@@ -7,12 +7,15 @@
 
 ## Status (2026-09-16)
 
-Milestone M0, test-worktree baseline audit: **complete**. The narrow fresh-scan
-auto-admission blocker has been repaired, but no unified routing repair has
-been ported and no fresh Short Circuit 2 live rip has been validated. Existing
-uncommitted test-worktree changes belong to the user and must be preserved.
+Milestones M0–M2: **complete (synthetic foundation only)**. The narrow fresh-scan
+auto-admission blocker and the new queue-owned routing foundation are in the
+active test worktree. No preparation/identify/worker consumer is attached to
+the routing foundation, and no fresh Short Circuit 2 live rip has been
+validated. Existing uncommitted test-worktree changes belong to the user and
+must be preserved.
 The earlier routing plan in another checkout is a design/reference only; its
-completion and test claims do not apply here. **Next: M2 assessment contract.**
+completion and test claims do not apply here. **Next: M3 preparation and
+immutable-contract handoff.**
 
 ## Findings verified in this worktree
 
@@ -117,16 +120,16 @@ automatically treated as episodes or deleted.
 - [x] Focused preparation tests, full pytest suite, and modified-Python Ruff
   checks passed in this worktree. No live scan was performed for this gate.
 
-### M2 — Assessment model, queue persistence, and migration
+### M2 — Assessment model, queue persistence, and migration (complete, synthetic only)
 
-- [ ] Specify strict path-free schema, source reliability, role/composition
+- [x] Specify strict path-free schema, source reliability, role/composition
   derivation, digests, bounds, and duplicate/conflict validation.
-- [ ] Add queue-owned assessment revisions and route-attempt tables with
+- [x] Add queue-owned assessment revisions and route-attempt tables with
   transactional compare-and-swap, idempotent retries, and exact-fingerprint
   forget cleanup; leave existing scopes and dispositions intact.
-- [ ] Define a safe migration for pre-routing queue databases and read-only
+- [x] Define a safe migration for pre-routing queue databases and read-only
   legacy contracts. Never infer an old item's content role from its hint alone.
-- [ ] Test TV, movie-with-extras, mixed disc, unknown, conflicting metadata,
+- [x] Test TV, movie-with-extras, mixed disc, unknown, conflicting metadata,
   changed inventory, concurrent writes, revision >2, restart, and forgetting.
   Gate: no provider, media, or physical-disc access is needed.
 
@@ -235,3 +238,16 @@ complete solely because another checkout passed tests.
   persistence, precise route-outcome/restart gates, explicit TV/triage
   preservation, synthetic acceptance tests, and a separate live-canary approval
   boundary. Planning/documentation only; M2–M7 remain unimplemented.
+- 2026-09-16: Started M2 in the active test worktree. Added the saved-data-only
+  assessment model and 18 passing synthetic tests for hints, evidence priority,
+  unknown/conflicting roles, digest round-trip, and malformed inputs. No queue
+  persistence or production consumer is connected yet; M2 remains in progress.
+- 2026-09-16: Completed M2's queue-owned foundation. Added append-only routing
+  revisions, bounded per-revision route claims/outcomes, interruption marking,
+  exact-fingerprint forget cleanup, and a strict optional contract reader for
+  legacy compatibility. Concurrent/stale writes, migration, restart,
+  idempotency, conflict, movie+extras, mixed-disc, and provider-failure cases
+  pass in synthetic tests. The full repository pytest suite and modified-file
+  Ruff checks pass. No production preparation, identification, Gemini, or
+  worker path consumes this foundation yet; that is M3–M5 work. No live disc,
+  media, or provider access occurred.
