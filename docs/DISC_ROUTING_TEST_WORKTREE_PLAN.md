@@ -7,7 +7,7 @@
 
 ## Status (2026-09-16)
 
-Milestones M0–M3: **complete in synthetic validation; M4 next**. Preparation
+Milestones M0–M3: **complete in synthetic validation; M4 in progress**. Preparation
 and identify now consume the queue-owned routing assessment, but no automatic
 alternate-route worker is attached and no fresh Short Circuit 2 live rip has
 been validated. Existing uncommitted test-worktree changes belong to the user
@@ -262,3 +262,16 @@ complete solely because another checkout passed tests.
   preparation-to-contract-to-restart-to-identify. Focused tests, full pytest,
   modified-file Ruff and formatting checks passed. No live disc/media/provider
   access occurred. M4 alternate-route execution is not yet wired.
+- 2026-09-16: Started M4 with a saved-data route controller and atomic
+  queue-owned `claim_next` reservation. Synthetic tests cover contradictory
+  hints, no-match progression, provider-failure/review holds, concurrent
+  claims, and restart persistence. Provider outcome wiring is still in progress.
+- 2026-09-16: M4 route policy and typed Gemini result reporting now pass
+  synthetic tests. A movie assessment no longer enters the legacy TV-related
+  Gemini branch merely because its label looks like a series; validated TV
+  fallback matches retain their TV role. Added per-title tests for absent
+  catalogue versus service outage, multiple movies, extras, and conflicting
+  metadata. Full pytest and modified-file Ruff pass. M4 is **not complete**:
+  the downstream worker still does not claim and settle those actual outcomes
+  transactionally, and the automatic fallback remains review-code-only.
+  No live provider, media, or disc operation occurred.

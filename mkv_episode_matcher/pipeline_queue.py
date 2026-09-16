@@ -27,6 +27,7 @@ from mkv_episode_matcher.disc.routing import (
     RoutingError,
     assessment_from_contract,
 )
+from mkv_episode_matcher.disc.routing_controller import next_route
 from mkv_episode_matcher.pipeline import PipelineArtifact
 
 
@@ -861,6 +862,43 @@ class PipelineQueueStore:
                 (fingerprint, title_index),
             ).fetchall()
         return tuple(RouteAttempt(**dict(row)) for row in rows)
+
+    def routing_claim_next(
+        self, assessment: DiscAssessment, title_index: int
+    ) -> str | None:
+        """Choose and reserve one evidence-supported route in one transaction."""
+
+        if title_index not in assessment.title_indexes:
+            raise RoutingError("Route title is outside the inventory")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            latest = self._latest_routing_in(
+                connection, assessment.inventory_fingerprint
+            )
+            if latest is None or latest.digest != assessment.digest:
+                raise RoutingError("Routing claim assessment is stale")
+            rows = connection.execute(
+                "SELECT title_index, revision, route, outcome FROM disc_route_attempts "
+                "WHERE disc_fingerprint = ? AND title_index = ?",
+                (assessment.inventory_fingerprint, title_index),
+            ).fetchall()
+            route = next_route(
+                assessment,
+                title_index=title_index,
+                attempts=tuple(RouteAttempt(**dict(row)) for row in rows),
+            )
+            if route is not None:
+                connection.execute(
+                    "INSERT INTO disc_route_attempts VALUES (?, ?, ?, ?, 'running')",
+                    (
+                        assessment.inventory_fingerprint,
+                        title_index,
+                        assessment.revision,
+                        route,
+                    ),
+                )
+            connection.commit()
+        return route
 
     def routing_claim(
         self, assessment: DiscAssessment, title_index: int, route: str

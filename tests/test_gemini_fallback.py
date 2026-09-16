@@ -4,16 +4,51 @@ from types import SimpleNamespace
 
 from mkv_episode_matcher.backend.gemini_fallback import (
     _descriptive_release_hint,
+    _fallback_outcome,
     execute_gemini_fallback,
 )
 from mkv_episode_matcher.backend.related_movie_analysis import RelatedMovieMatch
 from mkv_episode_matcher.core.models import Config
+from mkv_episode_matcher.disc.routing import DiscAssessment, TitleEvidence
 from mkv_episode_matcher.media.gemini_matcher import (
     GeminiDescriptivePlan,
     GeminiDescriptiveResult,
     UnmatchedFileEvidence,
 )
 from mkv_episode_matcher.tmdb_client import MovieCandidate
+
+
+def test_typed_gemini_outcomes_distinguish_match_no_match_and_review():
+    report = _fallback_outcome(
+        ("movie", "tv", "visual", "unknown"),
+        applied={"movie"},
+        visually_held={"visual"},
+        results={
+            "movie": SimpleNamespace(content_kind="movie"),
+            "tv": SimpleNamespace(content_kind="tv_episode"),
+            "unknown": SimpleNamespace(content_kind="unknown"),
+        },
+        descriptive=True,
+    )
+    assert report.handled_ids == ("movie", "visual")
+    assert [(item.disposition, item.accepted_role) for item in report.titles] == [
+        ("matched", "movie"),
+        ("no_match", None),
+        ("review", None),
+        ("review", None),
+    ]
+
+
+def test_typed_outcome_preserves_validated_tv_role():
+    report = _fallback_outcome(
+        ("episode",),
+        applied={"episode"},
+        visually_held=set(),
+        results={"episode": SimpleNamespace(content_kind="unknown")},
+        descriptive=True,
+        validated_tv_ids=frozenset({"episode"}),
+    )
+    assert report.titles[0].accepted_role == "tv"
 
 
 class FakeStore:
@@ -278,15 +313,18 @@ def test_descriptive_tv_extra_stays_with_canonical_series(tmp_path, monkeypatch)
         ),
     )
 
-    applied = execute_gemini_fallback(
+    report = execute_gemini_fallback(
         store,
         (item.media_id,),
         Config(gemini_model="test"),
         SimpleNamespace(),
         tmp_path / "contracts",
+        return_outcomes=True,
     )
 
-    assert applied == (item.media_id,)
+    assert report.handled_ids == (item.media_id,)
+    assert report.titles[0].disposition == "matched"
+    assert report.titles[0].accepted_role == "extra"
     revised = json.loads(
         store.applied[item.media_id].contract_path.read_text(encoding="utf-8")
     )
@@ -297,6 +335,67 @@ def test_descriptive_tv_extra_stays_with_canonical_series(tmp_path, monkeypatch)
     assert assignment["jellyfin_folder"] == "Extras"
     assert assignment["match_summary"] == "Bonus feature evidence."
     assert any(details["branch"] == "tv-bonus" for _, details in dossier.attempts)
+
+
+def test_assessed_movie_disc_does_not_take_legacy_tv_branch(tmp_path, monkeypatch):
+    item = _item(tmp_path, "disc-title-000", 5400)
+    payload = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
+    assessment = DiscAssessment(
+        "0123456789abcdef",
+        (0,),
+        evidence=(TitleEvidence(0, "database", "supported", "movie"),),
+    )
+    payload["media_context"].update(
+        series_name="Short Circuit 2",
+        content_hint=None,
+        routing_assessment=assessment.to_dict(),
+        routing_assessment_digest=assessment.digest,
+        routing_assessment_revision=assessment.revision,
+    )
+    item.artifact.contract_path.write_text(json.dumps(payload), encoding="utf-8")
+    store = FakeStore([item])
+    dossier = FakeDossier()
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.gemini_fallback.collect_dossier_evidence",
+        lambda selected, *_args: (
+            (UnmatchedFileEvidence(item.media_id, 5400, ("bounded evidence",)),),
+            dossier,
+        ),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.related_movie_analysis.match_related_tv_movies",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Assessed movie must not enter TV-related movie search")
+        ),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.gemini_fallback.GeminiDescriptiveRanker.describe_with_configured_keys",
+        lambda self, evidence, release_hint, prior_attempts=None: GeminiDescriptivePlan(
+            mode="gemini-descriptive-review-plan",
+            model="test",
+            matches=(
+                GeminiDescriptiveResult(
+                    item.media_id,
+                    "movie",
+                    "Short Circuit 2",
+                    1988,
+                    0.9,
+                    ("Movie evidence.",),
+                ),
+            ),
+        ),
+    )
+
+    report = execute_gemini_fallback(
+        store,
+        (item.media_id,),
+        Config(gemini_model="test"),
+        SimpleNamespace(),
+        tmp_path / "contracts",
+        return_outcomes=True,
+    )
+    assert report.titles[0].disposition == "matched"
+    assert report.titles[0].accepted_role == "movie"
 
 
 def test_tv_disc_related_movie_is_validated_before_generic_bonus(tmp_path, monkeypatch):
@@ -458,15 +557,17 @@ def test_unresolved_descriptive_result_stops_showing_running(tmp_path, monkeypat
         ),
     )
 
-    applied = execute_gemini_fallback(
+    report = execute_gemini_fallback(
         store,
         (item.media_id,),
         Config(gemini_model="test"),
         SimpleNamespace(),
         tmp_path / "contracts",
+        return_outcomes=True,
     )
 
-    assert applied == ()
+    assert report.handled_ids == ()
+    assert report.titles[0].disposition == "review"
     assert item.review_code == "gemini_descriptive_review_required"
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from inspect import signature
 from pathlib import Path
 from uuid import uuid4
@@ -21,6 +22,62 @@ from mkv_episode_matcher.pipeline_queue import (
     PipelineQueueStore,
     build_artifact,
 )
+
+
+@dataclass(frozen=True)
+class GeminiTitleOutcome:
+    media_id: str
+    disposition: str
+    accepted_role: str | None = None
+
+
+@dataclass(frozen=True)
+class GeminiFallbackOutcome:
+    handled_ids: tuple[str, ...]
+    titles: tuple[GeminiTitleOutcome, ...]
+
+
+def _fallback_outcome(
+    requested: tuple[str, ...],
+    *,
+    applied: set[str],
+    visually_held: set[str],
+    results: dict[str, object],
+    descriptive: bool,
+    validated_tv_ids: frozenset[str] = frozenset(),
+) -> GeminiFallbackOutcome:
+    titles = []
+    for media_id in requested:
+        result = results.get(media_id)
+        if media_id in applied:
+            role = (
+                "tv"
+                if media_id in validated_tv_ids
+                else "movie"
+                if getattr(result, "content_kind", None) == "movie"
+                else "tv"
+                if getattr(result, "content_kind", None) == "tv_episode"
+                else "extra"
+            )
+            titles.append(GeminiTitleOutcome(media_id, "matched", role))
+        elif media_id in visually_held:
+            titles.append(GeminiTitleOutcome(media_id, "review"))
+        elif (
+            descriptive and getattr(result, "content_kind", None) == "tv_episode"
+        ) or (
+            not descriptive
+            and result is not None
+            and getattr(result, "episode_id", 1) is None
+        ):
+            titles.append(GeminiTitleOutcome(media_id, "no_match"))
+        else:
+            titles.append(GeminiTitleOutcome(media_id, "review"))
+    return GeminiFallbackOutcome(
+        tuple(
+            media_id for media_id in requested if media_id in applied | visually_held
+        ),
+        tuple(titles),
+    )
 
 
 def _descriptive_release_hint(payload: dict, media_id: str) -> str:
@@ -69,7 +126,8 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
     contract_root: Path,
     *,
     analysis_run_id: str | None = None,
-) -> tuple[str, ...]:
+    return_outcomes: bool = False,
+) -> tuple[str, ...] | GeminiFallbackOutcome:
     """Read exact held MKVs, send bounded excerpts, then requeue confident matches."""
 
     if not media_ids:
@@ -156,17 +214,27 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
         if item.media_id not in visually_held
     )
     if not eligible:
-        return tuple(
-            media_id for media_id in requested_media_ids if media_id in visually_held
+        report = _fallback_outcome(
+            requested_media_ids,
+            applied=set(),
+            visually_held=visually_held,
+            results={},
+            descriptive=catalogue is None,
         )
+        return report if return_outcomes else report.handled_ids
     held = [entry[0] for entry in eligible]
     payloads = [entry[1] for entry in eligible]
     evidence = tuple(entry[2] for entry in eligible)
     media_ids = tuple(item.media_id for item in held)
     first_context = payloads[0]["media_context"]
     series_name = str(first_context.get("series_name") or "").strip()
+    from mkv_episode_matcher.disc.routing import assessment_from_contract
+
+    first_assessment = assessment_from_contract(payloads[0])
     tv_series_context = (
-        first_context.get("content_hint") not in {"movie", "extras"}
+        first_assessment.composition in {"tv", "tv_with_extras", "mixed"}
+        if first_assessment is not None
+        else first_context.get("content_hint") not in {"movie", "extras"}
         and bool(series_name)
         and series_name.casefold() not in {"unmatched", "unknown"}
     )
@@ -462,6 +530,7 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
         )
         and not any(dossier.attempted(media_id, "tv-local") for media_id in unresolved)
     )
+    validated_tv_ids: frozenset[str] = frozenset()
     if should_try_tv:
         try:
             from mkv_episode_matcher.backend.unmatched_disc_analysis import (
@@ -484,6 +553,7 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
                 allow_content_fallback=False,
             )
             applied.extend(tv_applied)
+            validated_tv_ids = frozenset(tv_applied)
             unresolved = tuple(
                 media_id for media_id in media_ids if media_id not in applied
             )
@@ -505,5 +575,12 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
         )
         for media_id in unresolved:
             store.choose_review_path(media_id, "gemini_descriptive_review_required")
-    handled = visually_held | set(applied)
-    return tuple(media_id for media_id in requested_media_ids if media_id in handled)
+    report = _fallback_outcome(
+        requested_media_ids,
+        applied=set(applied),
+        visually_held=visually_held,
+        results=results,
+        descriptive=descriptive,
+        validated_tv_ids=validated_tv_ids,
+    )
+    return report if return_outcomes else report.handled_ids
