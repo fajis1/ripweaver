@@ -32,6 +32,10 @@ def is_video_encoded(path: str) -> bool:
             return True
 
         for stream in data.get("streams", []):
+            if stream.get("codec_type") == "video":
+                codec_name = stream.get("codec_name", "")
+                if codec_name == "mpeg2video":
+                    return False
             tags = stream.get("tags", {})
             title = tags.get("title", "") or tags.get("TITLE", "")
             if "MakeMKV" in title:
@@ -82,10 +86,10 @@ WRAPPER_FOLDERS = {
 
 
 @functools.lru_cache(maxsize=128)
-def resolve_canonical_series_name(raw_name: str) -> str:
+def resolve_canonical_series_name(raw_name: str) -> tuple[str, bool, bool]:
     """Resolve a raw folder or disc name to canonical TMDb / Gemini show name."""
     if not raw_name or raw_name.lower().replace(" ", "_") in WRAPPER_FOLDERS:
-        return raw_name
+        return "Unmatched", False, False
 
     cleaned = re.sub(
         r"(?i)\b(?:three movies|movie collection|collection|vol(?:ume)?\s*\d+|disc\s*\d+)\b",
@@ -94,13 +98,25 @@ def resolve_canonical_series_name(raw_name: str) -> str:
     ).strip(" ._-")
     query_target = cleaned if cleaned else raw_name
 
-    # 1. Direct TMDb TV search
+    has_tv = False
+    has_movie = False
+    tv_name = None
+
     try:
         from mkv_episode_matcher.tmdb_client import _tmdb_get_json
 
-        results = _tmdb_get_json("/search/tv", query=query_target).get("results", [])
-        if results:
-            return results[0]["name"]
+        tv_results = _tmdb_get_json("/search/tv", query=query_target).get("results", [])
+        if tv_results:
+            has_tv = True
+            tv_name = tv_results[0]["name"]
+            
+        movie_results = _tmdb_get_json("/search/movie", query=query_target).get("results", [])
+        if movie_results:
+            has_movie = True
+            
+        if has_tv and not has_movie:
+            return tv_name, True, False
+            
     except Exception:
         pass
 
@@ -114,7 +130,7 @@ def resolve_canonical_series_name(raw_name: str) -> str:
 
         env = load_environment_settings()
         key = env.gemini_primary_api_key or env.gemini_paid_api_key
-        if key:
+        if key and not (has_tv and has_movie):
             candidates = tuple(search_tv_show_candidates(query_target)[:5])
             resolver = GeminiSeriesResolver(model="gemini-2.5-flash")
             cred = "gemini-primary" if env.gemini_primary_api_key else "gemini-paid"
@@ -122,11 +138,11 @@ def resolve_canonical_series_name(raw_name: str) -> str:
                 raw_name, candidates, api_key=key, credential=cred
             )
             if res and res.series_name:
-                return res.series_name
+                return res.series_name, True, has_movie
     except Exception:
         pass
 
-    return query_target
+    return tv_name if tv_name else query_target, has_tv, has_movie
 
 
 def parse_triage_metadata(  # noqa: C901
@@ -247,7 +263,7 @@ def parse_triage_metadata(  # noqa: C901
             season_num = s_int
 
     # Detect movie vs TV
-    is_movie = (season_num is None) and (ep_match is None) and (not is_extra)
+    is_movie = (season_num is None) and (ep_match is None)
     if any(
         k in series_candidate.lower()
         for k in ["three movies", "movie collection", "movies"]
@@ -255,7 +271,19 @@ def parse_triage_metadata(  # noqa: C901
         is_movie = True
 
     # Canonical series resolution
-    canonical_series = resolve_canonical_series_name(series_candidate)
+    canonical_series, has_tv, has_movie = resolve_canonical_series_name(series_candidate)
+    
+    content_hint = None
+    if has_tv and has_movie:
+        content_hint = "mixed"
+    elif has_movie and not has_tv:
+        is_movie = True
+        content_hint = "movie"
+    elif has_tv and not has_movie:
+        is_movie = False
+        content_hint = "tv"
+    elif is_movie:
+        content_hint = "movie"
 
     # Determine recommended action
     encoded = is_video_encoded(str(file_path.absolute()))
@@ -323,6 +351,7 @@ def parse_triage_metadata(  # noqa: C901
         "encoded": encoded,
         "action": action,
         "reason": reason,
+        "content_hint": content_hint,
     }
 
 
@@ -507,7 +536,7 @@ def queue_triage_items(  # noqa: C901
                         )
                     ),
                     "episode_id": ep_match if not is_movie and not is_extra else None,
-                    "library_kind": "movie" if is_movie and not is_extra else "tv",
+                    "library_kind": "movie" if is_movie else "tv",
                     "existing_output_policy": "preserve",
                 }
                 stage = "organize"
@@ -521,7 +550,7 @@ def queue_triage_items(  # noqa: C901
                     "source_size_bytes": item.size_bytes,
                     "confidence": 1.0,
                     "episode_id": ep_match if not is_movie and not is_extra else None,
-                    "library_kind": "movie" if is_movie and not is_extra else "tv",
+                    "library_kind": "movie" if is_movie else "tv",
                     "library_relative": (
                         f"{series_name}/Extras/{file_path.name}"
                         if is_extra
@@ -555,7 +584,7 @@ def queue_triage_items(  # noqa: C901
                         "series_name": series_name,
                         "season": season_num,
                         "disc_number": disc_num,
-                        "content_hint": "movie" if is_movie else "tv",
+                        "content_hint": meta.get("content_hint") or ("movie" if is_movie else "tv"),
                     },
                 }
                 stage = "identify"

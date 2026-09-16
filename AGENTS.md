@@ -1,5 +1,19 @@
 # Codex Repository Guide
 
+## STOP: Active Test Source Location
+
+**All RipWeaver development, fixes, tests, and plan-status updates for the
+current live test must be made in the `ripweaver-test` worktree containing this
+file.** The desktop test launcher starts this source tree with `uv run
+mkv-match serve`; the installed EXE is older and is not this test instance.
+The separate `mkv-episode-matcher` checkout contains work that was not applied
+here. Do not treat a change or passing test in that checkout as a change to the
+active test application. Before editing or testing, print and verify the
+resolved repository root, branch, and worktree status. Preserve existing
+uncommitted work; review and port changes selectively instead of copying whole
+files or resetting either checkout. Do not switch the launcher to the EXE or
+another checkout as a substitute for applying fixes here.
+
 This file applies to the entire repository. Read it before inspecting, testing,
 or changing the project.
 

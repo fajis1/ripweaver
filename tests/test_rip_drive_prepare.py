@@ -30,6 +30,31 @@ def test_existing_rip_recovery_media_id_normalizes_makemkv_spaces():
     )
 
 
+def test_auto_admit_declines_fresh_disc_without_staged_candidates(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        rip,
+        "discover_existing_rips",
+        lambda _root, _jobs: SimpleNamespace(candidates=()),
+    )
+
+    assert rip._auto_admit_staged_disc_if_complete(
+        manifest_jobs=(SimpleNamespace(job_id="disc-01-title-000"),),
+        disc_fingerprint="0123456789abcdef",
+        output_root=tmp_path,
+        recovery_scope=frozenset(),
+        safely_present_title_indexes=frozenset(),
+        preview=None,
+        report_path=None,
+        disc_id="disc-01",
+        context=None,
+        public_store=None,
+        private_store=None,
+        pipeline_store=None,
+        contract_root=None,
+        idempotency_key="fresh-disc-test",
+    ) is None
+
+
 def test_pipeline_display_name_uses_pending_episode_assignment(tmp_path):
     contract = tmp_path / "identify.json"
     contract.write_text(

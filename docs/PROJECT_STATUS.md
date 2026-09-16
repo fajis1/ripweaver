@@ -4547,3 +4547,12 @@ for review rather than forcing a TV identity.
 - We must develop more robust heuristics (regex patterns, metadata extraction like missing audio tracks or specific encoder tags, or lack of standard media naming) to identify home videos.
 - **Future Pipeline:** These identified home videos need their own separate processing pipeline, potentially using an LLM (Gemini summary naming) for automatic description/tagging, as they cannot be matched against TV/Movie databases.
 
+## Active Test-Worktree Disc Routing Repair (2026-09-16)
+
+The desktop test launcher uses the `ripweaver-test` source worktree, not the
+installed EXE or the separate `mkv-episode-matcher` checkout. Routing changes
+and test results from that other checkout are not present in this build. See
+`docs/DISC_ROUTING_TEST_WORKTREE_PLAN.md` for the current baseline, repair gates,
+and progress log. A narrow synthetic-tested fix now allows fresh preparation
+to continue when no staged MKVs exist; it is not a live rip validation or a
+completed unified-routing implementation.
