@@ -7,15 +7,12 @@
 
 ## Status (2026-09-16)
 
-Milestones M0–M2: **complete (synthetic foundation only)**. The narrow fresh-scan
-auto-admission blocker and the new queue-owned routing foundation are in the
-active test worktree. No preparation/identify/worker consumer is attached to
-the routing foundation, and no fresh Short Circuit 2 live rip has been
-validated. Existing uncommitted test-worktree changes belong to the user and
-must be preserved.
-The earlier routing plan in another checkout is a design/reference only; its
-completion and test claims do not apply here. **Next: M3 preparation and
-immutable-contract handoff.**
+Milestones M0–M3: **complete in synthetic validation; M4 next**. Preparation
+and identify now consume the queue-owned routing assessment, but no automatic
+alternate-route worker is attached and no fresh Short Circuit 2 live rip has
+been validated. Existing uncommitted test-worktree changes belong to the user
+and must be preserved. The earlier routing plan in another checkout remains a
+design/reference only; its completion and test claims do not apply here.
 
 ## Findings verified in this worktree
 
@@ -133,21 +130,21 @@ automatically treated as episodes or deleted.
   changed inventory, concurrent writes, revision >2, restart, and forgetting.
   Gate: no provider, media, or physical-disc access is needed.
 
-### M3 — Preparation and immutable-contract handoff
+### M3 — Preparation and immutable-contract handoff (complete, synthetic only)
 
-- [ ] Feed inventory, explicit label structure, and trusted title-specific
+- [x] Feed inventory, explicit label structure, and trusted title-specific
   database outcomes into one assessment builder. Record unavailable/ambiguous
   lookups as such; do not turn a movie hint or dominant runtime into TV fact.
-- [ ] Persist the assessment during preparation, then carry exact revision and
+- [x] Persist the assessment during preparation, then carry exact revision and
   digest through `MediaContext` into each verified-rip contract. Validate the
   contract's fingerprint, title index, digest, schema, and saved revision when
   identify/worker reads it. Old contracts remain on explicit compatibility
   review paths, not an implicit unknown-to-TV default.
-- [ ] Derive downstream per-title scope from that assessment without changing
+- [x] Derive downstream per-title scope from that assessment without changing
   fresh whole-disc acquisition or failed-disc recovery. Keep extras out of TV
   anchors/range/coherence counts; preserve relevant unknown content for an
   alternate route. Verify both contradictory hint directions.
-- [ ] Synthetic preparation-to-contract-to-restart-to-identify tests must use
+- [x] Synthetic preparation-to-contract-to-restart-to-identify tests must use
   saved inventories and fake lookups, including an 11-title movie-plus-extras
   shape. Gate: no title is silently discarded or promoted to TV by hint.
 
@@ -251,3 +248,17 @@ complete solely because another checkout passed tests.
   Ruff checks pass. No production preparation, identification, Gemini, or
   worker path consumes this foundation yet; that is M3–M5 work. No live disc,
   media, or provider access occurred.
+- 2026-09-16: Started M3 in the active test worktree. Current work is the
+  preparation-to-immutable-contract handoff and title-scope separation. No
+  live disc or provider access is authorized by this milestone.
+- 2026-09-16: Completed M3 synthetic handoff. Preparation now saves one
+  assessment and embeds its exact digest/revision in verified-rip contracts;
+  identify validates the binding and saved revision. The user's selection is
+  stored only as an advisory assessment hint. Unknown/movie/extra roles no
+  longer fall through to TV matching, while trusted TV evidence still uses the
+  existing TV engine. Fresh acquisition remains whole-inventory; TV scope is
+  role-filtered and failed-disc rerip work stays bounded by the exact failed
+  acquisition scope. Synthetic tests cover contradictory hints and
+  preparation-to-contract-to-restart-to-identify. Focused tests, full pytest,
+  modified-file Ruff and formatting checks passed. No live disc/media/provider
+  access occurred. M4 alternate-route execution is not yet wired.

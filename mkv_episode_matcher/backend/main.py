@@ -387,6 +387,7 @@ async def startup_event():
                             config.automatic_organization_enabled
                         ),
                         disc_match_history=pipeline_queue_store,
+                        routing_store=pipeline_queue_store,
                     ),
                     "transcode": _authorization_required,
                     "organize": (

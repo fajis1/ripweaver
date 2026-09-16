@@ -57,12 +57,37 @@ class MediaContext:
     disc_metadata_status: str | None = None
     disc_metadata_matched_title_count: int = 0
     existing_output_policy: str = "preserve"
+    routing_assessment: dict[str, object] | None = None
+    routing_assessment_digest: str | None = None
+    routing_assessment_revision: int | None = None
+
+
+def _validate_context_routing(value: dict[str, object]) -> None:
+    routing_value = value.get("routing_assessment")
+    if routing_value is not None:
+        from mkv_episode_matcher.disc.routing import DiscAssessment, RoutingError
+
+        try:
+            routing = DiscAssessment.from_dict(routing_value)
+        except RoutingError as exc:
+            raise RipError("Media context routing assessment is invalid") from exc
+        if (
+            value.get("routing_assessment_digest") != routing.digest
+            or value.get("routing_assessment_revision") != routing.revision
+        ):
+            raise RipError("Media context routing identity is invalid")
+    elif any(
+        value.get(field) is not None
+        for field in ("routing_assessment_digest", "routing_assessment_revision")
+    ):
+        raise RipError("Media context routing identity is incomplete")
 
 
 def media_context_from_dict(value: dict[str, object]) -> MediaContext:
     """Restore immutable tuple fields from a serialized private context."""
 
     normalized = dict(value)
+    _validate_context_routing(normalized)
     indexes = normalized.get("selected_title_indexes")
     if indexes is not None:
         if not isinstance(indexes, list | tuple):

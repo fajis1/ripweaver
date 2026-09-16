@@ -23,6 +23,11 @@ from mkv_episode_matcher.core.tv_identification_policy import (
     identification_order_for_assignment,
 )
 from mkv_episode_matcher.disc.content_policy import identification_order
+from mkv_episode_matcher.disc.routing import (
+    DiscAssessment,
+    RoutingError,
+    assessment_from_contract,
+)
 from mkv_episode_matcher.media.handbrake import (
     HandBrakeError,
     HandBrakeJob,
@@ -46,6 +51,7 @@ from mkv_episode_matcher.media.organizer import (
 from mkv_episode_matcher.pipeline_queue import (
     PipelineArtifact,
     PipelineQueueError,
+    PipelineQueueStore,
     PipelineReviewRequiredError,
     QueuedPipelineItem,
     StageOutcome,
@@ -66,6 +72,19 @@ def _special_feature_uses_tv_library(
 ) -> bool:
     if assignment.get("library_kind") == "tv":
         return True
+    if (
+        assignment.get("library_kind") == "movie"
+        and context.get("routing_assessment") is not None
+    ):
+        return False
+    if context.get("routing_assessment") is not None:
+        try:
+            composition = DiscAssessment.from_dict(
+                context["routing_assessment"]
+            ).composition
+        except RoutingError as exc:
+            raise PipelineReviewRequiredError("routing_assessment_review") from exc
+        return composition in {"tv", "tv_with_extras"}
     series_name = context.get("series_name")
     return (
         assignment.get("media_kind", "extra") != "movie"
@@ -216,6 +235,7 @@ class IdentifyStageAdapter:
         movie_library_root: Path | None = None,
         allow_version_coexistence: bool = False,
         disc_match_history: DiscMatchHistory | None = None,
+        routing_store: PipelineQueueStore | None = None,
     ):
         self.engine = engine
         self.contract_root = contract_root.resolve()
@@ -227,6 +247,7 @@ class IdentifyStageAdapter:
         )
         self.allow_version_coexistence = allow_version_coexistence
         self.disc_match_history = disc_match_history
+        self.routing_store = routing_store
 
     def _identified_outcome(
         self, item: QueuedPipelineItem, payload: dict[str, Any]
@@ -273,6 +294,34 @@ class IdentifyStageAdapter:
         context = payload.get("media_context")
         if not isinstance(context, dict) or not context.get("series_name"):
             raise PipelineReviewRequiredError("missing_series_context")
+        try:
+            routing = assessment_from_contract(payload)
+            if routing is not None and self.routing_store is not None:
+                saved = self.routing_store.routing_at(
+                    routing.inventory_fingerprint, routing.revision
+                )
+                if saved is None or saved.digest != routing.digest:
+                    raise RoutingError("Routing contract revision is unavailable")
+                latest = self.routing_store.routing_latest(
+                    routing.inventory_fingerprint
+                )
+                if latest is None or latest.title_indexes != routing.title_indexes:
+                    raise RoutingError("Routing inventory changed")
+                title_index = payload["title_index"]
+                saved_role = next(
+                    item.role
+                    for item in routing.title_roles()
+                    if item.title_index == title_index
+                )
+                latest_role = next(
+                    item.role
+                    for item in latest.title_roles()
+                    if item.title_index == title_index
+                )
+                if saved_role != latest_role:
+                    raise RoutingError("Routing title evidence changed")
+        except RoutingError as exc:
+            raise PipelineReviewRequiredError("routing_assessment_review") from exc
         episode_assignments = context.get("episode_assignments")
         if isinstance(episode_assignments, list) and episode_assignments:
             automatic_all_season = ".all-season-" in item.artifact.contract_path.name
@@ -457,16 +506,32 @@ class IdentifyStageAdapter:
                     "gemini_confidence": assignment.get("gemini_confidence"),
                 },
             )
-        hint = context.get("content_hint")
-        strategy_order = (
-            ("tv", "movie", "extras") if hint is None else identification_order(hint)
-        )
-        if strategy_order[0] == "extras":
-            raise PipelineReviewRequiredError("special_feature_evidence_required")
-        if strategy_order[0] != "tv":
-            raise PipelineReviewRequiredError(
-                f"{strategy_order[0].replace('-', '_')}_identification_required"
+        if routing is not None:
+            strategy_order = ("tv",)
+            title_role = next(
+                item.role
+                for item in routing.title_roles()
+                if item.title_index == payload["title_index"]
             )
+            if title_role == "extra":
+                raise PipelineReviewRequiredError("special_feature_evidence_required")
+            if title_role == "movie":
+                raise PipelineReviewRequiredError("movie_identification_required")
+            if title_role != "tv":
+                raise PipelineReviewRequiredError("content_classification_required")
+        else:
+            hint = context.get("content_hint")
+            strategy_order = (
+                ("tv", "movie", "extras")
+                if hint is None
+                else identification_order(hint)
+            )
+            if strategy_order[0] == "extras":
+                raise PipelineReviewRequiredError("special_feature_evidence_required")
+            if strategy_order[0] != "tv":
+                raise PipelineReviewRequiredError(
+                    f"{strategy_order[0].replace('-', '_')}_identification_required"
+                )
         season = context.get("season")
         if not isinstance(season, int) or isinstance(season, bool):
             if has_catalogue_help:

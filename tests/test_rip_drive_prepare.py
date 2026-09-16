@@ -15,8 +15,14 @@ from mkv_episode_matcher.disc.ripweaver_catalogue import (
     RipWeaverCatalogueSupportRequiredError,
     SupportPolicy,
 )
+from mkv_episode_matcher.disc.routing import DiscAssessment, assessment_from_contract
 from mkv_episode_matcher.disc.thediscdb import TheDiscDbResolution
-from mkv_episode_matcher.pipeline_queue import PipelineQueueStore, build_artifact
+from mkv_episode_matcher.pipeline_adapters import IdentifyStageAdapter
+from mkv_episode_matcher.pipeline_queue import (
+    PipelineQueueStore,
+    PipelineReviewRequiredError,
+    build_artifact,
+)
 
 
 def test_existing_rip_recovery_media_id_normalizes_makemkv_spaces():
@@ -30,29 +36,34 @@ def test_existing_rip_recovery_media_id_normalizes_makemkv_spaces():
     )
 
 
-def test_auto_admit_declines_fresh_disc_without_staged_candidates(monkeypatch, tmp_path):
+def test_auto_admit_declines_fresh_disc_without_staged_candidates(
+    monkeypatch, tmp_path
+):
     monkeypatch.setattr(
         rip,
         "discover_existing_rips",
         lambda _root, _jobs: SimpleNamespace(candidates=()),
     )
 
-    assert rip._auto_admit_staged_disc_if_complete(
-        manifest_jobs=(SimpleNamespace(job_id="disc-01-title-000"),),
-        disc_fingerprint="0123456789abcdef",
-        output_root=tmp_path,
-        recovery_scope=frozenset(),
-        safely_present_title_indexes=frozenset(),
-        preview=None,
-        report_path=None,
-        disc_id="disc-01",
-        context=None,
-        public_store=None,
-        private_store=None,
-        pipeline_store=None,
-        contract_root=None,
-        idempotency_key="fresh-disc-test",
-    ) is None
+    assert (
+        rip._auto_admit_staged_disc_if_complete(
+            manifest_jobs=(SimpleNamespace(job_id="disc-01-title-000"),),
+            disc_fingerprint="0123456789abcdef",
+            output_root=tmp_path,
+            recovery_scope=frozenset(),
+            safely_present_title_indexes=frozenset(),
+            preview=None,
+            report_path=None,
+            disc_id="disc-01",
+            context=None,
+            public_store=None,
+            private_store=None,
+            pipeline_store=None,
+            contract_root=None,
+            idempotency_key="fresh-disc-test",
+        )
+        is None
+    )
 
 
 def test_pipeline_display_name_uses_pending_episode_assignment(tmp_path):
@@ -650,7 +661,12 @@ def test_loaded_drive_can_prepare_non_authorized_pipeline(monkeypatch, tmp_path)
     assert public.list_events(response["job_id"])[0].event_type == "job_created"
     binding = private.get(response["job_id"])
     assert binding.output_root == output_root
-    assert binding.media_contexts["disc-01"].content_hint == "tv"
+    assert binding.media_contexts["disc-01"].content_hint is None
+    label_assessment = DiscAssessment.from_dict(
+        binding.media_contexts["disc-01"].routing_assessment
+    )
+    assert label_assessment.user_hint is None
+    assert label_assessment.composition.startswith("tv")
     assert binding.media_contexts["disc-01"].series_name == "Dragons Race to the Edge"
     assert binding.media_contexts["disc-01"].season == 1
     assert binding.media_contexts["disc-01"].disc_number == 2
@@ -926,13 +942,18 @@ def test_failed_per_title_disc_prepares_only_its_relevant_failed_scope(
     assert {item["title_index"] for item in recovery["preview"]["jobs"]} == {1}
     context = private.get(recovery["job_id"]).media_contexts["disc-01"]
     assert context.selected_title_indexes == (1,)
-    assert pipeline.disc_matching_scope(
-        next(
-            part
-            for part in recovery["preview"]["jobs"][0]["staging_destination"].split("/")
-            if len(part) == 16
+    assert (
+        pipeline.disc_matching_scope(
+            next(
+                part
+                for part in recovery["preview"]["jobs"][0]["staging_destination"].split(
+                    "/"
+                )
+                if len(part) == 16
+            )
         )
-    ) == (0, 1, 2)
+        == ()
+    )  # Unknown titles stay in recovery, not TV episode matching.
 
 
 def test_failed_whole_disc_batch_recovers_only_current_relevant_scope(
@@ -1474,7 +1495,8 @@ def test_bonus_drive_preparation_attaches_reviewed_catalogue(monkeypatch, tmp_pa
 
     binding = private.get(response["job_id"])
     context = binding.media_contexts["disc-01"]
-    assert context.content_hint == "extras"
+    assert context.content_hint is None
+    assert DiscAssessment.from_dict(context.routing_assessment).user_hint is None
     assert context.special_feature_catalog_id == "parent-trap-2005-r1-disc2-v1"
     assert context.special_feature_library_title == "The Parent Trap"
     assert context.selected_title_indexes
@@ -1589,7 +1611,9 @@ def test_drive_preparation_uses_thediscdb_episode_assignments_when_enabled(
     private = PrivateBindingStore(tmp_path / "private.sqlite3")
 
     response = rip.prepare_drive_pipeline(
-        rip.PrepareDrivePipelineRequest(drive_index=0, confirm_read=True),
+        rip.PrepareDrivePipelineRequest(
+            drive_index=0, content_hint="movie", confirm_read=True
+        ),
         "prepare-thediscdb-test-0001",
         watcher,
         OrchestrationStore(tmp_path / "public.sqlite3"),
@@ -1603,7 +1627,14 @@ def test_drive_preparation_uses_thediscdb_episode_assignments_when_enabled(
     assert context.series_name == "Example Series"
     assert context.season == 2
     assert context.tmdb_id == 123
-    assert context.content_hint == "tv"
+    assert context.content_hint is None
+    database_assessment = DiscAssessment.from_dict(context.routing_assessment)
+    assert database_assessment.user_hint == "movie"
+    assert database_assessment.title_roles()[0].role == "tv"
+    persisted = PipelineQueueStore(tmp_path / "pipeline.sqlite3").routing_latest(
+        database_assessment.inventory_fingerprint
+    )
+    assert persisted is not None and persisted.digest == database_assessment.digest
     assert context.disc_metadata_source == "thediscdb"
     assert context.disc_metadata_status == "matched"
     assert context.disc_metadata_matched_title_count == 1
@@ -1780,7 +1811,9 @@ def test_drive_preparation_auto_admits_complete_staged_disc(monkeypatch, tmp_pat
         return replace(res, stdout=res.stdout.replace("2000000000", "2000000"))
 
     response = rip.prepare_drive_pipeline(
-        rip.PrepareDrivePipelineRequest(drive_index=0, confirm_read=True),
+        rip.PrepareDrivePipelineRequest(
+            drive_index=0, content_hint="tv", confirm_read=True
+        ),
         "auto-admit-test-0001",
         watcher,
         public,
@@ -1793,3 +1826,21 @@ def test_drive_preparation_auto_admits_complete_staged_disc(monkeypatch, tmp_pat
     items = pipeline.list_items()
     assert len(items) == 3
     assert all(item.stage == "identify" for item in items)
+    restarted = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+    claimed = restarted.claim_next()
+    assert claimed is not None
+    contract = json.loads(claimed.artifact.contract_path.read_text(encoding="utf-8"))
+    assessment = assessment_from_contract(contract)
+    assert assessment is not None
+    assert assessment.user_hint == "tv"
+    assert assessment.composition == "unknown"
+    assert restarted.disc_matching_scope(assessment.inventory_fingerprint) == ()
+    assert (
+        restarted.routing_at(assessment.inventory_fingerprint, assessment.revision)
+        == assessment
+    )
+    with pytest.raises(PipelineReviewRequiredError) as exc:
+        IdentifyStageAdapter(object(), tmp_path / "contracts", routing_store=restarted)(
+            claimed
+        )
+    assert exc.value.code == "content_classification_required"

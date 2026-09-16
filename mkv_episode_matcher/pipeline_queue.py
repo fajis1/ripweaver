@@ -21,7 +21,12 @@ from mkv_episode_matcher.disc.ripper import (
     resolve_final_output,
     resolve_job_output,
 )
-from mkv_episode_matcher.disc.routing import DiscAssessment, RouteAttempt, RoutingError
+from mkv_episode_matcher.disc.routing import (
+    DiscAssessment,
+    RouteAttempt,
+    RoutingError,
+    assessment_from_contract,
+)
 from mkv_episode_matcher.pipeline import PipelineArtifact
 
 
@@ -366,6 +371,12 @@ def enqueue_verified_rip_results(  # noqa: C901
                     context.downstream_skip_title_indexes
                 ),
             }
+            if context.routing_assessment is not None:
+                context_payload.update(
+                    routing_assessment=context.routing_assessment,
+                    routing_assessment_digest=context.routing_assessment_digest,
+                    routing_assessment_revision=context.routing_assessment_revision,
+                )
         basename_match = _RIP_BASENAME.fullmatch(job.output_basename or "")
         queue_media_id = (media_id_overrides or {}).get(job.job_id)
         if queue_media_id is None:
@@ -415,6 +426,13 @@ def enqueue_verified_rip_results(  # noqa: C901
                 *payload.get("disc_expected_title_indexes", []),
                 title_index,
             })
+        if context_payload is not None and "routing_assessment" in context_payload:
+            try:
+                assessment_from_contract(payload)
+            except RoutingError as exc:
+                raise PipelineQueueError(
+                    "Verified rip routing binding is invalid"
+                ) from exc
         serialized = json.dumps(payload, indent=2, sort_keys=True) + "\n"
         contract = contract_root / f"{queue_media_id}.verified-rip.json"
         if contract.exists():
@@ -741,6 +759,19 @@ class PipelineQueueStore:
             raise RoutingError("Routing fingerprint is invalid")
         with self._connect() as connection:
             return self._latest_routing_in(connection, fingerprint)
+
+    def routing_at(self, fingerprint: str, revision: int) -> DiscAssessment | None:
+        if re.fullmatch(r"[0-9a-f]{16}", fingerprint) is None:
+            raise RoutingError("Routing fingerprint is invalid")
+        if type(revision) is not int or revision < 1:
+            raise RoutingError("Routing revision is invalid")
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM disc_routing_revisions WHERE disc_fingerprint = ? "
+                "AND revision = ?",
+                (fingerprint, revision),
+            ).fetchone()
+            return self._decode_routing_assessment(row) if row is not None else None
 
     def routing_append(
         self, assessment: DiscAssessment, *, expected_revision: int

@@ -133,6 +133,7 @@ from mkv_episode_matcher.disc.ripweaver_catalogue import (
     RipWeaverCatalogueError,
     RipWeaverCatalogueSupportRequiredError,
 )
+from mkv_episode_matcher.disc.routing_preparation import build_preparation_assessment
 from mkv_episode_matcher.disc.special_feature_binder import (
     SpecialFeatureBindError,
     load_bound_special_feature_manifest,
@@ -147,7 +148,6 @@ from mkv_episode_matcher.disc.thediscdb import (
     TheDiscDbError,
     TheDiscDbResolution,
     disc_root_from_device_name,
-    inferred_content_hint,
     lookup_disc_metadata,
     read_disc_filesystem_identity,
     unique_assignment_season,
@@ -156,6 +156,7 @@ from mkv_episode_matcher.disc.title_selector import (
     load_title_plan,
     select_pipeline_titles,
     select_recovery_titles,
+    select_rippable_titles,
 )
 from mkv_episode_matcher.media.ffprobe_runner import FFprobeError, resolve_ffprobe_path
 from mkv_episode_matcher.media.handbrake import HandBrakeProfile
@@ -1976,13 +1977,10 @@ def prepare_drive_pipeline(  # noqa: C901
             disc_resolution.episode_assignments if trusted_discdb_match else ()
         )
         use_special_features = request.content_hint in {"extras", "mixed"} or (
-            request.content_hint is None and not discdb_episode_assignments
+            not discdb_episode_assignments
         )
-        effective_content_hint = (
-            "tv"
-            if explicit_tv_context and request.content_hint is None
-            else request.content_hint
-        )
+        # A user selection is a search hint, never a title-selection rule.
+        effective_content_hint = "tv" if explicit_tv_context else None
         planned_titles = select_pipeline_titles(
             episode_plan,
             effective_content_hint,
@@ -2086,6 +2084,66 @@ def prepare_drive_pipeline(  # noqa: C901
                     for job in diagnostic.jobs
                 )
         disc_fingerprint = inventory_fingerprint_from_report(report_path)
+        routing_assessment = pipeline_store.routing_save_observation(
+            build_preparation_assessment(
+                fingerprint=disc_fingerprint,
+                title_indexes=tuple(sorted(title.index for title in inventory.titles)),
+                user_hint=request.content_hint,
+                title_classifications={
+                    item.title.index: item.classification
+                    for item in episode_plan.decisions
+                },
+                explicit_tv_context=explicit_tv_context is not None,
+                episode_assignment_indexes=tuple(
+                    int(item["title_index"]) for item in discdb_episode_assignments
+                ),
+                feature_assignment_indexes=tuple(
+                    int(item["title_index"])
+                    for item in assignments
+                    if item.get("classification") == "matched-feature"
+                ),
+                database_status=disc_resolution.status,
+            )
+        )
+        failed_title_indexes = _failed_rip_title_indexes(
+            public_store,
+            disc_fingerprint,
+        )
+        legacy_recovery_title_indexes = tuple(
+            sorted(
+                {
+                    decision.title.index
+                    for decision in select_recovery_titles(
+                        episode_plan, effective_content_hint
+                    )
+                }
+                | {
+                    int(item["title_index"])
+                    for item in assignments
+                    if item.get("classification") == "matched-feature"
+                }
+            )
+        )
+        # A user hint is carried only by the assessment. It must not select
+        # the acquisition set, skip another type, or establish a TV anchor.
+        tv_title_indexes = tuple(
+            item.title_index
+            for item in routing_assessment.title_roles()
+            if item.role == "tv"
+        )
+        relevant_title_indexes = tuple(
+            decision.title.index
+            for decision in select_rippable_titles(episode_plan)
+            if decision.title.duration_seconds is not None
+            and decision.title.duration_seconds >= DEFAULT_SHORT_TITLE_REVIEW_SECONDS
+        )
+        selected_title_indexes = tv_title_indexes
+        recovery_title_indexes = (
+            legacy_recovery_title_indexes
+            if failed_title_indexes
+            else tuple(sorted(set(relevant_title_indexes) | set(tv_title_indexes)))
+        )
+        downstream_skip_title_indexes = ()
         # Acquisition may expand to every zero-minimum MakeMKV title below,
         # but disc-aware episode reasoning must retain the classifier-derived
         # relevant scope calculated above.
@@ -2094,10 +2152,6 @@ def prepare_drive_pipeline(  # noqa: C901
         )
         pipeline_store.remember_disc_recovery_scope(
             disc_fingerprint, tuple(sorted(set(recovery_title_indexes)))
-        )
-        failed_title_indexes = _failed_rip_title_indexes(
-            public_store,
-            disc_fingerprint,
         )
         # Normal fresh acquisition mirrors MakeMKV's per-drive GUI mode:
         # authorize every title in the zero-minimum inventory so the executor
@@ -2185,22 +2239,7 @@ def prepare_drive_pipeline(  # noqa: C901
                 else None
             ),
             tmdb_id=(disc_resolution.tmdb_id if trusted_discdb_match else None),
-            content_hint=request.content_hint
-            or (
-                inferred_content_hint(disc_resolution.media_type)
-                if trusted_discdb_match
-                else None
-            )
-            or (
-                "tv"
-                if explicit_tv_context
-                else (
-                    "extras"
-                    if catalog_id is not None
-                    or not any(item.selected for item in episode_plan.decisions)
-                    else None
-                )
-            ),
+            content_hint=None,
             handbrake_profile_id=request.handbrake_profile_id,
             staging_attempt=f"attempt-{uuid4().hex[:12]}",
             selected_title_indexes=selected_title_indexes,
@@ -2224,6 +2263,9 @@ def prepare_drive_pipeline(  # noqa: C901
                 if request.library_policy == "missing-only"
                 else "preserve"
             ),
+            routing_assessment=routing_assessment.to_dict(),
+            routing_assessment_digest=routing_assessment.digest,
+            routing_assessment_revision=routing_assessment.revision,
         )
         preview, context = _build_prepared_preview(
             report_path,

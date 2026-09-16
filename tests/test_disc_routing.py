@@ -12,6 +12,7 @@ from mkv_episode_matcher.disc.routing import (
     TitleEvidence,
     assessment_from_contract,
 )
+from mkv_episode_matcher.disc.routing_preparation import build_preparation_assessment
 from mkv_episode_matcher.pipeline_queue import PipelineQueueError, PipelineQueueStore
 
 FINGERPRINT = "0123456789abcdef"
@@ -110,6 +111,46 @@ def test_legacy_contract_has_no_assessment_and_new_binding_is_exact():
             **payload,
             "media_context": {"routing_assessment": assessment.to_dict()},
         })
+
+
+def test_preparation_hint_does_not_promote_runtime_cluster_to_tv():
+    observed = build_preparation_assessment(
+        fingerprint=FINGERPRINT,
+        title_indexes=(0, 1, 2),
+        user_hint="tv",
+        title_classifications={0: "episode", 1: "extra", 2: "review"},
+        explicit_tv_context=False,
+        database_status="unavailable",
+    )
+    assert observed.user_hint == "tv"
+    assert [item.role for item in observed.title_roles()] == ["unknown"] * 3
+    assert observed.composition == "unknown"
+    assert all(item.status == "unavailable" for item in observed.evidence)
+
+
+def test_preparation_label_plus_title_shape_keeps_tv_extras_separate():
+    observed = build_preparation_assessment(
+        fingerprint=FINGERPRINT,
+        title_indexes=(0, 1, 2),
+        user_hint="movie",
+        title_classifications={0: "episode", 1: "extra", 2: "review"},
+        explicit_tv_context=True,
+    )
+    assert [item.role for item in observed.title_roles()] == ["tv", "extra", "unknown"]
+    assert observed.composition == "tv_with_extras"
+
+
+def test_preparation_conflicting_trusted_assignments_are_not_forced():
+    observed = build_preparation_assessment(
+        fingerprint=FINGERPRINT,
+        title_indexes=(0,),
+        user_hint="movie",
+        title_classifications={0: "review"},
+        explicit_tv_context=False,
+        episode_assignment_indexes=(0,),
+        feature_assignment_indexes=(0,),
+    )
+    assert observed.title_roles()[0].role == "conflicting"
 
 
 @pytest.mark.parametrize(
