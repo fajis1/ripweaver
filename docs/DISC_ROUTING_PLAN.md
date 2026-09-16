@@ -558,3 +558,15 @@ Deliverable: independently tested foundation; no new production routing yet.
   jobs; its persisted substantial routing scope remains `[0,2,3,4,5,6,7]`.
 - Queue pause and startup hold remain active. No rip or provider work has
   started. Refresh the browser fully before reviewing the plan.
+
+### 2026-09-16 - Duplicate awaiting-review plan cleanup
+
+- Automatic preparation had created two inactive awaiting-review 11-title plans
+  for the same exact fingerprint while the queue was paused. This was metadata
+  duplication, not two physical rips; no executor was attached and no MKVs
+  existed.
+- Added an exact inactive-job cleanup boundary and removed only the older plan
+  and its private binding. The newest plan remains awaiting review. Verification
+  shows exactly one Short Circuit 2 job and the durable queue is still paused.
+- Do not authorize a duplicate plan if one appears again; automatic preparation
+  should reuse the newest exact plan rather than append another review job.

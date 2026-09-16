@@ -439,6 +439,24 @@ class OrchestrationStore:
             connection.commit()
         return job_ids
 
+    def forget_inactive_job(self, job_id: str, disc_fingerprint: str) -> bool:
+        """Forget one exact inactive job during duplicate-plan cleanup."""
+        job = self.get_job(job_id)
+        if job_id not in {item.job_id for item in self.jobs_for_disc(disc_fingerprint)}:
+            raise RipError("Job does not belong to the requested disc")
+        if (
+            job.state in {"authorized", "queued", "running", "pause_requested", "paused"}
+            or job.executor_attached
+        ):
+            raise RipError("Active rip work must be stopped before cleanup")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for table in ("job_pipeline_settings", "commands", "events", "creation_keys"):
+                connection.execute(f"DELETE FROM {table} WHERE job_id = ?", (job_id,))
+            connection.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
+            connection.commit()
+        return True
+
     def list_events(self, job_id: str) -> tuple[OrchestrationEvent, ...]:
         self.get_job(job_id)
         with self._connect() as connection:
