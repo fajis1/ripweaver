@@ -4029,7 +4029,13 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
                 failedRipJob
                 && !preparedRecoveryScope,
               );
-              const expectedPipelineTitleIndexes = new Set(preparedRecoveryScope
+              // A fresh awaiting_review acquisition owns its complete inventory
+              // job scope. The matching/recovery scope is downstream-only and
+              // must not turn a new whole-disc plan into a three-title rerip.
+              const freshAcquisitionJob = Boolean(
+                inventoryPlanJob?.state === 'awaiting_review' && !failedRipJob,
+              );
+              const expectedPipelineTitleIndexes = new Set(!freshAcquisitionJob && preparedRecoveryScope
                 ? preparedRecoveryScope.required_title_indexes
                 : failedRecoveryPlanIsStale
                   ? failedRipJob?.preview?.jobs

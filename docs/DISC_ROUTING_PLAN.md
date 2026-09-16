@@ -500,3 +500,19 @@ Deliverable: independently tested foundation; no new production routing yet.
   requires switching the launch to the intended checkout with automatic
   execution held, then verifying its diagnostic/routing code before another
   preparation-only attempt. Do not rerip using the stale launcher.
+
+### 2026-09-15 - Fresh acquisition scope UI correction
+
+- Live preparation through the current checkout successfully created an
+  awaiting-review job containing all 11 inventory titles. The dashboard showed
+  only titles 0, 3, and 5 because `RipPipelineView` incorrectly preferred the
+  downstream matching/recovery scope for every job, including a fresh
+  awaiting-review acquisition.
+- Corrected the frontend precedence: a fresh awaiting-review job now uses its
+  complete acquisition job scope; the matching/recovery scope remains for failed
+  or recovery workflows only. Frontend lint and production build pass.
+- Restarted the current checkout after rebuilding. The 11-title job remains
+  awaiting review and the durable queue remains paused; no rip was started.
+- The current UI/API may need a browser hard refresh to discard an older cached
+  bundle. Do not click the three-title rerip action; it is no longer the correct
+  representation of this fresh plan.
