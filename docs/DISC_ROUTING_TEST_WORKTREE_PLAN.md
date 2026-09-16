@@ -7,7 +7,7 @@
 
 ## Status (2026-09-16)
 
-Phase 0, test-worktree baseline audit: **in progress**. The narrow fresh-scan
+Phase 0, test-worktree baseline audit: **complete**. The narrow fresh-scan
 auto-admission blocker has been repaired, but no unified routing repair has
 been ported and no fresh Short Circuit 2 live rip has been validated. Existing
 uncommitted test-worktree changes belong to the user and must be preserved.
@@ -40,10 +40,37 @@ completion and test claims do not apply here.
   automatic Gemini fallback flags. This audit has not read `.env` or printed
   the owner's local configuration values. The branch also contains unfinished
   triage/recovery edits; routing work must not overwrite them.
+- The verified-rip contract carries `media_context`, fingerprint, title index,
+  and expected title indexes. There is no assessment revision or digest in that
+  contract today. The queue separately persists fingerprint-bound matching and
+  recovery scopes, dispositions, and per-item review states.
+- The current worker runs disc-level TV analysis and the newer automatic
+  non-disc triage recovery under its downstream lock. Its extras fallback only
+  changes a review code; it does not execute movie/extra classification. The
+  existing Gemini fallback can classify descriptive movie/extras evidence when
+  invoked, but its tuple of handled IDs is not a durable per-route outcome.
+
+## Earlier-checkout compatibility verdict
+
+| Earlier work | Verdict for this test branch | Reason / required adaptation |
+| --- | --- | --- |
+| Path-free fingerprint-bound assessment, explicit unknown/conflicts, hint separate from evidence, digest/revision checks (R1/R2/R6) | **Keep the design; adapt implementation** | No equivalent persisted assessment exists here. Reuse the invariants and tests, but bind to this branch's actual `MediaContext`, queue contract, and exact matching/recovery scopes. Do not let runtime or hint become TV evidence. |
+| Separate acquisition and downstream title scope | **Already present; preserve** | Fresh preparation acquires the full zero-minimum inventory; the queue stores classifier-derived matching/recovery scope. Rework downstream scope for mixed discs without changing MakeMKV acquisition or failed-disc recovery rules. |
+| Old checkout's preparation/worker/adapter file edits | **Do not copy** | These files have extensive uncommitted triage/season-recovery work here. The old worker's post-item path omits this branch's automatic triage call. Merge behavior deliberately with targeted tests. |
+| Durable route claims and per-route outcomes (R3/R5) | **Needed, but redesign integration** | The current queue has review states but no revision-bound route attempt record. Old claim/attempt logic is useful as a starting point; outcome classification must come from actual provider/identity results, not a handled-ID tuple. Restart and stale-claim behavior need end-to-end tests. |
+| Bounded Gemini/movie/extras work (R4) | **Needed, but preserve worker discipline** | Current extras automation only changes a review code. Any new work must share pause/stop and ASR serialization, avoid detached tasks, and retain the triage and TV paths already operating in this branch. |
+| Dashboard and legacy repair UI | **Defer until backend contracts are stable** | The old routing dashboard is not deployed here. Read `FRONTEND_RECOVERY_GUIDE.md` before any frontend edits and preserve existing recovery UI. |
+| Old synthetic test results and live claims | **Do not carry over** | They ran against another checkout. Repeat relevant tests here; a new exact-input live canary is still separate authorization. |
+
+The older six repair themes remain relevant as acceptance questions, not as
+completed work or files ready to transplant. In particular, Short Circuit 2
+needs a movie-with-extras assessment that can retain short extras for review
+without sending them into TV episode matching. A user TV/movie/extras choice
+may order investigation but must not force a content role or skip other routes.
 
 ## Repair sequence and gates
 
-1. [ ] Finish baseline review: map test-worktree preparation, saved contracts,
+1. [x] Finish baseline review: map test-worktree preparation, saved contracts,
    worker, movie/extra identify, queue, and relevant config **schema**; compare
    each proposed repair from the other checkout against current behavior.
 2. [x] Fix fresh preparation's no-staged-candidate auto-admit path and add a
@@ -79,3 +106,7 @@ completion and test claims do not apply here.
   was previewed and pushed after the initial milestone. Existing unrelated
   working-tree changes remain in place. Next: complete the test-branch routing
   and configuration-schema comparison before porting any unified assessment.
+- 2026-09-16: Completed the test-branch comparison and recorded the
+  keep/adapt/do-not-copy verdict above. No other-checkout code was ported.
+  Phase 3 (persisted assessment design for this branch) is next. No live disc,
+  provider, or media operation occurred during this comparison.

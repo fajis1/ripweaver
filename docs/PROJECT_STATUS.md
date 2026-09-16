@@ -4556,3 +4556,7 @@ and test results from that other checkout are not present in this build. See
 and progress log. A narrow synthetic-tested fix now allows fresh preparation
 to continue when no staged MKVs exist; it is not a live rip validation or a
 completed unified-routing implementation.
+The test-worktree compatibility audit is now complete. Its plan records which
+earlier routing ideas are reusable and which old file edits must not be copied
+over this branch's triage and recovery changes. The next phase is a new
+persisted-assessment design integrated with this branch's existing contracts.
