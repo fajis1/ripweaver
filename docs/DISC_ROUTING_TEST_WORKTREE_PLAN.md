@@ -74,3 +74,8 @@ completion and test claims do not apply here.
   `tests/test_rip_drive_prepare.py` successfully (33 tests). No physical disc,
   provider, or media access occurred. Phase 0 audit continues; Phase 2 above is
   a narrow prerequisite, not proof that routing or the live pipeline works.
+- 2026-09-16: The full repository pytest suite passed with coverage disabled;
+  Ruff passed for the modified Python files. The approved `wip/test` checkpoint
+  was previewed and pushed after the initial milestone. Existing unrelated
+  working-tree changes remain in place. Next: complete the test-branch routing
+  and configuration-schema comparison before porting any unified assessment.
