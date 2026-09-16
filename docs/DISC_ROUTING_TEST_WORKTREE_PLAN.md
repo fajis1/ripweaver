@@ -7,12 +7,12 @@
 
 ## Status (2026-09-16)
 
-Phase 0, test-worktree baseline audit: **complete**. The narrow fresh-scan
+Milestone M0, test-worktree baseline audit: **complete**. The narrow fresh-scan
 auto-admission blocker has been repaired, but no unified routing repair has
 been ported and no fresh Short Circuit 2 live rip has been validated. Existing
 uncommitted test-worktree changes belong to the user and must be preserved.
 The earlier routing plan in another checkout is a design/reference only; its
-completion and test claims do not apply here.
+completion and test claims do not apply here. **Next: M2 assessment contract.**
 
 ## Findings verified in this worktree
 
@@ -68,26 +68,147 @@ needs a movie-with-extras assessment that can retain short extras for review
 without sending them into TV episode matching. A user TV/movie/extras choice
 may order investigation but must not force a content role or skip other routes.
 
-## Repair sequence and gates
+## Proposed decision contract
 
-1. [x] Finish baseline review: map test-worktree preparation, saved contracts,
-   worker, movie/extra identify, queue, and relevant config **schema**; compare
-   each proposed repair from the other checkout against current behavior.
-2. [x] Fix fresh preparation's no-staged-candidate auto-admit path and add a
-   synthetic regression test. Incomplete staged sets also decline auto-admit
-   without a path-bearing error. The focused drive-preparation test file passes.
-3. [ ] Design a single persisted, fingerprint-bound disc/title assessment for
-   this branch. Keep user hints advisory, preserve unknown/conflicting evidence,
-   and separate whole-disc acquisition from per-title identification scope.
-   Port only compatible pieces after review; do not copy entire modules blindly.
-4. [ ] Integrate preparation, immutable contract, identify, Gemini outcomes,
-   alternate attempts, and durable worker/restart controls. Preserve existing
-   TV independent-evidence, range, and coherence gates, and triage originals.
-5. [ ] Review dashboard and legacy recovery; then run focused and full synthetic
-   tests with recorded results. Update this plan after every milestone and
-   checkpoint the test worktree under the approved `wip/test` procedure.
-6. [ ] Propose an exact-input live Short Circuit 2 canary separately. Do not
-   erase metadata, rip, eject, transcode, or call a provider based on this plan.
+One fingerprint-bound assessment represents the **whole disc composition** and
+each inventory title's **provisional role** (`tv`, `movie`, `extra`, `unknown`,
+or `conflicting`). It stores the complete sorted title-index set, original user
+hint, path-free evidence source/status, monotonic revision, schema version, and
+digest. It is a routing proposal, never a verified episode/movie identity or
+permission to read, rip, contact Gemini, transcode, eject, or organize media.
+
+Use the existing `PipelineQueueStore` database as the authoritative routing
+control plane, with append-only assessment revisions and per-title route
+attempts. A separate routing database would make the assessment, queue item,
+and route claim non-atomic. Reuse the earlier checkout's *validation ideas*,
+not its files or separate-store integration. Any change to queue schema must
+have a migration test against an older database and preserve existing records.
+
+Evidence hierarchy is explicit: independently validated content identity or
+trusted title-specific database match outranks structural label/inventory
+clues; user hints only order searches. A runtime cluster is not TV evidence.
+Unavailable provider results add no type evidence. Equal-strength conflicting
+claims stay conflicting and require a bounded classifier or review. Assessment
+revision changes must compare evidence content, not just revision numbers;
+stale writers are rejected. Successful sibling assignments may add evidence
+but cannot silently rename or reroute completed titles.
+
+Acquisition and identification stay separate: fresh zero-minimum whole-disc
+MakeMKV selection remains unchanged, as do failed-disc recovery ordinals and
+durable skips. The assessment determines only which preserved titles can enter
+TV episode matching versus movie/extras classification or review. Unknown
+substantial titles must not disappear because they are outside the TV cohort;
+tiny/menu titles remain preserved and reviewable under existing policy, never
+automatically treated as episodes or deleted.
+
+## Implementation milestones and acceptance gates
+
+### M0 — Test-worktree baseline (complete)
+
+- [x] Verify launcher/worktree, dirty branch, configuration **schema**, current
+  preparation, contract, worker, Gemini, TV, and triage boundaries.
+- [x] Record keep/adapt/do-not-copy verdict above. Do not read `.env` or copy
+  the other checkout's claimed completion state.
+
+### M1 — Fresh preparation prerequisite (complete, synthetic only)
+
+- [x] Empty or incomplete staged candidates decline auto-admission without
+  path-bearing errors. Retain complete-staging recovery.
+- [x] Focused preparation tests, full pytest suite, and modified-Python Ruff
+  checks passed in this worktree. No live scan was performed for this gate.
+
+### M2 — Assessment model, queue persistence, and migration
+
+- [ ] Specify strict path-free schema, source reliability, role/composition
+  derivation, digests, bounds, and duplicate/conflict validation.
+- [ ] Add queue-owned assessment revisions and route-attempt tables with
+  transactional compare-and-swap, idempotent retries, and exact-fingerprint
+  forget cleanup; leave existing scopes and dispositions intact.
+- [ ] Define a safe migration for pre-routing queue databases and read-only
+  legacy contracts. Never infer an old item's content role from its hint alone.
+- [ ] Test TV, movie-with-extras, mixed disc, unknown, conflicting metadata,
+  changed inventory, concurrent writes, revision >2, restart, and forgetting.
+  Gate: no provider, media, or physical-disc access is needed.
+
+### M3 — Preparation and immutable-contract handoff
+
+- [ ] Feed inventory, explicit label structure, and trusted title-specific
+  database outcomes into one assessment builder. Record unavailable/ambiguous
+  lookups as such; do not turn a movie hint or dominant runtime into TV fact.
+- [ ] Persist the assessment during preparation, then carry exact revision and
+  digest through `MediaContext` into each verified-rip contract. Validate the
+  contract's fingerprint, title index, digest, schema, and saved revision when
+  identify/worker reads it. Old contracts remain on explicit compatibility
+  review paths, not an implicit unknown-to-TV default.
+- [ ] Derive downstream per-title scope from that assessment without changing
+  fresh whole-disc acquisition or failed-disc recovery. Keep extras out of TV
+  anchors/range/coherence counts; preserve relevant unknown content for an
+  alternate route. Verify both contradictory hint directions.
+- [ ] Synthetic preparation-to-contract-to-restart-to-identify tests must use
+  saved inventories and fake lookups, including an 11-title movie-plus-extras
+  shape. Gate: no title is silently discarded or promoted to TV by hint.
+
+### M4 — Bounded alternate-route policy and real outcomes
+
+- [ ] Route per title using assessed evidence, with hints changing **priority
+  only**. Record `matched`, `no_match`, `review`, `service_failed`, and
+  `interrupted` distinctly. Provider failure holds; it is not evidence to
+  switch type. A genuine no-match may advance to a different eligible route.
+- [ ] Claim at most one route per title/evidence revision atomically with queue
+  state. Settle each claim from an actual result; reconcile interrupted claims
+  on restart and prevent same-evidence retry loops. Bound attempts/exhaustion.
+- [ ] Gemini receives only permitted, bounded evidence and prior safe attempt
+  summaries. Its classification proposal cannot bypass the existing TV
+  independent-window, residual, range, and whole-disc coherence gates, or
+  automatically place a provisional movie/extras identity into the library.
+- [ ] Test a failed TV catalogue followed by a viable movie search, a true TV
+  no-match, Gemini no-match, visual review, provider outage, conflicting
+  metadata, multiple movies, and a movie with extras. Distinguish an absent
+  catalogue from an unavailable service.
+
+### M5 — Worker, Gemini, and existing-TV/triage integration
+
+- [ ] Replace the review-code-only extras fallback with bounded, tracked work
+  on the current downstream worker. Preserve pause/stop, its shared ASR lock,
+  serialized identify stage, and no detached per-item thread.
+- [ ] Keep `_apply_automatic_triage_analysis()` and disc-level TV analysis in
+  both idle and post-item paths. Preserve triage originals and the established
+  TV evidence/coherence rules. Integrate Gemini accepted content roles into
+  the same durable assessment **after** actual result validation.
+- [ ] End-to-end fake-provider/queue tests cover matched, no-match, review,
+  service failure, pause, shutdown, concurrent claim, restart, and sibling
+  evidence revisions. Gate: existing TV and triage suites still pass.
+
+### M6 — Visibility, legacy review, and broad synthetic verification
+
+- [ ] Display the user's hint separately from assessed composition, per-title
+  role, current route, evidence status, and exhausted/held reason. Do not show
+  a model guess as verified identity. Read `FRONTEND_RECOVERY_GUIDE.md` fully
+  before frontend source or build edits.
+- [ ] Offer a metadata-only reassessment for eligible legacy unresolved discs;
+  keep live retries, provider/media reads, and final placement behind existing
+  authorization. Do not silently alter completed assignments.
+- [ ] Run focused tests first, then full pytest with coverage disabled, Ruff
+  on modified modules, frontend checks if touched, and a synthetic matrix for
+  ordinary TV, TV+extras, movie+extras, double feature, mixed TV/movie, wrong
+  hints, unknown labels, ties, provider outage, restart, and recovery.
+
+### M7 — Separately authorized live canary (not yet approved)
+
+- [ ] Before requesting a live Short Circuit 2 test, present the exact disc
+  identity/fingerprint, drive, title set, plan digest, output/run roots, tool
+  paths, timeout, provider/media operations, and whether eject/auto-processing
+  is enabled. Confirm no competing MakeMKV child and obtain **separate exact
+  authorization** for each media-changing or provider operation required.
+- [ ] Capture path-redacted preparation, assessment revisions, route attempts,
+  and per-title outcomes. Success means the feature film and extras are
+  considered without TV episode misrouting; no relevant title disappears,
+  rerips are not requested without evidence, and existing TV behavior remains
+  intact. A synthetic pass or this plan alone does not authorize the canary.
+
+After each completed milestone, update this status/progress log, run its gate,
+preview then push the approved `wip/test` checkpoint. Never mark a milestone
+complete solely because another checkout passed tests.
 
 ## Progress log
 
@@ -108,5 +229,9 @@ may order investigation but must not force a content role or skip other routes.
   and configuration-schema comparison before porting any unified assessment.
 - 2026-09-16: Completed the test-branch comparison and recorded the
   keep/adapt/do-not-copy verdict above. No other-checkout code was ported.
-  Phase 3 (persisted assessment design for this branch) is next. No live disc,
+  M2 (persisted assessment design for this branch) is next. No live disc,
   provider, or media operation occurred during this comparison.
+- 2026-09-16: Expanded the repair plan into M0–M7 with queue-owned assessment
+  persistence, precise route-outcome/restart gates, explicit TV/triage
+  preservation, synthetic acceptance tests, and a separate live-canary approval
+  boundary. Planning/documentation only; M2–M7 remain unimplemented.
