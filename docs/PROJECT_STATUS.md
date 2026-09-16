@@ -1,5 +1,17 @@
 # Project Status
 
+## 2026-09-15 - Live routing validation blocked by launcher mismatch
+
+- The active launcher's adjacent source is a different checkout without the
+  persisted-routing preparation integration. Do not treat its live runs as
+  validation of this workspace or assume restarting it loads these changes.
+- Added path-free reason-code/code-location diagnostics for automatic failures;
+  30 focused tests and changed-module lint passed. Preparation-only live retries
+  still returned 409; the exact conflict remains unclassified. No rip executed.
+- Next: explicitly switch to the intended checkout with execution held, verify
+  loaded code, then retry preparation only. See `DISC_ROUTING_PLAN.md` for reset
+  scope and the detailed handoff. No launcher/settings changes were made.
+
 ## 2026-09-15 - Optical preparation and recovery regression repair
 
 - Restored normal preparation when staged outputs are absent, incomplete, or

@@ -480,3 +480,23 @@ Deliverable: independently tested foundation; no new production routing yet.
   review the exact rip scope, and obtain execution authorization. This reset
   does not establish that the new live automatic pipeline works and does not
   complete the unfinished general legacy-reassessment feature.
+
+### 2026-09-15 - Preparation diagnostics and launcher mismatch
+
+- Added bounded preparation failure diagnostics: exact allowlisted reason codes
+  and application module/function/line locations, including chained exceptions.
+  Arbitrary exception messages, HTTP detail payloads, locals, paths, and provider
+  responses are not logged. Unknown reasons remain explicitly unclassified.
+- Focused synthetic validation: 30 tests passed across preparation diagnostics
+  and automatic ripping. The diagnostic files pass Ruff after formatting.
+- Two separately confirmed live preparation-only retries returned HTTP 409.
+  Neither request authorized or executed ripping. The response privacy filter
+  did not recognize the reason; do not claim a specific conflict was diagnosed.
+- Found the live listener's launcher belongs to a different checkout. Its
+  adjacent backend source differs from this workspace, retains the old season
+  resolver seen in the runtime logs, and its preparation router does not contain
+  DiscRoutingStore. Restarting that launcher is not validation of these changes.
+- No backend was stopped/replaced, and no settings were changed. Next action
+  requires switching the launch to the intended checkout with automatic
+  execution held, then verifying its diagnostic/routing code before another
+  preparation-only attempt. Do not rerip using the stale launcher.

@@ -450,13 +450,20 @@ def run_automatic_drive(drive_index: int) -> bool:
     except (HTTPException, RipError, OSError, ValueError) as exc:
         retry = _automatic_failure_is_retryable(exc)
         status_code = exc.status_code if isinstance(exc, HTTPException) else None
+        from mkv_episode_matcher.backend.preparation_diagnostics import (
+            safe_preparation_failure,
+        )
+
+        diagnostic = safe_preparation_failure(exc)
         logger.warning(
             "Automatic rip stopped safely during {}: failure_type={} "
-            "status_code={} retry_unchanged_disc={}",
+            "status_code={} retry_unchanged_disc={} reason_code={} code_locations={}",
             stage,
             type(exc).__name__,
             status_code,
             retry,
+            diagnostic["reason_code"],
+            diagnostic["code_locations"],
         )
         return not retry
 
