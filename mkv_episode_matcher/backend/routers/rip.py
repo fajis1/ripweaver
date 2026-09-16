@@ -158,6 +158,7 @@ from mkv_episode_matcher.disc.title_selector import (
     load_title_plan,
     select_pipeline_titles,
     select_recovery_titles,
+    select_rippable_titles,
 )
 from mkv_episode_matcher.media.ffprobe_runner import FFprobeError, resolve_ffprobe_path
 from mkv_episode_matcher.media.handbrake import HandBrakeProfile
@@ -2148,6 +2149,28 @@ def prepare_drive_pipeline(  # noqa: C901
             public_store,
             disc_fingerprint,
         )
+        # With no trusted TV context or database assignment, the initial
+        # classifier is advisory only for a fresh disc. Preserve every
+        # substantial title for unified routing; an existing failed attempt
+        # keeps its deliberately narrowed recovery scope.
+        if (
+            not failed_title_indexes
+            and request.content_hint is None
+            and explicit_tv_context is None
+            and not discdb_episode_assignments
+        ):
+            unknown_disc_scope = tuple(
+                decision.title.index
+                for decision in select_rippable_titles(episode_plan)
+            )
+            selected_title_indexes = unknown_disc_scope
+            recovery_title_indexes = unknown_disc_scope
+            pipeline_store.remember_disc_matching_scope(
+                disc_fingerprint, unknown_disc_scope
+            )
+            pipeline_store.remember_disc_recovery_scope(
+                disc_fingerprint, unknown_disc_scope
+            )
         # Normal fresh acquisition mirrors MakeMKV's per-drive GUI mode:
         # authorize every title in the zero-minimum inventory so the executor
         # can keep one ``mkv ... all`` process open for this disc.  A known

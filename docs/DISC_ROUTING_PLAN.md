@@ -516,3 +516,22 @@ Deliverable: independently tested foundation; no new production routing yet.
 - The current UI/API may need a browser hard refresh to discard an older cached
   bundle. Do not click the three-title rerip action; it is no longer the correct
   representation of this fresh plan.
+
+### 2026-09-15 - Root scope correction after live review
+
+- The three-title display was not merely cosmetic. Fresh no-hint preparation
+  persisted the TV episode-cluster scope before unified routing had evidence;
+  Short Circuit 2 therefore saved `[0,3,5]` as its downstream/recovery scope.
+- Updated the backend: when there is no explicit TV context, trusted database
+  assignment, or known failed attempt, matching and recovery scopes now retain
+  every substantial/rippable title for later routing (`0,2,3,4,5,6,7` for this
+  inventory). Existing failed-disc recovery remains narrowed by its durable
+  failed scope. Preparation-focused tests pass (37 tests).
+- The log phrase `Auto-admit failed: NO CANDIDATES FOUND` describes an empty
+  existing-staging search; it must not divert a fresh no-output acquisition
+  into recovery. The current source auto-admit returns no candidate and allows
+  the fresh plan to remain awaiting review, while stale installed launchers may
+  still emit the older error.
+- The current 11-title awaiting-review job predates this correction. It must be
+  cleared as metadata only and freshly prepared before any execution decision;
+  no MKVs are present to delete and no rerip should be selected.
