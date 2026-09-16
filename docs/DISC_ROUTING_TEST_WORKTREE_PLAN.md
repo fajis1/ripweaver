@@ -275,3 +275,25 @@ complete solely because another checkout passed tests.
   the downstream worker still does not claim and settle those actual outcomes
   transactionally, and the automatic fallback remains review-code-only.
   No live provider, media, or disc operation occurred.
+- 2026-09-16: Continued M4 in the same test worktree. A held identify item can
+  now be claimed atomically with its exact queue review code, and the worker
+  records terminal TV coordinator outcomes against the bound assessment.
+  `all_season_series_not_found` remains review because an absent series
+  catalogue is not title-level non-TV evidence; catalogue/evidence or analysis
+  failures hold as service failures, while coherence/independent evidence
+  holds remain review. Pending TV codes are not settled early. Synthetic tests
+  verify paused queues, no-match policy progression, outage hold,
+  repeated worker calls, and queue-state mismatch. Gemini classification
+  outcomes and alternate-route execution are still not connected to the
+  worker, so M4 remains in progress. No live operation occurred.
+- 2026-09-16: Audited the meaning of provider results before using them as
+  route evidence. A Gemini descriptive `tv_episode` proposal without an
+  independently validated TV assignment is now review, not a negative
+  movie/classification result. Only an explicit null episode choice within a
+  bounded reviewed catalogue is typed as a catalogue no-match. This prevents
+  a provisional type guess from automatically advancing to another route.
+- 2026-09-16: Connected startup to durable route-claim reconciliation. A
+  crashed `running` claim becomes `interrupted` and is not silently retried;
+  the startup log reports counts only. Focused synthetic restart tests pass.
+  This still does not authorize provider or media work and does not complete
+  M4's Gemini-to-worker result settlement.

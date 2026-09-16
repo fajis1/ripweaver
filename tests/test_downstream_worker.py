@@ -5,6 +5,68 @@ from mkv_episode_matcher.backend.downstream_worker import (
     DownstreamWorker,
     _contract_disc_title_identity,
 )
+from mkv_episode_matcher.disc.routing import DiscAssessment, TitleEvidence
+from mkv_episode_matcher.pipeline_queue import PipelineQueueStore, build_artifact
+
+
+def test_worker_settles_terminal_tv_route_without_rerouting_uncertainty(
+    tmp_path, monkeypatch
+):
+    fingerprint = "0123456789abcdef"
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    assessment = store.routing_append(
+        DiscAssessment(
+            fingerprint,
+            (0, 1),
+            user_hint="movie",
+            evidence=(
+                TitleEvidence(0, "database", "supported", "tv"),
+                TitleEvidence(1, "database", "supported", "tv"),
+            ),
+        ),
+        expected_revision=0,
+    )
+    for title_index, review_code in enumerate((
+        "all_season_series_not_found",
+        "all_season_catalog_unavailable",
+    )):
+        media_id = f"disc-01-title-{title_index:03d}"
+        contract = tmp_path / f"{media_id}.json"
+        contract.write_text(
+            json.dumps({
+                "mode": "verified-rip-contract",
+                "disc_fingerprint": fingerprint,
+                "title_index": title_index,
+                "media_context": {
+                    "routing_assessment": assessment.to_dict(),
+                    "routing_assessment_digest": assessment.digest,
+                    "routing_assessment_revision": assessment.revision,
+                },
+            }),
+            encoding="utf-8",
+        )
+        store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+        store.hold_for_review(media_id, review_code)
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(automatic_processing_enabled=True)
+        ),
+    )
+    worker = DownstreamWorker(
+        SimpleNamespace(store=store), allowed_stages=("identify",)
+    )
+    store.set_paused(True)
+    assert worker._settle_terminal_tv_route() is False
+    assert store.routing_attempts(fingerprint, 0) == ()
+    store.set_paused(False)
+    assert worker._settle_terminal_tv_route() is True
+    assert worker._settle_terminal_tv_route() is True
+    assert worker._settle_terminal_tv_route() is False
+    assert store.routing_attempts(fingerprint, 0)[0].outcome == "review"
+    assert store.routing_attempts(fingerprint, 1)[0].outcome == "service_failed"
+    assert store.routing_claim_next(assessment, 1) is None
+    assert store.routing_claim_next(assessment, 0) is None
 
 
 def test_worker_quarantines_legacy_sequence_only_downstream_assignments(

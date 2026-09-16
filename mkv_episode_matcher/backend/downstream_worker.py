@@ -189,7 +189,69 @@ class DownstreamWorker:
         handled = self._apply_automatic_disc_analysis()
         if not handled:
             handled = self._apply_automatic_triage_analysis()
+        if not handled:
+            handled = self._settle_terminal_tv_route()
         return handled
+
+    def _settle_terminal_tv_route(self) -> bool:  # noqa: C901 - guarded saved-result handoff
+        """Record a final TV result without treating a service outage as no-match."""
+
+        config = get_config_manager().load()
+        store = self.dispatcher.store
+        paused = getattr(store, "is_paused", None)
+        if not config.automatic_processing_enabled or (callable(paused) and paused()):
+            return False
+        from mkv_episode_matcher.disc.routing import assessment_from_contract
+        from mkv_episode_matcher.disc.routing_controller import (
+            next_route,
+            terminal_tv_review_outcome,
+        )
+
+        for item in store.list_items():
+            if item.stage != "identify" or item.state != "review_required":
+                continue
+            outcome = terminal_tv_review_outcome(item.review_code)
+            if outcome is None:
+                continue
+            try:
+                payload = json.loads(
+                    item.artifact.contract_path.read_text(encoding="utf-8")
+                )
+                assessment = assessment_from_contract(payload)
+            except (OSError, ValueError, TypeError):
+                continue
+            if assessment is None:
+                continue
+            title_index = payload["title_index"]
+            title_role = next(
+                role.role
+                for role in assessment.title_roles()
+                if role.title_index == title_index
+            )
+            if title_role != "tv":
+                continue
+            latest = store.routing_latest(assessment.inventory_fingerprint)
+            if latest is None or latest.digest != assessment.digest:
+                continue
+            attempts = store.routing_attempts(
+                assessment.inventory_fingerprint, title_index
+            )
+            if (
+                next_route(assessment, title_index=title_index, attempts=attempts)
+                != "tv"
+            ):
+                continue
+            claimed = store.routing_claim_next(
+                assessment,
+                title_index,
+                media_id=item.media_id,
+                expected_review_code=item.review_code,
+            )
+            if claimed != "tv":
+                continue
+            store.routing_settle(assessment, title_index, "tv", outcome)
+            return True
+        return False
 
     def _resume_version_coexistence_reviews(self) -> bool:
         """Requeue old broad episode collisions under the exact-version rule."""
@@ -633,6 +695,15 @@ class DownstreamWorker:
                     except Exception as exc:
                         logger.error(
                             "Automatic triage analysis could not run: {}",
+                            type(exc).__name__,
+                        )
+                        handled = False
+                if not handled:
+                    try:
+                        handled = self._settle_terminal_tv_route()
+                    except Exception as exc:
+                        logger.error(
+                            "Automatic TV route settlement could not run: {}",
                             type(exc).__name__,
                         )
                         handled = False

@@ -4,6 +4,22 @@ from __future__ import annotations
 
 from mkv_episode_matcher.disc.routing import DiscAssessment, RouteAttempt, RoutingError
 
+_TV_TERMINAL_REVIEW_OUTCOMES = {
+    "all_season_series_not_found": "review",
+    "all_season_catalog_unavailable": "service_failed",
+    "all_season_analysis_failed": "service_failed",
+    "all_season_evidence_failed": "service_failed",
+    "all_season_sequence_review_required": "review",
+    "independent_episode_evidence_required": "review",
+    "whole_disc_coherence_review_required": "review",
+}
+
+
+def terminal_tv_review_outcome(review_code: str | None) -> str | None:
+    """Classify only final TV coordinator results, never an in-progress hold."""
+
+    return _TV_TERMINAL_REVIEW_OUTCOMES.get(review_code)
+
 
 def _route_order(role: str, hint: str | None) -> tuple[str, ...]:
     if role == "tv":

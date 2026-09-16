@@ -33,7 +33,7 @@ def test_typed_gemini_outcomes_distinguish_match_no_match_and_review():
     assert report.handled_ids == ("movie", "visual")
     assert [(item.disposition, item.accepted_role) for item in report.titles] == [
         ("matched", "movie"),
-        ("no_match", None),
+        ("review", None),
         ("review", None),
         ("review", None),
     ]

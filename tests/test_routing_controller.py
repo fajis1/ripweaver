@@ -1,5 +1,6 @@
 """Synthetic route decisions and durable claims; no media/provider work."""
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
@@ -11,8 +12,11 @@ from mkv_episode_matcher.disc.routing import (
     RoutingError,
     TitleEvidence,
 )
-from mkv_episode_matcher.disc.routing_controller import next_route
-from mkv_episode_matcher.pipeline_queue import PipelineQueueStore
+from mkv_episode_matcher.disc.routing_controller import (
+    next_route,
+    terminal_tv_review_outcome,
+)
+from mkv_episode_matcher.pipeline_queue import PipelineQueueStore, build_artifact
 
 FINGERPRINT = "0123456789abcdef"
 
@@ -164,3 +168,63 @@ def test_conflicting_metadata_requires_classification_before_hint_route():
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("all_season_series_not_found", "review"),
+        ("all_season_catalog_unavailable", "service_failed"),
+        ("all_season_analysis_failed", "service_failed"),
+        ("all_season_evidence_failed", "service_failed"),
+        ("whole_disc_coherence_review_required", "review"),
+        ("episode_match_review", None),
+        ("all_season_analysis_running", None),
+    ],
+)
+def test_only_terminal_tv_codes_become_route_outcomes(code, expected):
+    assert terminal_tv_review_outcome(code) == expected
+
+
+def test_route_claim_checks_held_queue_state_atomically(tmp_path):
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    assessment = store.routing_append(
+        DiscAssessment(FINGERPRINT, (0,)), expected_revision=0
+    )
+    contract = tmp_path / "rip.json"
+    contract.write_text(json.dumps({"mode": "verified-rip-contract"}), encoding="utf-8")
+    store.enqueue_verified_rip("disc-01-title-000", build_artifact("rip", contract))
+    with pytest.raises(RoutingError, match="queue state changed"):
+        store.routing_claim_next(
+            assessment,
+            0,
+            media_id="disc-01-title-000",
+            expected_review_code="all_season_series_not_found",
+        )
+    assert store.routing_attempts(FINGERPRINT, 0) == ()
+    store.hold_for_review("disc-01-title-000", "all_season_series_not_found")
+    assert (
+        store.routing_claim_next(
+            assessment,
+            0,
+            media_id="disc-01-title-000",
+            expected_review_code="all_season_series_not_found",
+        )
+        == "classify"
+    )
+
+
+def test_restart_reconciles_running_route_without_retrying(tmp_path):
+    path = tmp_path / "queue.sqlite3"
+    store = PipelineQueueStore(path)
+    assessment = store.routing_append(
+        DiscAssessment(FINGERPRINT, (0,), user_hint="movie"), expected_revision=0
+    )
+    assert store.routing_claim_next(assessment, 0) == "classify"
+    restarted = PipelineQueueStore(path)
+    from mkv_episode_matcher.backend.main import _reconcile_downstream_at_startup
+
+    _reconcile_downstream_at_startup(restarted)
+    assert restarted.routing_reconcile_interrupted() == 0
+    assert restarted.routing_attempts(FINGERPRINT, 0)[0].outcome == "interrupted"
+    assert restarted.routing_claim_next(assessment, 0) is None

@@ -864,14 +864,31 @@ class PipelineQueueStore:
         return tuple(RouteAttempt(**dict(row)) for row in rows)
 
     def routing_claim_next(
-        self, assessment: DiscAssessment, title_index: int
+        self,
+        assessment: DiscAssessment,
+        title_index: int,
+        *,
+        media_id: str | None = None,
+        expected_review_code: str | None = None,
     ) -> str | None:
-        """Choose and reserve one evidence-supported route in one transaction."""
+        """Choose and reserve one route, optionally bound to a held queue item."""
 
         if title_index not in assessment.title_indexes:
             raise RoutingError("Route title is outside the inventory")
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if media_id is not None:
+                row = connection.execute(
+                    "SELECT stage, state, review_code FROM pipeline_items WHERE media_id = ?",
+                    (self._check_media_id(media_id),),
+                ).fetchone()
+                if (
+                    row is None
+                    or row["stage"] != "identify"
+                    or row["state"] != "review_required"
+                    or row["review_code"] != expected_review_code
+                ):
+                    raise RoutingError("Routing queue state changed before claim")
             latest = self._latest_routing_in(
                 connection, assessment.inventory_fingerprint
             )

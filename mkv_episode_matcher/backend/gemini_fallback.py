@@ -63,8 +63,6 @@ def _fallback_outcome(
         elif media_id in visually_held:
             titles.append(GeminiTitleOutcome(media_id, "review"))
         elif (
-            descriptive and getattr(result, "content_kind", None) == "tv_episode"
-        ) or (
             not descriptive
             and result is not None
             and getattr(result, "episode_id", 1) is None

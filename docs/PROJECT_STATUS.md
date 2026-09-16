@@ -4565,4 +4565,9 @@ synthetic validation in the active test worktree: preparation and identify
 consume a queue-owned routing assessment, with user hints advisory and TV
 scope separated from movie/extras/unknown titles. Automatic alternate-route
 execution is not yet attached; M4–M7 and the separately authorization-gated
-live canary remain outstanding.
+live canary remain outstanding. M4 now has an atomic held-item route claim and
+records terminal TV coordinator service-failure and review outcomes without
+treating an absent series catalogue or provider outage as alternate-content
+evidence. A true title-level no-match remains a distinct policy outcome. The Gemini
+result-to-route worker handoff and actual alternate execution remain open;
+these changes have only synthetic coverage and do not validate a live disc.
