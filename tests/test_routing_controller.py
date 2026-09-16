@@ -156,8 +156,11 @@ def test_conflicting_metadata_requires_classification_before_hint_route():
     )
     assert assessment.title_roles()[0].role == "conflicting"
     assert next_route(assessment, title_index=0) == "classify"
-    assert next_route(
-        assessment,
-        title_index=0,
-        attempts=(RouteAttempt(0, 1, "classify", "review"),),
-    ) is None
+    assert (
+        next_route(
+            assessment,
+            title_index=0,
+            attempts=(RouteAttempt(0, 1, "classify", "review"),),
+        )
+        is None
+    )
