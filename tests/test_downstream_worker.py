@@ -1576,18 +1576,25 @@ def test_automatic_disc_analysis_preserves_tv_title_no_match_for_movie_route(
         ("movie", "matched"),
     }
 
+
 def test_m5_end_to_end_tv_no_match_to_movie_route(tmp_path, monkeypatch):
     import json
     from types import SimpleNamespace
+
     from mkv_episode_matcher.backend import unmatched_disc_analysis as analysis
-    from mkv_episode_matcher.backend.automatic_rip import _resolve_automatic_unmatched_disc
-    from mkv_episode_matcher.pipeline_queue import PipelineQueueStore, build_artifact
+    from mkv_episode_matcher.backend.automatic_rip import (
+        _resolve_automatic_unmatched_disc,
+    )
+    from mkv_episode_matcher.backend.downstream_worker import DownstreamWorker
+    from mkv_episode_matcher.backend.gemini_fallback import (
+        GeminiFallbackOutcome,
+        GeminiTitleOutcome,
+    )
+    from mkv_episode_matcher.backend.identification_dossier import UnmatchedFileEvidence
     from mkv_episode_matcher.disc.routing import DiscAssessment, TitleEvidence
     from mkv_episode_matcher.media.episode_catalog import EpisodeCatalogEntry
+    from mkv_episode_matcher.pipeline_queue import PipelineQueueStore, build_artifact
     from mkv_episode_matcher.tmdb_client import TvShowCandidate
-    from mkv_episode_matcher.backend.identification_dossier import UnmatchedFileEvidence
-    from mkv_episode_matcher.backend.downstream_worker import DownstreamWorker
-    from mkv_episode_matcher.backend.gemini_fallback import GeminiFallbackOutcome, GeminiTitleOutcome
 
     contracts = tmp_path / "contracts"
     contracts.mkdir(exist_ok=True)
@@ -1604,7 +1611,7 @@ def test_m5_end_to_end_tv_no_match_to_movie_route(tmp_path, monkeypatch):
         expected_revision=0,
     )
 
-    media_id = f"disc-01-title-000"
+    media_id = "disc-01-title-000"
     source = tmp_path / "source.mkv"
     source.write_bytes(b"synthetic")
     contract = contracts / f"{media_id}.json"
@@ -1617,7 +1624,7 @@ def test_m5_end_to_end_tv_no_match_to_movie_route(tmp_path, monkeypatch):
             "disc_fingerprint": fingerprint,
             "title_index": 0,
             "media_context": {
-                "series_name": "Example", 
+                "series_name": "Example",
                 "season": None,
                 "routing_assessment": assessment.to_dict(),
                 "routing_assessment_digest": assessment.digest,
@@ -1664,8 +1671,6 @@ def test_m5_end_to_end_tv_no_match_to_movie_route(tmp_path, monkeypatch):
         ),
     )
 
-
-
     def fake_rank(*_args, **_kwargs):
         return {media_id: SimpleNamespace(episode_id=None, confidence=0.9)}
 
@@ -1688,7 +1693,7 @@ def test_m5_end_to_end_tv_no_match_to_movie_route(tmp_path, monkeypatch):
         automatic_gemini_ambiguity_fallback=True,
         min_confidence=0.8,
     )
-    
+
     monkeypatch.setattr(
         "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
         lambda: SimpleNamespace(load=lambda: config),
@@ -1702,7 +1707,7 @@ def test_m5_end_to_end_tv_no_match_to_movie_route(tmp_path, monkeypatch):
         lambda: contracts,
     )
 
-    # 1. Run the automatic disc analysis entry point - REAL coordinator (which raises) 
+    # 1. Run the automatic disc analysis entry point - REAL coordinator (which raises)
     # caught by REAL exception handler (which preserves tv_title_no_match)
     _resolve_automatic_unmatched_disc((media_id,), store, config, contracts)
 
@@ -1735,7 +1740,9 @@ def test_m5_end_to_end_tv_no_match_to_movie_route(tmp_path, monkeypatch):
     )
 
     # 2. Run the routing worker
-    worker = DownstreamWorker(SimpleNamespace(store=store), allowed_stages=("identify",))
+    worker = DownstreamWorker(
+        SimpleNamespace(store=store), allowed_stages=("identify",)
+    )
     assert worker._settle_terminal_tv_route() is True
     worker._apply_automatic_assessed_gemini_route()
 
@@ -1743,7 +1750,7 @@ def test_m5_end_to_end_tv_no_match_to_movie_route(tmp_path, monkeypatch):
     final_item = store.get(media_id)
     assert final_item.state == "queued"
     assert final_item.review_code is None
-    
+
     # Reload assessment to verify it transitioned
     attempts = store.routing_attempts(fingerprint, 0)
     assert len(attempts) == 2

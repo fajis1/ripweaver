@@ -7,14 +7,14 @@
 
 ## Status (2026-09-16)
 
-Milestones M0–M4: **complete in synthetic validation; M5 pending**. Preparation
+Milestones M0–M4: **complete in synthetic validation; M5 in progress**. Preparation
 and identify now consume the queue-owned routing assessment, and the automatic
 alternate-route worker is successfully routing failures, but no fresh Short Circuit 2 live rip has
 been validated. Existing uncommitted test-worktree changes belong to the user
 and must be preserved. The earlier routing plan in another checkout remains a
 design/reference only; its completion and test claims do not apply here.
 
-## Current agent handoff (2026-09-17, M4 complete, ready for M5)
+## Current agent handoff (2026-09-17, M5 in progress)
 
 - **Source and recovery:** work only in the `ripweaver-test` worktree on
   `codex/windows-drive-provisional-fallback`. The last approved `wip/test`
@@ -33,11 +33,7 @@ design/reference only; its completion and test claims do not apply here.
   - **Source and recovery:** work only in the `ripweaver-test` worktree on `Codex/windows-drive-provisional-fallback`.
   - **M4 Completion:** A *true* TV title-level no-match followed by a viable movie search is now successfully produced by the TV coordinator and correctly survives the automatic rip boundary to trigger the movie alternate route. The full end-to-end handoff has been proven with a combined coordinator -> automatic handler -> routing-worker synthetic test (`test_m5_end_to_end_tv_no_match_to_movie_route`). All Ruff checks and synthetic tests pass perfectly.
   - **Still not completed (M5 tasks):** Accepted Gemini content roles are not yet appended as a new durable assessment revision. The manual Gemini endpoint still has a separate detached-thread path; audit its lock/claim interaction before claiming globally serialized provider access. A descriptive `tv_episode` suggestion and `all_season_series_not_found` remain review, not negative TV identity. Do not infer a new route from either. Sibling-revision races need end-to-end coverage.
-  disc analysis and non-disc triage calls in both worker paths. Run focused
-  tests, full `uv run pytest -q -p no:cacheprovider --no-cov`, and modified-file
-  Ruff check/format. Mark M4 complete only after the actual worker handoff and
-  its safety tests pass, then preview/push `scripts/checkpoint_worktree.ps1
-  -Channel test`.
+
 - **Live boundary:** M7 remains separately unapproved. Do not start RipWeaver,
   read the Short Circuit 2 disc/MKVs, call Gemini, rip, transcode, eject, or
   alter library media during these synthetic gates.
