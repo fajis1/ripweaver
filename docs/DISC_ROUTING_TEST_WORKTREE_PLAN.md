@@ -29,35 +29,10 @@ design/reference only; its completion and test claims do not apply here.
   typed Gemini reports, terminal TV coordinator settlement, and startup
   interruption reconciliation. The latest full pytest run and modified-file
   Ruff checks passed. No physical disc, media, or live provider was accessed.
-- **New in this resumed turn:** the worker now tries one assessed held title at
-  a time under the shared downstream/ASR lock when both automatic processing
-  and automatic Gemini fallback are enabled. It claims against the exact queue
-  review code, requests a typed single-item Gemini report, verifies the queue
-  transition and revised contract, then settles `matched`, `no_match`,
-  `review`, or `service_failed`. Pause/stop prevents a new attempt, and a
-  failure after partial contract application is held for review. New assessed
-  provisional movie/extra names are held before transcode/organization. The
-  focused worker/routing/Gemini/identify tests pass; broad verification remains.
-- **Still not completed:** accepted Gemini content roles are not yet appended
-  as a new durable assessment revision (M5). The manual Gemini endpoint still
-  has a separate detached-thread path; audit its lock/claim interaction before
-  claiming globally serialized provider access. A descriptive `tv_episode`
-  suggestion and `all_season_series_not_found` remain review, not negative TV
-  identity. Do not infer a new route from either. The full synthetic suite and
-  the 11-title movie-plus-extras worker matrix now pass, but a *true* TV
-  title-level no-match followed by a viable movie search is not yet produced
-  by the TV coordinator, and sibling-revision races need end-to-end coverage.
-- **Next safe implementation:** preserve the existing TV evidence gates while
-  introducing an explicit title-level TV no-match result (distinct from a
-  missing/unavailable catalogue), then prove its movie alternate with a
-  fake-provider/real-queue test. Add sibling evidence-revision and concurrent
-  worker tests, and audit the manual Gemini path against the shared lock and
-  claims. Do not mark M4 complete merely because generic Gemini returned a
-  provisional title; that remains a review hold. Run focused/full synthetic
-  checks and modified-file Ruff again before completing M4 and entering M5.
-- **Acceptance gate before M5:** add fake-provider/real-queue tests for matched,
-  explicit no-match, visual review, provider failure, pause/stop, concurrent
-  claim, restart, and an 11-title movie-plus-extras shape. Preserve existing TV
+- **Current agent handoff (2026-09-17, M5 in progress):**
+  - **Source and recovery:** work only in the `ripweaver-test` worktree on `Codex/windows-drive-provisional-fallback`.
+  - **M4 Completion:** A *true* TV title-level no-match followed by a viable movie search is now successfully produced by the TV coordinator and correctly survives the automatic rip boundary to trigger the movie alternate route. The full end-to-end handoff has been proven with a combined coordinator -> automatic handler -> routing-worker synthetic test (`test_m5_end_to_end_tv_no_match_to_movie_route`). All Ruff checks and synthetic tests pass perfectly.
+  - **Still not completed (M5 tasks):** Accepted Gemini content roles are not yet appended as a new durable assessment revision. The manual Gemini endpoint still has a separate detached-thread path; audit its lock/claim interaction before claiming globally serialized provider access. A descriptive `tv_episode` suggestion and `all_season_series_not_found` remain review, not negative TV identity. Do not infer a new route from either. Sibling-revision races need end-to-end coverage.
   disc analysis and non-disc triage calls in both worker paths. Run focused
   tests, full `uv run pytest -q -p no:cacheprovider --no-cov`, and modified-file
   Ruff check/format. Mark M4 complete only after the actual worker handoff and
