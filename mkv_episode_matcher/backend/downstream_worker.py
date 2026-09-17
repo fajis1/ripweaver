@@ -399,11 +399,8 @@ class DownstreamWorker:
                     elif outcome != "matched" and current.state != "review_required":
                         outcome = "review"
                     store.routing_settle(assessment, title_index, route, outcome)
-                except Exception as exc:
-                    logger.error(
-                        "Automatic Gemini title route held safely: {}",
-                        type(exc).__name__,
-                    )
+                except Exception:
+                    logger.exception("Automatic Gemini title route held safely")
                     current = store.get(item.media_id)
                     if (
                         current.stage == "identify"

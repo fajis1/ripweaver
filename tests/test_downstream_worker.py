@@ -342,9 +342,9 @@ def test_worker_settles_terminal_tv_route_without_rerouting_uncertainty(
     assert worker._settle_terminal_tv_route() is False
     assert store.routing_attempts(fingerprint, 0) == ()
     store.set_paused(False)
-    assert worker._settle_terminal_tv_route() is True
-    assert worker._settle_terminal_tv_route() is True
-    assert worker._settle_terminal_tv_route() is True
+    assert worker._settle_terminal_tv_route() is True is True
+    assert worker._settle_terminal_tv_route() is True is True
+    assert worker._settle_terminal_tv_route() is True is True
     assert worker._settle_terminal_tv_route() is False
     assert store.routing_attempts(fingerprint, 0)[0].outcome == "review"
     assert store.routing_attempts(fingerprint, 1)[0].outcome == "service_failed"
@@ -1273,7 +1273,7 @@ def test_genuine_tv_no_match_tries_eligible_movie_route(tmp_path, monkeypatch):
     )
 
     # 1. Settle TV route as no_match
-    assert worker._settle_terminal_tv_route() is True
+    assert worker._settle_terminal_tv_route() is True is True
     assert store.routing_attempts(fingerprint, 0)[0].outcome == "no_match"
 
     # 2. Worker claims alternate route (movie) and executes Gemini
@@ -1335,8 +1335,8 @@ def test_automatic_gemini_route_aborts_when_paused_or_stopped(tmp_path, monkeypa
         allowed_stages=("identify",),
     )
 
-    assert worker._settle_terminal_tv_route() is True
-    assert worker._settle_terminal_tv_route() is True
+    assert worker._settle_terminal_tv_route() is True is True
+    assert worker._settle_terminal_tv_route() is True is True
 
     store.set_paused(True)
     assert worker._apply_automatic_assessed_gemini_route() is False
@@ -1395,8 +1395,8 @@ def test_automatic_gemini_route_aborts_on_sibling_revision(tmp_path, monkeypatch
     )
 
     # 1. Settle TV route for both
-    assert worker._settle_terminal_tv_route() is True
-    assert worker._settle_terminal_tv_route() is True
+    assert worker._settle_terminal_tv_route() is True is True
+    assert worker._settle_terminal_tv_route() is True is True
 
     # 2. Advance the database revision
     from dataclasses import replace
@@ -1415,3 +1415,163 @@ def test_automatic_gemini_route_aborts_on_sibling_revision(tmp_path, monkeypatch
 
     # 3. Attempt Gemini route -> should fail since the database revision moved on
     assert worker._apply_automatic_assessed_gemini_route() is False
+
+
+def test_automatic_disc_analysis_preserves_tv_title_no_match_for_movie_route(
+    tmp_path, monkeypatch
+):
+    import json
+    from types import SimpleNamespace
+
+    from mkv_episode_matcher.backend.automatic_rip import (
+        _resolve_automatic_unmatched_disc,
+    )
+    from mkv_episode_matcher.backend.unmatched_disc_analysis import GeminiAnalysisError
+    from mkv_episode_matcher.disc.routing import DiscAssessment, TitleEvidence
+    from mkv_episode_matcher.pipeline_queue import PipelineQueueStore, build_artifact
+
+    fingerprint = "0123456789abcdef"
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    assessment = store.routing_append(
+        DiscAssessment(
+            fingerprint,
+            (0,),
+            user_hint="movie",
+            evidence=(TitleEvidence(0, "database", "supported", "tv"),),
+        ),
+        expected_revision=0,
+    )
+
+    media_id = "disc-01-title-000"
+    contract = tmp_path / f"{media_id}.json"
+    contract.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "disc_fingerprint": fingerprint,
+            "title_index": 0,
+            "media_context": {
+                "routing_assessment": assessment.to_dict(),
+                "routing_assessment_digest": assessment.digest,
+                "routing_assessment_revision": assessment.revision,
+                "series_name": "Unmatched",
+            },
+        }),
+        encoding="utf-8",
+    )
+    store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+    # It starts out waiting for unmatched disc analysis
+    store.hold_for_review(media_id, "unmatched_disc_analysis_required")
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                automatic_processing_enabled=True,
+                automatic_gemini_ambiguity_fallback=True,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                automatic_processing_enabled=True,
+                automatic_gemini_ambiguity_fallback=True,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_engine",
+        lambda: SimpleNamespace(asr=object()),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_engine",
+        lambda: SimpleNamespace(asr=object()),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root",
+        lambda: tmp_path / "contracts",
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root",
+        lambda: tmp_path / "contracts",
+    )
+
+    def fake_execute(
+        _store, _fingerprint, _series_name, _config, _asr, _contract_root, **kwargs
+    ):
+        _store.choose_review_path(media_id, "tv_title_no_match")
+        raise GeminiAnalysisError(
+            "gemini_analysis_failed",
+            "Gemini did not identify any disc title confidently",
+        )
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.unmatched_disc_analysis.execute_unmatched_disc_analysis",
+        fake_execute,
+    )
+
+    # 1. Run the automatic disc analysis entry point
+    _resolve_automatic_unmatched_disc(
+        (media_id,),
+        store,
+        SimpleNamespace(automatic_gemini_ambiguity_fallback=True),
+        tmp_path / "contracts",
+    )
+
+    # Verify that the tv_title_no_match result survived the outer exception handler
+    assert store.get(media_id).review_code == "tv_title_no_match"
+
+    def fake_gemini(_store, ids, _config, _asr, _root, *, return_outcomes):
+        import json
+
+        from mkv_episode_matcher.backend.gemini_fallback import (
+            GeminiFallbackOutcome,
+            GeminiTitleOutcome,
+        )
+
+        assert return_outcomes is True
+        revised = tmp_path / "revised.json"
+        revised_payload = json.loads(contract.read_text(encoding="utf-8"))
+        revised_payload["media_context"]["special_feature_assignments"] = [
+            {
+                "title_index": 0,
+                "classification": "matched-feature",
+                "media_kind": "movie",
+                "provisional_match": False,
+            }
+        ]
+        revised.write_text(json.dumps(revised_payload), encoding="utf-8")
+        _store.apply_reviewed_identification_input(
+            media_id, build_artifact("rip", revised)
+        )
+        return GeminiFallbackOutcome(
+            (media_id,), (GeminiTitleOutcome(media_id, "matched", "movie"),)
+        )
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.gemini_fallback.execute_gemini_fallback",
+        fake_gemini,
+    )
+
+    # 2. Run the routing worker
+    from mkv_episode_matcher.backend.downstream_worker import DownstreamWorker
+
+    worker = DownstreamWorker(
+        SimpleNamespace(store=store), allowed_stages=("identify",)
+    )
+    assert worker._settle_terminal_tv_route() is True
+    worker._apply_automatic_assessed_gemini_route()
+
+    # Verify it routed to the movie route!
+    final_item = store.get(media_id)
+    assert final_item.state == "queued"
+    assert final_item.review_code is None
+
+    # Reload assessment to verify it transitioned
+    attempts = store.routing_attempts(fingerprint, 0)
+    assert len(attempts) == 2
+    assert {(a.route, a.outcome) for a in attempts} == {
+        ("tv", "no_match"),
+        ("movie", "matched"),
+    }

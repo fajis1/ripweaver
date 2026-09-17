@@ -634,9 +634,9 @@ def _resolve_automatic_unmatched_disc(  # noqa: C901
         for item in held:
             try:
                 current = store.get(item.media_id)
-                if (
-                    current.state == "review_required"
-                    and current.review_code != "visual_content_review_required"
+                if current.state == "review_required" and current.review_code not in (
+                    "visual_content_review_required",
+                    "tv_title_no_match",
                 ):
                     store.choose_review_path(item.media_id, code)
             except PipelineQueueError:
@@ -704,9 +704,9 @@ def _resolve_automatic_unmatched_season(  # noqa: C901
         for item in held:
             try:
                 current = store.get(item.media_id)
-                if (
-                    current.state == "review_required"
-                    and current.review_code != "visual_content_review_required"
+                if current.state == "review_required" and current.review_code not in (
+                    "visual_content_review_required",
+                    "tv_title_no_match",
                 ):
                     store.choose_review_path(item.media_id, code)
             except PipelineQueueError:

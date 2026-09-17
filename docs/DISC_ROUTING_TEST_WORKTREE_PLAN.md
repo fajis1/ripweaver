@@ -7,14 +7,14 @@
 
 ## Status (2026-09-16)
 
-Milestones M0–M3: **complete in synthetic validation; M4 in progress**. Preparation
-and identify now consume the queue-owned routing assessment, but no automatic
-alternate-route worker is attached and no fresh Short Circuit 2 live rip has
+Milestones M0–M4: **complete in synthetic validation; M5 pending**. Preparation
+and identify now consume the queue-owned routing assessment, and the automatic
+alternate-route worker is successfully routing failures, but no fresh Short Circuit 2 live rip has
 been validated. Existing uncommitted test-worktree changes belong to the user
 and must be preserved. The earlier routing plan in another checkout remains a
 design/reference only; its completion and test claims do not apply here.
 
-## Current agent handoff (2026-09-16, M4 worker handoff in progress)
+## Current agent handoff (2026-09-17, M4 complete, ready for M5)
 
 - **Source and recovery:** work only in the `ripweaver-test` worktree on
   `codex/windows-drive-provisional-fallback`. The last approved `wip/test`
