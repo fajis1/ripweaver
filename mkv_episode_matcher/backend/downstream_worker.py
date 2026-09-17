@@ -400,34 +400,41 @@ class DownstreamWorker:
                         outcome = "review"
                     if outcome == "matched":
                         from dataclasses import replace
+
                         from mkv_episode_matcher.disc.routing import TitleEvidence
 
                         store.routing_settle(assessment, title_index, route, outcome)
-                        new_evidence = assessment.evidence + (
-                            TitleEvidence(
-                                title_index,
-                                "content",
-                                "supported",
-                                result.accepted_role,
-                            ),
-                        )
-                        new_assessment = replace(
-                            assessment,
-                            evidence=new_evidence,
-                            revision=assessment.revision + 1,
-                        )
-                        try:
-                            store.routing_append(
-                                new_assessment, expected_revision=assessment.revision
+                        
+                        current_latest = assessment
+                        while True:
+                            new_evidence = current_latest.evidence + (
+                                TitleEvidence(
+                                    title_index,
+                                    "content",
+                                    "supported",
+                                    result.accepted_role,
+                                ),
                             )
-                        except Exception as exc:
-                            from mkv_episode_matcher.disc.routing import RoutingError
+                            new_assessment = replace(
+                                current_latest,
+                                evidence=new_evidence,
+                                revision=current_latest.revision + 1,
+                            )
+                            try:
+                                store.routing_append(
+                                    new_assessment, expected_revision=current_latest.revision
+                                )
+                                break
+                            except Exception as exc:
+                                from mkv_episode_matcher.disc.routing import (
+                                    RoutingError,
+                                )
 
-                            if not isinstance(exc, RoutingError):
-                                raise
-                            logger.warning(
-                                "Sibling revision race prevented Gemini assessment append"
-                            )
+                                if not isinstance(exc, RoutingError):
+                                    raise
+                                current_latest = store.routing_latest(assessment.inventory_fingerprint)
+                                if current_latest is None or current_latest.revision <= assessment.revision:
+                                    raise ValueError("Could not resolve sibling revision race during append") from exc
                     else:
                         store.routing_settle(assessment, title_index, route, outcome)
                 except Exception:

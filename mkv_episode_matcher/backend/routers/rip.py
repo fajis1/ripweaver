@@ -5539,62 +5539,67 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
         store.choose_review_path(media_id, "all_season_analysis_running")
 
     def run() -> None:
-        try:
-            config = get_config_manager().load()
-            execute_unmatched_disc_analysis(
-                store,
-                request.disc_fingerprint,
-                series_name,
-                config,
-                get_engine().asr,
-                contract_root,
-                season=request.season,
-                episode_range=episode_range,
-                allow_gemini=request.confirm_external_fallback,
-                # An ordinary disc pass may route true leftovers to bonus
-                # analysis. An explicit scene-guided episode review must stay
-                # within the episode candidates the user asked Gemini to assess.
-                allow_content_fallback=not reviewer_scene_descriptions,
-                reviewer_scene_descriptions=reviewer_scene_descriptions,
-            )
-        except Exception as exc:
-            if isinstance(exc, GeminiAnalysisError):
-                logger.error(
-                    "All-season Gemini analysis failed safely: {}", exc.diagnostic
+        from mkv_episode_matcher.backend.automatic_rip import _downstream_lock
+
+        with _downstream_lock:
+            try:
+                config = get_config_manager().load()
+                execute_unmatched_disc_analysis(
+                    store,
+                    request.disc_fingerprint,
+                    series_name,
+                    config,
+                    get_engine().asr,
+                    contract_root,
+                    season=request.season,
+                    episode_range=episode_range,
+                    allow_gemini=request.confirm_external_fallback,
+                    # An ordinary disc pass may route true leftovers to bonus
+                    # analysis. An explicit scene-guided episode review must stay
+                    # within the episode candidates the user asked Gemini to assess.
+                    allow_content_fallback=not reviewer_scene_descriptions,
+                    reviewer_scene_descriptions=reviewer_scene_descriptions,
                 )
-                code = exc.review_code
-            else:
-                diagnostic = (
-                    str(exc)
-                    if isinstance(exc, PipelineQueueError) and str(exc)
-                    else type(exc).__name__
-                )
-                logger.error("All-season disc analysis failed safely: {}", diagnostic)
-                code = {
-                    "No TV series matched the reviewed series name": (
-                        "all_season_series_not_found"
-                    ),
-                    "TMDb returned no aired episodes for the resolved TV series": (
-                        "all_season_catalog_unavailable"
-                    ),
-                    "Episode catalogue is unavailable for the reviewed scope": (
-                        "all_season_catalog_unavailable"
-                    ),
-                    "Audio evidence collection failed before episode matching": (
-                        "all_season_evidence_failed"
-                    ),
-                }.get(
-                    str(exc),
-                    "independent_episode_evidence_required"
-                    if str(exc) == "Independent episode evidence requires review"
-                    else "all_season_analysis_failed",
-                )
-            for media_id in selected:
-                try:
-                    if store.get(media_id).state == "review_required":
-                        store.choose_review_path(media_id, code)
-                except PipelineQueueError:
-                    pass
+            except Exception as exc:
+                if isinstance(exc, GeminiAnalysisError):
+                    logger.error(
+                        "All-season Gemini analysis failed safely: {}", exc.diagnostic
+                    )
+                    code = exc.review_code
+                else:
+                    diagnostic = (
+                        str(exc)
+                        if isinstance(exc, PipelineQueueError) and str(exc)
+                        else type(exc).__name__
+                    )
+                    logger.error(
+                        "All-season disc analysis failed safely: {}", diagnostic
+                    )
+                    code = {
+                        "No TV series matched the reviewed series name": (
+                            "all_season_series_not_found"
+                        ),
+                        "TMDb returned no aired episodes for the resolved TV series": (
+                            "all_season_catalog_unavailable"
+                        ),
+                        "Episode catalogue is unavailable for the reviewed scope": (
+                            "all_season_catalog_unavailable"
+                        ),
+                        "Audio evidence collection failed before episode matching": (
+                            "all_season_evidence_failed"
+                        ),
+                    }.get(
+                        str(exc),
+                        "independent_episode_evidence_required"
+                        if str(exc) == "Independent episode evidence requires review"
+                        else "all_season_analysis_failed",
+                    )
+                for media_id in selected:
+                    try:
+                        if store.get(media_id).state == "review_required":
+                            store.choose_review_path(media_id, code)
+                    except PipelineQueueError:
+                        pass
 
     threading.Thread(target=run, name="all-season-disc-analysis", daemon=True).start()
     return {
@@ -7792,39 +7797,46 @@ def execute_pipeline_gemini_fallback(  # noqa: C901
         ) from exc
 
     def run() -> None:
-        try:
-            applied = set(
-                execute_gemini_fallback(
-                    store,
-                    selected,
-                    get_config_manager().load(),
-                    get_engine().asr,
-                    contract_root,
+        from mkv_episode_matcher.backend.automatic_rip import _downstream_lock
+
+        with _downstream_lock:
+            try:
+                applied = set(
+                    execute_gemini_fallback(
+                        store,
+                        selected,
+                        get_config_manager().load(),
+                        get_engine().asr,
+                        contract_root,
+                    )
                 )
-            )
-            for media_id in set(selected) - applied:
-                store.choose_review_path(media_id, "gemini_descriptive_review_required")
-        except Exception as exc:
-            logger.error("Gemini fallback batch failed safely: {}", type(exc).__name__)
-            safe_code = "gemini_provider_failed"
-            if isinstance(exc, PipelineQueueError):
-                safe_code = {
-                    "Local audio evidence was insufficient for Gemini": (
-                        "gemini_audio_evidence_insufficient"
-                    ),
-                    "Reviewed special-feature catalogue is unavailable": (
-                        "gemini_catalog_unavailable"
-                    ),
-                    "Special-feature catalogue ID is unavailable": (
-                        "gemini_catalog_unavailable"
-                    ),
-                }.get(str(exc), "gemini_analysis_failed")
-            for media_id in selected:
-                try:
-                    if store.get(media_id).state == "review_required":
-                        store.choose_review_path(media_id, safe_code)
-                except PipelineQueueError:
-                    pass
+                for media_id in set(selected) - applied:
+                    store.choose_review_path(
+                        media_id, "gemini_descriptive_review_required"
+                    )
+            except Exception as exc:
+                logger.error(
+                    "Gemini fallback batch failed safely: {}", type(exc).__name__
+                )
+                safe_code = "gemini_provider_failed"
+                if isinstance(exc, PipelineQueueError):
+                    safe_code = {
+                        "Local audio evidence was insufficient for Gemini": (
+                            "gemini_audio_evidence_insufficient"
+                        ),
+                        "Reviewed special-feature catalogue is unavailable": (
+                            "gemini_catalog_unavailable"
+                        ),
+                        "Special-feature catalogue ID is unavailable": (
+                            "gemini_catalog_unavailable"
+                        ),
+                    }.get(str(exc), "gemini_analysis_failed")
+                for media_id in selected:
+                    try:
+                        if store.get(media_id).state == "review_required":
+                            store.choose_review_path(media_id, safe_code)
+                    except PipelineQueueError:
+                        pass
 
     threading.Thread(
         target=run,

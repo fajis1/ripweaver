@@ -34,10 +34,10 @@ design/reference only; its completion and test claims do not apply here.
   - **M4 Completion:** A *true* TV title-level no-match followed by a viable movie search is now successfully produced by the TV coordinator and correctly survives the automatic rip boundary to trigger the movie alternate route. The full end-to-end handoff has been proven with a combined coordinator -> automatic handler -> routing-worker synthetic test (`test_m5_end_to_end_tv_no_match_to_movie_route`). All Ruff checks and synthetic tests pass perfectly.
   - **M5 Completion (2026-09-17):** 
     - Accepted Gemini content roles are successfully appended as a new durable assessment revision within the worker.
-    - Sibling-revision races have true end-to-end coverage and are safely aborted inside `_apply_automatic_assessed_gemini_route` when `routing_append` detects a conflict, keeping the existing successful route attempt intact.
-    - The manual Gemini endpoint (`execute_pipeline_gemini_fallback`) and Unmatched Disc Analysis are now serialized globally using `_downstream_lock` preventing conflicts with the automated queue runner.
+    - Sibling-revision races have true end-to-end coverage. The settle/append race was resolved by appending the evidence in a retry loop using `routing_latest()` and `routing_append()` after successfully settling the claim. This guarantees the matched route does not lack its accepted content evidence. The synthetic tests explicitly test this sibling revision occurring between those operations.
+    - The manual Gemini endpoint (`execute_pipeline_gemini_fallback`) and Unmatched Disc Analysis are now serialized globally. They use the shared lock `_downstream_lock` across both their queue transition and provider work, preventing conflicts with the automated queue runner. Synthetic concurrency API tests exist for this logic.
     - A descriptive `tv_episode` suggestion correctly falls through to `review`, and `all_season_series_not_found` explicitly settles as `review` via the TV coordinator mapping (`_TV_TERMINAL_REVIEW_OUTCOMES`), preventing unintended negative TV identities.
-    - The full synthetic test suite (1260 tests) and ruff lints pass!
+    - Worker ruff import-order errors have been fixed. The full synthetic test suite (1260 tests) and ruff lints pass!
 
 - **Live boundary:** M7 remains separately unapproved. Do not start RipWeaver,
   read the Short Circuit 2 disc/MKVs, call Gemini, rip, transcode, eject, or
