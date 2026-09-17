@@ -147,6 +147,49 @@ def test_routed_tv_evidence_overrides_movie_hint_and_uses_existing_tv_engine(tmp
     assert json.loads(artifact.contract_path.read_text())["episode_id"] == "S01E02"
 
 
+def test_assessed_provisional_movie_stops_before_transcode_or_placement(tmp_path):
+    source = tmp_path / "synthetic.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    assessment = store.routing_append(
+        DiscAssessment("0123456789abcdef", (0,), user_hint="movie"),
+        expected_revision=0,
+    )
+    item = _queued_item(
+        tmp_path,
+        {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "disc_fingerprint": assessment.inventory_fingerprint,
+            "title_index": 0,
+            "media_context": {
+                "series_name": "Synthetic Movie",
+                "content_hint": None,
+                "routing_assessment": assessment.to_dict(),
+                "routing_assessment_digest": assessment.digest,
+                "routing_assessment_revision": assessment.revision,
+                "special_feature_library_title": "Synthetic Movie",
+                "special_feature_assignments": [
+                    {
+                        "title_index": 0,
+                        "classification": "matched-feature",
+                        "fallback_name_policy": "none",
+                        "matched_title": "Synthetic Movie",
+                        "media_kind": "movie",
+                        "provisional_match": True,
+                    }
+                ],
+            },
+        },
+    )
+    with pytest.raises(PipelineReviewRequiredError) as exc:
+        IdentifyStageAdapter(object(), contracts, routing_store=store)(item)
+    assert exc.value.code == "provisional_content_identity_review_required"
+
+
 def test_identify_adapter_runs_engine_in_dry_run_and_writes_handoff(tmp_path):
     source = tmp_path / "source.mkv"
     source.write_bytes(b"synthetic")

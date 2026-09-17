@@ -3239,6 +3239,8 @@ class PipelineQueueStore:
                 or row["review_code"]
                 not in {
                     "episode_match_review",
+                    "content_classification_required",
+                    "movie_identification_required",
                     "special_feature_evidence_required",
                     "gemini_evidence_required",
                     "gemini_analysis_running",

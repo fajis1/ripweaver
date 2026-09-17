@@ -4568,6 +4568,11 @@ execution is not yet attached; M4–M7 and the separately authorization-gated
 live canary remain outstanding. M4 now has an atomic held-item route claim and
 records terminal TV coordinator service-failure and review outcomes without
 treating an absent series catalogue or provider outage as alternate-content
-evidence. A true title-level no-match remains a distinct policy outcome. The Gemini
-result-to-route worker handoff and actual alternate execution remain open;
-these changes have only synthetic coverage and do not validate a live disc.
+evidence. A true title-level no-match remains a distinct policy outcome. The
+worker now has a single-item, opt-in Gemini route handoff with exact claim and
+typed settlement under the shared downstream lock; provisional new movie and
+extra identities stop for review before transcode or placement. Focused
+synthetic and full-suite tests pass, including an 11-title movie-with-extras
+worker matrix. M4 still needs an explicit title-level TV no-match to movie
+alternate and sibling/concurrent worker tests; M5's accepted-role assessment
+revision also remains open. None of this validates a live disc.

@@ -93,6 +93,31 @@ def _contract_disc_title_identity(
     return media_match.group(1).lower(), int(media_match.group(2))
 
 
+def _verified_gemini_route_assignment(
+    item: object, title_index: int, accepted_role: str | None
+) -> bool:
+    """A requeued contract is not a verified identity when Gemini named it provisionally."""
+
+    if accepted_role not in {"movie", "extra"}:
+        return False
+    try:
+        payload = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, AttributeError):
+        return False
+    context = payload.get("media_context")
+    if not isinstance(context, dict):
+        return False
+    assignments = context.get("special_feature_assignments")
+    return isinstance(assignments, list) and any(
+        isinstance(assignment, dict)
+        and assignment.get("title_index") == title_index
+        and assignment.get("classification") == "matched-feature"
+        and assignment.get("media_kind") == accepted_role
+        and assignment.get("provisional_match") is False
+        for assignment in assignments
+    )
+
+
 def _current_disc_title_lineages(
     items: tuple[object, ...], store: object | None = None
 ) -> tuple[object, ...]:
@@ -191,6 +216,8 @@ class DownstreamWorker:
             handled = self._apply_automatic_triage_analysis()
         if not handled:
             handled = self._settle_terminal_tv_route()
+        if not handled:
+            handled = self._apply_automatic_assessed_gemini_route()
         return handled
 
     def _settle_terminal_tv_route(self) -> bool:  # noqa: C901 - guarded saved-result handoff
@@ -251,6 +278,154 @@ class DownstreamWorker:
                 continue
             store.routing_settle(assessment, title_index, "tv", outcome)
             return True
+        return False
+
+    def _apply_automatic_assessed_gemini_route(self) -> bool:  # noqa: C901
+        """Try one opted-in, assessment-bound title without a detached task."""
+
+        config = get_config_manager().load()
+        store = self.dispatcher.store
+        if (
+            not config.automatic_processing_enabled
+            or not config.automatic_gemini_ambiguity_fallback
+            or self._stop.is_set()
+            or store.is_paused()
+        ):
+            return False
+        from mkv_episode_matcher.backend.automatic_rip import _downstream_lock
+        from mkv_episode_matcher.backend.dependencies import (
+            get_engine,
+            get_pipeline_contract_root,
+        )
+        from mkv_episode_matcher.backend.gemini_fallback import (
+            GeminiFallbackOutcome,
+            execute_gemini_fallback,
+        )
+        from mkv_episode_matcher.disc.routing import assessment_from_contract
+        from mkv_episode_matcher.disc.routing_controller import next_route
+
+        eligible_codes = {
+            "content_classification_required",
+            "movie_identification_required",
+            "special_feature_evidence_required",
+            "gemini_evidence_required",
+            "gemini_descriptive_review_required",
+        }
+        for item in store.list_items():
+            if (
+                item.stage != "identify"
+                or item.state != "review_required"
+                or item.review_code not in eligible_codes
+            ):
+                continue
+            try:
+                payload = json.loads(
+                    item.artifact.contract_path.read_text(encoding="utf-8")
+                )
+                assessment = assessment_from_contract(payload)
+            except (OSError, ValueError, TypeError):
+                continue
+            if assessment is None:
+                continue
+            title_index = payload["title_index"]
+            latest = store.routing_latest(assessment.inventory_fingerprint)
+            if latest is None or latest.digest != assessment.digest:
+                continue
+            attempts = store.routing_attempts(
+                assessment.inventory_fingerprint, title_index
+            )
+            route = next_route(assessment, title_index=title_index, attempts=attempts)
+            if route not in {"classify", "movie", "extra"}:
+                continue
+            with _downstream_lock:
+                if self._stop.is_set() or store.is_paused():
+                    return False
+                claimed = store.routing_claim_next(
+                    assessment,
+                    title_index,
+                    media_id=item.media_id,
+                    expected_review_code=item.review_code,
+                )
+                if claimed != route:
+                    if claimed is not None:
+                        store.routing_settle(
+                            assessment, title_index, claimed, "interrupted"
+                        )
+                    continue
+                try:
+                    store.choose_review_path(item.media_id, "gemini_evidence_required")
+                    if self._stop.is_set() or store.is_paused():
+                        store.routing_settle(
+                            assessment, title_index, route, "interrupted"
+                        )
+                        return True
+                    report = execute_gemini_fallback(
+                        store,
+                        (item.media_id,),
+                        config,
+                        get_engine().asr,
+                        get_pipeline_contract_root(),
+                        return_outcomes=True,
+                    )
+                    if (
+                        not isinstance(report, GeminiFallbackOutcome)
+                        or len(report.titles) != 1
+                    ):
+                        raise ValueError("Gemini route report is incomplete")
+                    result = report.titles[0]
+                    if result.media_id != item.media_id or result.disposition not in {
+                        "matched",
+                        "no_match",
+                        "review",
+                    }:
+                        raise ValueError("Gemini route report is invalid")
+                    current = store.get(item.media_id)
+                    outcome = result.disposition
+                    if outcome == "matched" and (
+                        current.state != "queued"
+                        or current.stage != "identify"
+                        or current.artifact.contract_path == item.artifact.contract_path
+                    ):
+                        outcome = "review"
+                    elif outcome == "matched" and not _verified_gemini_route_assignment(
+                        current, title_index, result.accepted_role
+                    ):
+                        store.hold_for_review(
+                            item.media_id,
+                            "provisional_content_identity_review_required",
+                        )
+                        outcome = "review"
+                    elif outcome != "matched" and current.state != "review_required":
+                        outcome = "review"
+                    store.routing_settle(assessment, title_index, route, outcome)
+                except Exception as exc:
+                    logger.error(
+                        "Automatic Gemini title route held safely: {}",
+                        type(exc).__name__,
+                    )
+                    current = store.get(item.media_id)
+                    if (
+                        current.stage == "identify"
+                        and current.state == "queued"
+                        and current.artifact.contract_path
+                        != item.artifact.contract_path
+                    ):
+                        # A provider/contract failure after one applied result
+                        # must not let an unverified partial outcome advance.
+                        store.hold_for_review(item.media_id, "gemini_analysis_failed")
+                        store.routing_settle(assessment, title_index, route, "review")
+                    else:
+                        store.routing_settle(
+                            assessment, title_index, route, "service_failed"
+                        )
+                    if (
+                        current.stage == "identify"
+                        and current.state == "review_required"
+                    ):
+                        store.choose_review_path(
+                            item.media_id, "gemini_provider_failed"
+                        )
+                return True
         return False
 
     def _resume_version_coexistence_reviews(self) -> bool:
@@ -704,6 +879,15 @@ class DownstreamWorker:
                     except Exception as exc:
                         logger.error(
                             "Automatic TV route settlement could not run: {}",
+                            type(exc).__name__,
+                        )
+                        handled = False
+                if not handled:
+                    try:
+                        handled = self._apply_automatic_assessed_gemini_route()
+                    except Exception as exc:
+                        logger.error(
+                            "Automatic assessed Gemini route could not run: {}",
                             type(exc).__name__,
                         )
                         handled = False

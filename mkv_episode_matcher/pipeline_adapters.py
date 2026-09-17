@@ -449,6 +449,14 @@ class IdentifyStageAdapter:
                 or assignment.get("fallback_name_policy") != "none"
             ):
                 raise PipelineReviewRequiredError("special_feature_evidence_required")
+            if (
+                routing is not None
+                and assignment.get("provisional_match") is True
+                and assignment.get("user_reviewed_name") is not True
+            ):
+                raise PipelineReviewRequiredError(
+                    "provisional_content_identity_review_required"
+                )
             media_kind = assignment.get("media_kind", "extra")
             tv_library = _special_feature_uses_tv_library(context, assignment)
             library_title = _safe_feature_component(
