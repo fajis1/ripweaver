@@ -5,9 +5,9 @@
 > `mkv-episode-matcher` checkout are not this running test build. Confirm the
 > resolved repository root and branch before editing or reporting a result.
 
-## Status (2026-09-16)
+## Status (2026-09-17)
 
-Milestones M0–M4: **complete in synthetic validation; M5 in progress**. Preparation
+Milestones M0–M5: **complete in synthetic validation; M6 pending**. Preparation
 and identify now consume the queue-owned routing assessment, and the automatic
 alternate-route worker is successfully routing failures, but no fresh Short Circuit 2 live rip has
 been validated. Existing uncommitted test-worktree changes belong to the user
@@ -29,10 +29,15 @@ design/reference only; its completion and test claims do not apply here.
   typed Gemini reports, terminal TV coordinator settlement, and startup
   interruption reconciliation. The latest full pytest run and modified-file
   Ruff checks passed. No physical disc, media, or live provider was accessed.
-- **Current agent handoff (2026-09-17, M5 in progress):**
+- **Current agent handoff (2026-09-17, M5 complete, M6 in progress):**
   - **Source and recovery:** work only in the `ripweaver-test` worktree on `Codex/windows-drive-provisional-fallback`.
   - **M4 Completion:** A *true* TV title-level no-match followed by a viable movie search is now successfully produced by the TV coordinator and correctly survives the automatic rip boundary to trigger the movie alternate route. The full end-to-end handoff has been proven with a combined coordinator -> automatic handler -> routing-worker synthetic test (`test_m5_end_to_end_tv_no_match_to_movie_route`). All Ruff checks and synthetic tests pass perfectly.
-  - **Still not completed (M5 tasks):** Accepted Gemini content roles are not yet appended as a new durable assessment revision. The manual Gemini endpoint still has a separate detached-thread path; audit its lock/claim interaction before claiming globally serialized provider access. A descriptive `tv_episode` suggestion and `all_season_series_not_found` remain review, not negative TV identity. Do not infer a new route from either. Sibling-revision races need end-to-end coverage.
+  - **M5 Completion (2026-09-17):** 
+    - Accepted Gemini content roles are successfully appended as a new durable assessment revision within the worker.
+    - Sibling-revision races have true end-to-end coverage and are safely aborted inside `_apply_automatic_assessed_gemini_route` when `routing_append` detects a conflict, keeping the existing successful route attempt intact.
+    - The manual Gemini endpoint (`execute_pipeline_gemini_fallback`) and Unmatched Disc Analysis are now serialized globally using `_downstream_lock` preventing conflicts with the automated queue runner.
+    - A descriptive `tv_episode` suggestion correctly falls through to `review`, and `all_season_series_not_found` explicitly settles as `review` via the TV coordinator mapping (`_TV_TERMINAL_REVIEW_OUTCOMES`), preventing unintended negative TV identities.
+    - The full synthetic test suite (1260 tests) and ruff lints pass!
 
 - **Live boundary:** M7 remains separately unapproved. Do not start RipWeaver,
   read the Short Circuit 2 disc/MKVs, call Gemini, rip, transcode, eject, or
