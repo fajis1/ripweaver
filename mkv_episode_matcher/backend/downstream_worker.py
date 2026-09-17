@@ -398,7 +398,38 @@ class DownstreamWorker:
                         outcome = "review"
                     elif outcome != "matched" and current.state != "review_required":
                         outcome = "review"
-                    store.routing_settle(assessment, title_index, route, outcome)
+                    if outcome == "matched":
+                        from dataclasses import replace
+                        from mkv_episode_matcher.disc.routing import TitleEvidence
+
+                        store.routing_settle(assessment, title_index, route, outcome)
+                        new_evidence = assessment.evidence + (
+                            TitleEvidence(
+                                title_index,
+                                "content",
+                                "supported",
+                                result.accepted_role,
+                            ),
+                        )
+                        new_assessment = replace(
+                            assessment,
+                            evidence=new_evidence,
+                            revision=assessment.revision + 1,
+                        )
+                        try:
+                            store.routing_append(
+                                new_assessment, expected_revision=assessment.revision
+                            )
+                        except Exception as exc:
+                            from mkv_episode_matcher.disc.routing import RoutingError
+
+                            if not isinstance(exc, RoutingError):
+                                raise
+                            logger.warning(
+                                "Sibling revision race prevented Gemini assessment append"
+                            )
+                    else:
+                        store.routing_settle(assessment, title_index, route, outcome)
                 except Exception:
                     logger.exception("Automatic Gemini title route held safely")
                     current = store.get(item.media_id)
