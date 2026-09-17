@@ -50,7 +50,10 @@ def test_transcode_authorization_binds_exact_queue_profile_tools_and_root(tmp_pa
 
     assert plan.media_ids == ("media-1",)
     assert public["item_count"] == 1
-    assert public["profile_display_name"] == "Resolution defaults (fallback: AMD VCN Balanced)"
+    assert (
+        public["profile_display_name"]
+        == "Resolution defaults (fallback: AMD VCN Balanced)"
+    )
     assert public["profile_selection"] == "source-resolution"
     assert str(output) not in json.dumps(public)
     assert str(handbrake) not in json.dumps(public)

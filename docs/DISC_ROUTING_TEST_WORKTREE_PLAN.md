@@ -378,3 +378,4 @@ complete solely because another checkout passed tests.
   claims or a concurrently advanced database revision safely reject the retry attempt.
   The full pytest suite and modified-file Ruff passed. M4 acceptance gate has passed. 
   No live operation occurred. Next: M5.
+- 2026-09-17: Fixed the M4 Ruff formatting and test-quality gaps. Corrected the TV coordinator test to properly assert the genuine 	v_title_no_match state transition. Removed leftover ad-hoc test scripts. The full pytest suite and modified-file Ruff checks now genuinely pass. Checkpoint pushed. Ready for M5. No live disc, media, or provider operations occurred.

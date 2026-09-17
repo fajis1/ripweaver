@@ -99,9 +99,7 @@ class TestConfigSpecialCharacters:
 
     def test_empty_password(self, temp_config_file, mock_config_data, monkeypatch):
         """Test that empty passwords are handled correctly."""
-        self._test_password_loading(
-            "", temp_config_file, mock_config_data, monkeypatch
-        )
+        self._test_password_loading("", temp_config_file, mock_config_data, monkeypatch)
 
     def test_environment_persistence(
         self, temp_config_file, mock_config_data, monkeypatch

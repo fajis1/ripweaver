@@ -1185,6 +1185,7 @@ def test_automatic_transcode_is_disabled_with_automatic_processing(monkeypatch):
 
     assert worker._start_automatic_transcode_if_ready() is False
 
+
 def test_genuine_tv_no_match_tries_eligible_movie_route(tmp_path, monkeypatch):
     fingerprint = "0123456789abcdef"
     store = PipelineQueueStore(tmp_path / "queue.sqlite3")
@@ -1197,8 +1198,8 @@ def test_genuine_tv_no_match_tries_eligible_movie_route(tmp_path, monkeypatch):
         ),
         expected_revision=0,
     )
-    
-    media_id = f"disc-01-title-000"
+
+    media_id = "disc-01-title-000"
     contract = tmp_path / f"{media_id}.json"
     contract.write_text(
         json.dumps({
@@ -1215,7 +1216,7 @@ def test_genuine_tv_no_match_tries_eligible_movie_route(tmp_path, monkeypatch):
     )
     store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
     store.hold_for_review(media_id, "tv_title_no_match")
-    
+
     monkeypatch.setattr(
         "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
         lambda: SimpleNamespace(
@@ -1233,8 +1234,9 @@ def test_genuine_tv_no_match_tries_eligible_movie_route(tmp_path, monkeypatch):
         "mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root",
         lambda: tmp_path / "contracts",
     )
-    
+
     calls = []
+
     def fake_gemini(_store, ids, _config, _asr, _root, *, return_outcomes):
         calls.append(ids)
         assert return_outcomes is True
@@ -1252,28 +1254,32 @@ def test_genuine_tv_no_match_tries_eligible_movie_route(tmp_path, monkeypatch):
         _store.apply_reviewed_identification_input(
             media_id, build_artifact("rip", revised)
         )
-        from mkv_episode_matcher.backend.gemini_fallback import GeminiFallbackOutcome, GeminiTitleOutcome
+        from mkv_episode_matcher.backend.gemini_fallback import (
+            GeminiFallbackOutcome,
+            GeminiTitleOutcome,
+        )
+
         return GeminiFallbackOutcome(
             (media_id,), (GeminiTitleOutcome(media_id, "matched", "movie"),)
         )
-        
+
     monkeypatch.setattr(
         "mkv_episode_matcher.backend.gemini_fallback.execute_gemini_fallback",
         fake_gemini,
     )
-    
+
     worker = DownstreamWorker(
         SimpleNamespace(store=store), allowed_stages=("identify",)
     )
-    
+
     # 1. Settle TV route as no_match
     assert worker._settle_terminal_tv_route() is True
     assert store.routing_attempts(fingerprint, 0)[0].outcome == "no_match"
-    
+
     # 2. Worker claims alternate route (movie) and executes Gemini
     assert worker._apply_automatic_assessed_gemini_route() is True
     assert worker._apply_automatic_assessed_gemini_route() is False
-    
+
     assert calls == [(media_id,)]
     assert store.routing_attempts(fingerprint, 0)[0].outcome == "matched"
     assert store.routing_attempts(fingerprint, 0)[0].route == "movie"
@@ -1313,7 +1319,7 @@ def test_automatic_gemini_route_aborts_when_paused_or_stopped(tmp_path, monkeypa
         )
         store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
         store.hold_for_review(media_id, "tv_title_no_match")
-    
+
     monkeypatch.setattr(
         "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
         lambda: SimpleNamespace(
@@ -1323,21 +1329,22 @@ def test_automatic_gemini_route_aborts_when_paused_or_stopped(tmp_path, monkeypa
             )
         ),
     )
-    
+
     worker = DownstreamWorker(
         SimpleNamespace(store=store, stop_event=SimpleNamespace(is_set=lambda: False)),
-        allowed_stages=("identify",)
+        allowed_stages=("identify",),
     )
-    
+
     assert worker._settle_terminal_tv_route() is True
     assert worker._settle_terminal_tv_route() is True
-    
+
     store.set_paused(True)
     assert worker._apply_automatic_assessed_gemini_route() is False
-    
+
     store.set_paused(False)
     worker._stop = SimpleNamespace(is_set=lambda: True)
     assert worker._apply_automatic_assessed_gemini_route() is False
+
 
 def test_automatic_gemini_route_aborts_on_sibling_revision(tmp_path, monkeypatch):
     fingerprint = "0123456789abcdef"
@@ -1372,7 +1379,7 @@ def test_automatic_gemini_route_aborts_on_sibling_revision(tmp_path, monkeypatch
         )
         store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
         store.hold_for_review(media_id, "tv_title_no_match")
-    
+
     monkeypatch.setattr(
         "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
         lambda: SimpleNamespace(
@@ -1382,18 +1389,19 @@ def test_automatic_gemini_route_aborts_on_sibling_revision(tmp_path, monkeypatch
             )
         ),
     )
-    
+
     worker = DownstreamWorker(
         SimpleNamespace(store=store), allowed_stages=("identify",)
     )
-    
+
     # 1. Settle TV route for both
     assert worker._settle_terminal_tv_route() is True
     assert worker._settle_terminal_tv_route() is True
-    
+
     # 2. Advance the database revision
     from dataclasses import replace
-    advanced = store.routing_append(
+
+    store.routing_append(
         replace(
             assessment,
             revision=2,
@@ -1404,6 +1412,6 @@ def test_automatic_gemini_route_aborts_on_sibling_revision(tmp_path, monkeypatch
         ),
         expected_revision=1,
     )
-    
+
     # 3. Attempt Gemini route -> should fail since the database revision moved on
     assert worker._apply_automatic_assessed_gemini_route() is False

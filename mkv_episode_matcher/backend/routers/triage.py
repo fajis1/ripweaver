@@ -109,14 +109,16 @@ def resolve_canonical_series_name(raw_name: str) -> tuple[str, bool, bool]:
         if tv_results:
             has_tv = True
             tv_name = tv_results[0]["name"]
-            
-        movie_results = _tmdb_get_json("/search/movie", query=query_target).get("results", [])
+
+        movie_results = _tmdb_get_json("/search/movie", query=query_target).get(
+            "results", []
+        )
         if movie_results:
             has_movie = True
-            
+
         if has_tv and not has_movie:
             return tv_name, True, False
-            
+
     except Exception:
         pass
 
@@ -271,8 +273,10 @@ def parse_triage_metadata(  # noqa: C901
         is_movie = True
 
     # Canonical series resolution
-    canonical_series, has_tv, has_movie = resolve_canonical_series_name(series_candidate)
-    
+    canonical_series, has_tv, has_movie = resolve_canonical_series_name(
+        series_candidate
+    )
+
     content_hint = None
     if has_tv and has_movie:
         content_hint = "mixed"
@@ -584,7 +588,8 @@ def queue_triage_items(  # noqa: C901
                         "series_name": series_name,
                         "season": season_num,
                         "disc_number": disc_num,
-                        "content_hint": meta.get("content_hint") or ("movie" if is_movie else "tv"),
+                        "content_hint": meta.get("content_hint")
+                        or ("movie" if is_movie else "tv"),
                     },
                 }
                 stage = "identify"

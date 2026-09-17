@@ -165,9 +165,8 @@ def _failed_batch_cohorts(  # noqa: C901 - linear identity and prefix guards
         ordinal_maps = [
             {job.title_index: ordinal for ordinal, job in enumerate(ordered)}
         ]
-        if (
-            first_title_index is not None
-            and all(job.title_index >= first_title_index for job in ordered)
+        if first_title_index is not None and all(
+            job.title_index >= first_title_index for job in ordered
         ):
             # Fresh whole-disc acquisition selects every title in index order.
             # A later failed-disc plan may contain only relevant titles, but
@@ -180,7 +179,7 @@ def _failed_batch_cohorts(  # noqa: C901 - linear identity and prefix guards
                 {
                     job.title_index: job.title_index - first_title_index
                     for job in ordered
-                }
+                },
             )
         best_recovered: dict[int, Path] | None = None
         for ordinal_map in ordinal_maps:
@@ -193,8 +192,12 @@ def _failed_batch_cohorts(  # noqa: C901 - linear identity and prefix guards
                         continue
                     break
                 actual_bytes = path.stat().st_size
-                is_short_bypass = job.duration_seconds is not None and job.duration_seconds < 120
-                if is_short_bypass or is_inventory_planned_tiny_output(job.estimated_bytes):
+                is_short_bypass = (
+                    job.duration_seconds is not None and job.duration_seconds < 120
+                )
+                if is_short_bypass or is_inventory_planned_tiny_output(
+                    job.estimated_bytes
+                ):
                     if not is_complete_batch_output_size(
                         actual_bytes=actual_bytes,
                         estimated_bytes=job.estimated_bytes,

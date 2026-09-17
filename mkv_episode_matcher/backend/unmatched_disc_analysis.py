@@ -3872,6 +3872,19 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
                         analysis_run_id=analysis_run_id,
                         summary={"reason": type(fallback_exc).__name__},
                     )
+                for item in unresolved_for_gemini:
+                    file_id = item.file_id
+                    queue_item = store.get(file_id)
+                    if (
+                        queue_item.state == "review_required"
+                        and queue_item.review_code != "visual_content_review_required"
+                    ):
+                        if file_id in explicit_tv_no_match:
+                            store.choose_review_path(file_id, "tv_title_no_match")
+                        else:
+                            store.choose_review_path(
+                                file_id, "independent_episode_evidence_required"
+                            )
                 raise failure from exc
     elif not proposed:
         raise PipelineQueueError("Independent episode evidence requires review")
@@ -4032,7 +4045,9 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
             if media_id in explicit_tv_no_match:
                 store.choose_review_path(media_id, "tv_title_no_match")
             else:
-                store.choose_review_path(media_id, "independent_episode_evidence_required")
+                store.choose_review_path(
+                    media_id, "independent_episode_evidence_required"
+                )
     final_unresolved = tuple(
         media_id
         for media_id in media_ids
