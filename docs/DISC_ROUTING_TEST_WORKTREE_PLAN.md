@@ -369,3 +369,12 @@ complete solely because another checkout passed tests.
   post-apply failures hold for review before transcode or placement. M4 still
   needs the explicit TV no-match alternate and sibling/concurrent integration
   gate described in the handoff above. No live operation occurred.
+- 2026-09-16: Completed M4's explicit TV no-match alternate route integration.
+  Synthetic real-queue/fake-provider tests confirm that a TV route that ends in
+  a confident, whole-series explicit TV no-match is settled and the item transitions 
+  to the alternate movie route. Weak evidence, unavailable catalogues, and provider 
+  failures do not trigger the alternate route and are correctly held for review or 
+  service-failed. Confirmed pause/stop interrupts the fallback, and that concurrent
+  claims or a concurrently advanced database revision safely reject the retry attempt.
+  The full pytest suite and modified-file Ruff passed. M4 acceptance gate has passed. 
+  No live operation occurred. Next: M5.

@@ -12,6 +12,7 @@ _TV_TERMINAL_REVIEW_OUTCOMES = {
     "all_season_sequence_review_required": "review",
     "independent_episode_evidence_required": "review",
     "whole_disc_coherence_review_required": "review",
+    "tv_title_no_match": "no_match",
 }
 
 

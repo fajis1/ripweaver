@@ -178,6 +178,7 @@ def test_conflicting_metadata_requires_classification_before_hint_route():
         ("all_season_analysis_failed", "service_failed"),
         ("all_season_evidence_failed", "service_failed"),
         ("whole_disc_coherence_review_required", "review"),
+        ("tv_title_no_match", "no_match"),
         ("episode_match_review", None),
         ("all_season_analysis_running", None),
     ],

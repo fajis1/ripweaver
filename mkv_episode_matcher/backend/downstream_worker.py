@@ -310,6 +310,7 @@ class DownstreamWorker:
             "special_feature_evidence_required",
             "gemini_evidence_required",
             "gemini_descriptive_review_required",
+            "tv_title_no_match",
         }
         for item in store.list_items():
             if (

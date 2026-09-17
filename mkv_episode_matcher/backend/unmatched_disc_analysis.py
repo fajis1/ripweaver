@@ -3457,6 +3457,7 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
     )
     # Preserve independent subtitle matches, but let Gemini inspect unresolved
     # titles against only the established season scope and unassigned episodes.
+    explicit_tv_no_match: set[str] = set()
     if unresolved_for_gemini and allow_gemini:
         proposed_episode_ids = {entry.episode_id for entry in proposed.values()}
         assigned_episode_ids = existing_episode_ids | frozenset(proposed_episode_ids)
@@ -3687,6 +3688,14 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
                     if not runtime_consistent
                     else "gemini_candidate_rejected"
                 )
+                if (
+                    season is None
+                    and match.episode_id is None
+                    and initial_match.episode_id is None
+                    and match.confidence >= automatic_min_confidence
+                    and initial_match.confidence >= automatic_min_confidence
+                ):
+                    explicit_tv_no_match.add(file_id)
                 dossier.record_attempt(
                     (file_id,),
                     branch="tv-gemini",
@@ -4012,12 +4021,18 @@ def _execute_unmatched_disc_analysis(  # noqa: C901 - guarded disc-level workflo
                     item.state == "review_required"
                     and item.review_code != "visual_content_review_required"
                 ):
-                    store.choose_review_path(
-                        media_id, "independent_episode_evidence_required"
-                    )
+                    if media_id in explicit_tv_no_match:
+                        store.choose_review_path(media_id, "tv_title_no_match")
+                    else:
+                        store.choose_review_path(
+                            media_id, "independent_episode_evidence_required"
+                        )
     elif unresolved:
         for media_id in unresolved:
-            store.choose_review_path(media_id, "independent_episode_evidence_required")
+            if media_id in explicit_tv_no_match:
+                store.choose_review_path(media_id, "tv_title_no_match")
+            else:
+                store.choose_review_path(media_id, "independent_episode_evidence_required")
     final_unresolved = tuple(
         media_id
         for media_id in media_ids
