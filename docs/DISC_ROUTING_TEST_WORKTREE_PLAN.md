@@ -18,7 +18,9 @@ design/reference only; its completion and test claims do not apply here.
 
 - **Source and recovery:** work only in the `ripweaver-test` worktree on
   `codex/windows-drive-provisional-fallback`. The last approved `wip/test`
-  recovery checkpoint before this resumed turn was `dd16598f734a`; the checkout intentionally remains
+  recovery checkpoint before this resumed turn was `dd16598f734a`; the latest
+  pushed recovery state is always `origin/wip/test` (resolve its hash when
+  resuming). The checkout intentionally remains
   dirty and contains older user/agent work. Do not switch to the installed EXE
   or the separate `mkv-episode-matcher` checkout, reset the tree, or remove
   `.coverage`, staging files, or unrelated changes.
