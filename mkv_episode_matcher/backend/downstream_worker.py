@@ -353,6 +353,7 @@ class DownstreamWorker:
                             assessment, title_index, claimed, "interrupted"
                         )
                     continue
+                settled = False
                 try:
                     store.choose_review_path(item.media_id, "gemini_evidence_required")
                     if self._stop.is_set() or store.is_paused():
@@ -404,17 +405,19 @@ class DownstreamWorker:
                         from mkv_episode_matcher.disc.routing import TitleEvidence
 
                         store.routing_settle(assessment, title_index, route, outcome)
+                        settled = True
                         
                         current_latest = assessment
-                        while True:
-                            new_evidence = current_latest.evidence + (
-                                TitleEvidence(
-                                    title_index,
-                                    "content",
-                                    "supported",
-                                    result.accepted_role,
-                                ),
+                        for _ in range(10):
+                            new_item = TitleEvidence(
+                                title_index,
+                                "content",
+                                "supported",
+                                result.accepted_role,
                             )
+                            if new_item in current_latest.evidence:
+                                break
+                            new_evidence = current_latest.evidence + (new_item,)
                             new_assessment = replace(
                                 current_latest,
                                 evidence=new_evidence,
@@ -429,16 +432,20 @@ class DownstreamWorker:
                                 from mkv_episode_matcher.disc.routing import (
                                     RoutingError,
                                 )
-
                                 if not isinstance(exc, RoutingError):
                                     raise
                                 current_latest = store.routing_latest(assessment.inventory_fingerprint)
                                 if current_latest is None or current_latest.revision <= assessment.revision:
                                     raise ValueError("Could not resolve sibling revision race during append") from exc
+                        else:
+                            raise ValueError("Exceeded maximum retries for sibling revision race")
                     else:
                         store.routing_settle(assessment, title_index, route, outcome)
+                        settled = True
                 except Exception:
                     logger.exception("Automatic Gemini title route held safely")
+                    if settled:
+                        continue
                     current = store.get(item.media_id)
                     if (
                         current.stage == "identify"

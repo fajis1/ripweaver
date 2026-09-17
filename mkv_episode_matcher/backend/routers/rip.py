@@ -5535,13 +5535,16 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
     # Falling back to contract context made the dashboard's editable canonical
     # name misleading and could repeat the exact failed lookup.
     series_name = requested_series_name
-    for media_id in selected:
-        store.choose_review_path(media_id, "all_season_analysis_running")
 
     def run() -> None:
         from mkv_episode_matcher.backend.automatic_rip import _downstream_lock
 
         with _downstream_lock:
+            try:
+                for media_id in selected:
+                    store.choose_review_path(media_id, "all_season_analysis_running")
+            except PipelineQueueError:
+                return
             try:
                 config = get_config_manager().load()
                 execute_unmatched_disc_analysis(
@@ -7787,19 +7790,16 @@ def execute_pipeline_gemini_fallback(  # noqa: C901
             detail="Selected Gemini item is no longer awaiting a retry; refresh the queue",
         )
     selected = tuple(item.media_id for item in selected_items)
-    try:
-        for media_id in selected:
-            store.choose_review_path(media_id, "gemini_analysis_running")
-    except PipelineQueueError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail="Gemini-held queue state changed; refresh and retry the review",
-        ) from exc
 
     def run() -> None:
         from mkv_episode_matcher.backend.automatic_rip import _downstream_lock
 
         with _downstream_lock:
+            try:
+                for media_id in selected:
+                    store.choose_review_path(media_id, "gemini_analysis_running")
+            except PipelineQueueError:
+                return
             try:
                 applied = set(
                     execute_gemini_fallback(
