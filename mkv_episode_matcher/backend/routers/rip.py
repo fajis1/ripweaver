@@ -2641,13 +2641,58 @@ def reassess_disc_metadata(
         raise HTTPException(
             status_code=400, detail="Reassessment confirmation is required"
         )
-    latest = store.routing_latest(disc_fingerprint)
-    if not latest:
-        raise HTTPException(status_code=404, detail="No existing disc assessment found")
+    
+    from mkv_episode_matcher.backend.automatic_rip import _downstream_lock
+    from mkv_episode_matcher.disc.routing_preparation import build_preparation_assessment
+    
+    with _downstream_lock:
+        latest = store.routing_latest(disc_fingerprint)
+        if not latest:
+            raise HTTPException(status_code=404, detail="No existing disc assessment found")
+            
+        items = [item for item in store.list_items() if _pipeline_item_saved_disc_fingerprint(item) == disc_fingerprint]
+        if not items:
+            raise HTTPException(status_code=400, detail="No pipeline items found for this disc")
+            
+        if any(item.state in {"running", "queued", "pause_requested", "canceling"} for item in items):
+            raise HTTPException(status_code=400, detail="Disc has actively processing pipeline items")
+        if all(item.state in {"completed", "dismissed"} for item in items):
+            raise HTTPException(status_code=400, detail="All pipeline items for this disc are already completed or dismissed")
+
+        title_classifications = {}
+        explicit_tv_context = False
+        episode_assignments = []
+        feature_assignments = []
+        database_status = None
         
-    from dataclasses import replace
-    new_assessment = replace(latest, user_hint=request.content_hint, revision=latest.revision + 1)
-    store.routing_append(new_assessment, expected_revision=latest.revision)
+        for e in latest.evidence:
+            if e.source == "label":
+                explicit_tv_context = True
+                if e.role == "tv":
+                    title_classifications[e.title_index] = "episode"
+                elif e.role == "extra":
+                    title_classifications[e.title_index] = "extra"
+            elif e.source == "database":
+                if e.status == "supported":
+                    if e.role == "tv":
+                        episode_assignments.append(e.title_index)
+                    elif e.role == "extra":
+                        feature_assignments.append(e.title_index)
+                else:
+                    database_status = e.status
+
+        new_assessment = build_preparation_assessment(
+            fingerprint=disc_fingerprint,
+            title_indexes=latest.title_indexes,
+            user_hint=request.content_hint,
+            title_classifications=title_classifications,
+            explicit_tv_context=explicit_tv_context,
+            episode_assignment_indexes=tuple(episode_assignments),
+            feature_assignment_indexes=tuple(feature_assignments),
+            database_status=database_status,
+        )
+        store.routing_save_observation(new_assessment)
+        
     return {"status": "reassessed", "disc_fingerprint": disc_fingerprint}
 
 
@@ -3735,7 +3780,7 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
             assessment = store_instance.routing_latest(disc_fingerprint)
             if assessment:
                 user_hint = assessment.user_hint
-                assessed_composition = assessment.composition()
+                assessed_composition = assessment.composition
                 evidence = next((e for e in assessment.evidence if e.title_index == title_index), None)
                 if evidence:
                     assessed_role = evidence.role

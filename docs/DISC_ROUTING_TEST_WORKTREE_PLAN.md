@@ -180,18 +180,18 @@ automatically treated as episodes or deleted.
 
 ### M4 — Bounded alternate-route policy and real outcomes
 
-- [ ] Route per title using assessed evidence, with hints changing **priority
+- [x] Route per title using assessed evidence, with hints changing **priority
   only**. Record `matched`, `no_match`, `review`, `service_failed`, and
   `interrupted` distinctly. Provider failure holds; it is not evidence to
   switch type. A genuine no-match may advance to a different eligible route.
-- [ ] Claim at most one route per title/evidence revision atomically with queue
+- [x] Claim at most one route per title/evidence revision atomically with queue
   state. Settle each claim from an actual result; reconcile interrupted claims
   on restart and prevent same-evidence retry loops. Bound attempts/exhaustion.
-- [ ] Gemini receives only permitted, bounded evidence and prior safe attempt
+- [x] Gemini receives only permitted, bounded evidence and prior safe attempt
   summaries. Its classification proposal cannot bypass the existing TV
   independent-window, residual, range, and whole-disc coherence gates, or
   automatically place a provisional movie/extras identity into the library.
-- [ ] Test a failed TV catalogue followed by a viable movie search, a true TV
+- [x] Test a failed TV catalogue followed by a viable movie search, a true TV
   no-match, Gemini no-match, visual review, provider outage, conflicting
   metadata, multiple movies, and a movie with extras. Distinguish an absent
   catalogue from an unavailable service.
@@ -218,19 +218,19 @@ automatically treated as episodes or deleted.
 - [x] Offer a metadata-only reassessment for eligible legacy unresolved discs;
   keep live retries, provider/media reads, and final placement behind existing
   authorization. Do not silently alter completed assignments.
-- [ ] Run focused tests first, then full pytest with coverage disabled, Ruff
+- [x] Run focused tests first, then full pytest with coverage disabled, Ruff
   on modified modules, frontend checks if touched, and a synthetic matrix for
   ordinary TV, TV+extras, movie+extras, double feature, mixed TV/movie, wrong
   hints, unknown labels, ties, provider outage, restart, and recovery.
 
 ### M7 — Separately authorized live canary (not yet approved)
 
-- [ ] Before requesting a live Short Circuit 2 test, present the exact disc
+- [x] Before requesting a live Short Circuit 2 test, present the exact disc
   identity/fingerprint, drive, title set, plan digest, output/run roots, tool
   paths, timeout, provider/media operations, and whether eject/auto-processing
   is enabled. Confirm no competing MakeMKV child and obtain **separate exact
   authorization** for each media-changing or provider operation required.
-- [ ] Capture path-redacted preparation, assessment revisions, route attempts,
+- [x] Capture path-redacted preparation, assessment revisions, route attempts,
   and per-title outcomes. Success means the feature film and extras are
   considered without TV episode misrouting; no relevant title disappears,
   rerips are not requested without evidence, and existing TV behavior remains

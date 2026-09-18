@@ -1731,8 +1731,8 @@ const RipPipelineView = ({ onOpenSettings, onOpenDashboard, queueOnly = false, a
   };
 
   const reassessDiscMetadata = async (group: AttentionDiscGroup) => {
-    const fingerprint = group.key.replace('Disc: ', '');
-    if (!fingerprint || fingerprint.startsWith('untracked')) return;
+    const fingerprint = group.key;
+    if (!/^[0-9a-f]{16}$/i.test(fingerprint)) return;
     const content_hint = window.prompt(`Run metadata-only reassessment for "${group.label}"?
 Enter content hint (tv, movie, extras) or leave blank for unknown:`);
     if (content_hint === null) return;
@@ -5913,7 +5913,7 @@ Enter content hint (tv, movie, extras) or leave blank for unknown:`);
                                 {group.failedCount} failed
                               </span>
                             )}
-                            {!group.key.startsWith('untracked') && (
+                            {/^[0-9a-f]{16}$/i.test(group.key) && (
                               <button
                                 type="button"
                                 className="ml-2 btn btn-secondary text-[10px] px-2 py-0.5 rounded border border-blue-400/50 text-blue-100 hover:bg-blue-500/20"
