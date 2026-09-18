@@ -14,7 +14,7 @@ been validated. Existing uncommitted test-worktree changes belong to the user
 and must be preserved. The earlier routing plan in another checkout remains a
 design/reference only; its completion and test claims do not apply here.
 
-## Current agent handoff (2026-09-17, M5 in progress)
+## Current agent handoff (2026-09-17, M5 complete, M6 pending)
 
 - **Source and recovery:** work only in the `ripweaver-test` worktree on
   `codex/windows-drive-provisional-fallback`. The last approved `wip/test`
@@ -29,7 +29,7 @@ design/reference only; its completion and test claims do not apply here.
   typed Gemini reports, terminal TV coordinator settlement, and startup
   interruption reconciliation. The latest full pytest run and modified-file
   Ruff checks passed. No physical disc, media, or live provider was accessed.
-- **Current agent handoff (2026-09-17, M5 complete, M6 in progress):**
+- **Current agent handoff (2026-09-17, M5 complete, M6 pending):**
   - **Source and recovery:** work only in the `ripweaver-test` worktree on `Codex/windows-drive-provisional-fallback`.
   - **M4 Completion:** A *true* TV title-level no-match followed by a viable movie search is now successfully produced by the TV coordinator and correctly survives the automatic rip boundary to trigger the movie alternate route. The full end-to-end handoff has been proven with a combined coordinator -> automatic handler -> routing-worker synthetic test (`test_m5_end_to_end_tv_no_match_to_movie_route`). All Ruff checks and synthetic tests pass perfectly.
   - **M5 Completion (2026-09-17):** 
@@ -356,3 +356,4 @@ complete solely because another checkout passed tests.
   The full pytest suite and modified-file Ruff passed. M4 acceptance gate has passed. 
   No live operation occurred. Next: M5.
 - 2026-09-17: Fixed the M4 Ruff formatting and test-quality gaps. Corrected the TV coordinator test to properly assert the genuine 	v_title_no_match state transition. Removed leftover ad-hoc test scripts. The full pytest suite and modified-file Ruff checks now genuinely pass. Checkpoint pushed. Ready for M5. No live disc, media, or provider operations occurred.
+
