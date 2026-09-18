@@ -7,14 +7,14 @@
 
 ## Status (2026-09-17)
 
-Milestones M0–M5: **complete in synthetic validation; M6 pending**. Preparation
+Milestones M0-M6: **complete in synthetic validation; M7 pending**. Preparation
 and identify now consume the queue-owned routing assessment, and the automatic
 alternate-route worker is successfully routing failures, but no fresh Short Circuit 2 live rip has
 been validated. Existing uncommitted test-worktree changes belong to the user
 and must be preserved. The earlier routing plan in another checkout remains a
 design/reference only; its completion and test claims do not apply here.
 
-## Current agent handoff (2026-09-17, M5 complete, M6 pending)
+## Current agent handoff (2026-09-17, M6 complete, M7 pending)
 
 - **Source and recovery:** work only in the `ripweaver-test` worktree on
   `codex/windows-drive-provisional-fallback`. The last approved `wip/test`
@@ -29,10 +29,10 @@ design/reference only; its completion and test claims do not apply here.
   typed Gemini reports, terminal TV coordinator settlement, and startup
   interruption reconciliation. The latest full pytest run and modified-file
   Ruff checks passed. No physical disc, media, or live provider was accessed.
-- **Current agent handoff (2026-09-17, M5 complete, M6 pending):**
+- **Current agent handoff (2026-09-17, M6 complete, M7 pending):**
   - **Source and recovery:** work only in the `ripweaver-test` worktree on `Codex/windows-drive-provisional-fallback`.
   - **M4 Completion:** A *true* TV title-level no-match followed by a viable movie search is now successfully produced by the TV coordinator and correctly survives the automatic rip boundary to trigger the movie alternate route. The full end-to-end handoff has been proven with a combined coordinator -> automatic handler -> routing-worker synthetic test (`test_m5_end_to_end_tv_no_match_to_movie_route`). All Ruff checks and synthetic tests pass perfectly.
-  - **M5 Completion (2026-09-17):** 
+  - **M5 Completion (2026-09-17):**
     - Accepted Gemini content roles are successfully appended as a new durable assessment revision within the worker.
     - Sibling-revision races have true end-to-end coverage. The settle/append race was resolved by appending the evidence in a bounded (10 retries) retry loop. The update is now fully idempotent: if a sibling appends the exact same role, the loop breaks immediately and avoids a duplicate-evidence `ValueError`. A local `settled` flag ensures a matched route is never erroneously resettled as `review` in the outer exception handler. The synthetic tests explicitly test this sibling revision occurring between those operations.
     - The manual Gemini endpoint (`execute_pipeline_gemini_fallback`) and Unmatched Disc Analysis are now serialized globally. The queue transition (`choose_review_path`) was moved **inside** the thread and under the `_downstream_lock`. This prevents any queue state race where a worker thread might claim an item before the manual thread actually acquires the lock. The HTTP routes check the state early for responsive UX, and the background thread re-checks the transition safely. Synthetic concurrency API tests exist for this logic.
@@ -198,24 +198,24 @@ automatically treated as episodes or deleted.
 
 ### M5 — Worker, Gemini, and existing-TV/triage integration
 
-- [ ] Replace the review-code-only extras fallback with bounded, tracked work
+- [x] Replace the review-code-only extras fallback with bounded, tracked work
   on the current downstream worker. Preserve pause/stop, its shared ASR lock,
   serialized identify stage, and no detached per-item thread.
-- [ ] Keep `_apply_automatic_triage_analysis()` and disc-level TV analysis in
+- [x] Keep `_apply_automatic_triage_analysis()` and disc-level TV analysis in
   both idle and post-item paths. Preserve triage originals and the established
   TV evidence/coherence rules. Integrate Gemini accepted content roles into
   the same durable assessment **after** actual result validation.
-- [ ] End-to-end fake-provider/queue tests cover matched, no-match, review,
+- [x] End-to-end fake-provider/queue tests cover matched, no-match, review,
   service failure, pause, shutdown, concurrent claim, restart, and sibling
   evidence revisions. Gate: existing TV and triage suites still pass.
 
 ### M6 — Visibility, legacy review, and broad synthetic verification
 
-- [ ] Display the user's hint separately from assessed composition, per-title
+- [x] Display the user's hint separately from assessed composition, per-title
   role, current route, evidence status, and exhausted/held reason. Do not show
   a model guess as verified identity. Read `FRONTEND_RECOVERY_GUIDE.md` fully
   before frontend source or build edits.
-- [ ] Offer a metadata-only reassessment for eligible legacy unresolved discs;
+- [x] Offer a metadata-only reassessment for eligible legacy unresolved discs;
   keep live retries, provider/media reads, and final placement behind existing
   authorization. Do not silently alter completed assignments.
 - [ ] Run focused tests first, then full pytest with coverage disabled, Ruff
@@ -348,12 +348,20 @@ complete solely because another checkout passed tests.
   gate described in the handoff above. No live operation occurred.
 - 2026-09-16: Completed M4's explicit TV no-match alternate route integration.
   Synthetic real-queue/fake-provider tests confirm that a TV route that ends in
-  a confident, whole-series explicit TV no-match is settled and the item transitions 
-  to the alternate movie route. Weak evidence, unavailable catalogues, and provider 
-  failures do not trigger the alternate route and are correctly held for review or 
+  a confident, whole-series explicit TV no-match is settled and the item transitions
+  to the alternate movie route. Weak evidence, unavailable catalogues, and provider
+  failures do not trigger the alternate route and are correctly held for review or
   service-failed. Confirmed pause/stop interrupts the fallback, and that concurrent
   claims or a concurrently advanced database revision safely reject the retry attempt.
-  The full pytest suite and modified-file Ruff passed. M4 acceptance gate has passed. 
+  The full pytest suite and modified-file Ruff passed. M4 acceptance gate has passed.
   No live operation occurred. Next: M5.
 - 2026-09-17: Fixed the M4 Ruff formatting and test-quality gaps. Corrected the TV coordinator test to properly assert the genuine 	v_title_no_match state transition. Removed leftover ad-hoc test scripts. The full pytest suite and modified-file Ruff checks now genuinely pass. Checkpoint pushed. Ready for M5. No live disc, media, or provider operations occurred.
-
+- 2026-09-17: Completed M6's visibility and user fallback requirements.
+  Extended `PipelineItemResponse` to export `user_hint`, `assessed_composition`,
+  `assessed_role`, `current_route`, `evidence_status`, and `exhausted_reason`.
+  Updated `RipPipelineView` to display these cleanly without misrepresenting
+  model guesses as verified identity. Implemented `/pipeline/discs/{fingerprint}/reassess`
+  for metadata-only legacy disc reassessment that safely appends a revision without
+  re-reading physical media or altering completed assignments.
+  Frontend compilation, Ruff checks, and pytest suite passed cleanly. No live
+  operations occurred. Next: Hand-off/Completion.

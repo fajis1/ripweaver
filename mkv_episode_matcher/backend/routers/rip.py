@@ -2630,6 +2630,27 @@ def preview_forget_drive_disc_media(
     }
 
 
+@router.post("/pipeline/discs/{disc_fingerprint}/reassess")
+def reassess_disc_metadata(
+    disc_fingerprint: str,
+    request: DiscReassessmentRequest,
+    store: Annotated[PipelineQueueStore, Depends(get_pipeline_queue_store)],
+) -> dict[str, object]:
+    """Reassess a known disc without accessing a physical drive."""
+    if not request.confirm_reassessment:
+        raise HTTPException(
+            status_code=400, detail="Reassessment confirmation is required"
+        )
+    latest = store.routing_latest(disc_fingerprint)
+    if not latest:
+        raise HTTPException(status_code=404, detail="No existing disc assessment found")
+        
+    from dataclasses import replace
+    new_assessment = replace(latest, user_hint=request.content_hint, revision=latest.revision + 1)
+    store.routing_append(new_assessment, expected_revision=latest.revision)
+    return {"status": "reassessed", "disc_fingerprint": disc_fingerprint}
+
+
 @router.post("/drives/{drive_index}/forget-disc-identity")
 def forget_drive_disc_identity(
     drive_index: int,
@@ -2871,6 +2892,12 @@ class PipelineItemResponse(BaseModel):
     series_name: str | None = None
     display_name: str | None = None
     match_summary: str | None = None
+    user_hint: str | None = None
+    assessed_composition: str | None = None
+    assessed_role: str | None = None
+    current_route: str | None = None
+    evidence_status: str | None = None
+    exhausted_reason: str | None = None
     location_label: str
     location_relative: str | None = None
     location_root_key: str | None = None
@@ -2946,6 +2973,11 @@ class CancelQueuedPipelineItemsRequest(BaseModel):
 class DeleteQueuedPipelineMediaRequest(BaseModel):
     confirm_delete: bool = False
     remember_future_skip: bool = False
+
+
+class DiscReassessmentRequest(BaseModel):
+    content_hint: Literal["tv", "movie", "extras"] | None = None
+    confirm_reassessment: bool = False
 
 
 class ShortTitleDispositionRequest(BaseModel):
@@ -3688,6 +3720,41 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
             and source.stat().st_size == source_size
         )
     series_name = _pipeline_item_series_name(item, payload)
+    user_hint = None
+    assessed_composition = None
+    assessed_role = None
+    current_route = None
+    evidence_status = None
+    exhausted_reason = None
+    
+    if disc_fingerprint and title_index is not None:
+        try:
+            from mkv_episode_matcher.disc.routing_controller import next_route
+            # We already imported get_pipeline_queue_store globally
+            store_instance = get_pipeline_queue_store()
+            assessment = store_instance.routing_latest(disc_fingerprint)
+            if assessment:
+                user_hint = assessment.user_hint
+                assessed_composition = assessment.composition()
+                evidence = next((e for e in assessment.evidence if e.title_index == title_index), None)
+                if evidence:
+                    assessed_role = evidence.role
+                    evidence_status = evidence.status
+                roles = assessment.title_roles()
+                role_info = next((r for r in roles if r.title_index == title_index), None)
+                if role_info and not assessed_role:
+                    assessed_role = role_info.role
+                attempts = store_instance.routing_attempts(disc_fingerprint, title_index)
+                if attempts:
+                    current_route = attempts[-1].route
+                    outcome = attempts[-1].outcome
+                    if outcome in ("review", "service_failed", "interrupted"):
+                        exhausted_reason = outcome
+                    elif outcome == "no_match" and not next_route(assessment, title_index=title_index, attempts=attempts):
+                        exhausted_reason = "exhausted"
+        except Exception:
+            pass
+
     response = {
         "media_id": item.media_id,
         "artifact_sha256": item.artifact.contract_sha256,
@@ -3703,6 +3770,12 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
         "series_name": series_name,
         "display_name": _pipeline_item_display_name(item, payload),
         "match_summary": _pipeline_item_match_summary(item, payload),
+        "user_hint": user_hint,
+        "assessed_composition": assessed_composition,
+        "assessed_role": assessed_role,
+        "current_route": current_route,
+        "evidence_status": evidence_status,
+        "exhausted_reason": exhausted_reason,
         "catalogue_candidate_help": _pipeline_catalogue_candidate_help(item, payload),
         "location_label": location_label,
         "location_relative": location_relative,
