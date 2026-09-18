@@ -449,11 +449,16 @@ def test_gemini_retry_starts_only_the_exact_requested_item(tmp_path, monkeypatch
             return self.items[media_id]
 
     class FakeThread:
-        def __init__(self, *, target, name, daemon):
+        def __init__(self, *, target, name, daemon, **kwargs):
             self.target = target
 
         def start(self):
+            self.target()
             return None
+
+    monkeypatch.setattr("mkv_episode_matcher.backend.routers.rip.get_engine", lambda: type("e", (), {"asr": None})())
+    monkeypatch.setattr("mkv_episode_matcher.backend.routers.rip.execute_gemini_fallback", lambda store, ids, *a: [ids[0]])
+
 
     store = FakeStore()
     monkeypatch.setattr(rip.threading, "Thread", FakeThread)
