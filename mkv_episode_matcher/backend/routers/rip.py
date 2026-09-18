@@ -2631,7 +2631,7 @@ def preview_forget_drive_disc_media(
 
 
 @router.post("/pipeline/discs/{disc_fingerprint}/reassess")
-def reassess_disc_metadata(
+def reassess_disc_metadata(  # noqa: C901
     disc_fingerprint: str,
     request: DiscReassessmentRequest,
     store: Annotated[PipelineQueueStore, Depends(get_pipeline_queue_store)],
@@ -2641,30 +2641,48 @@ def reassess_disc_metadata(
         raise HTTPException(
             status_code=400, detail="Reassessment confirmation is required"
         )
-    
+
     from mkv_episode_matcher.backend.automatic_rip import _downstream_lock
-    from mkv_episode_matcher.disc.routing_preparation import build_preparation_assessment
-    
+    from mkv_episode_matcher.disc.routing_preparation import (
+        build_preparation_assessment,
+    )
+
     with _downstream_lock:
         latest = store.routing_latest(disc_fingerprint)
         if not latest:
-            raise HTTPException(status_code=404, detail="No existing disc assessment found")
-            
-        items = [item for item in store.list_items() if _pipeline_item_saved_disc_fingerprint(item) == disc_fingerprint]
+            raise HTTPException(
+                status_code=404, detail="No existing disc assessment found"
+            )
+
+        items = [
+            item
+            for item in store.list_items()
+            if _pipeline_item_saved_disc_fingerprint(item) == disc_fingerprint
+        ]
         if not items:
-            raise HTTPException(status_code=400, detail="No pipeline items found for this disc")
-            
-        if any(item.state in {"running", "queued", "pause_requested", "canceling"} for item in items):
-            raise HTTPException(status_code=400, detail="Disc has actively processing pipeline items")
+            raise HTTPException(
+                status_code=400, detail="No pipeline items found for this disc"
+            )
+
+        if any(
+            item.state in {"running", "queued", "pause_requested", "canceling"}
+            for item in items
+        ):
+            raise HTTPException(
+                status_code=400, detail="Disc has actively processing pipeline items"
+            )
         if all(item.state in {"completed", "dismissed"} for item in items):
-            raise HTTPException(status_code=400, detail="All pipeline items for this disc are already completed or dismissed")
+            raise HTTPException(
+                status_code=400,
+                detail="All pipeline items for this disc are already completed or dismissed",
+            )
 
         title_classifications = {}
         explicit_tv_context = False
         episode_assignments = []
         feature_assignments = []
         database_status = None
-        
+
         for e in latest.evidence:
             if e.source == "label":
                 explicit_tv_context = True
@@ -2692,7 +2710,7 @@ def reassess_disc_metadata(
             database_status=database_status,
         )
         store.routing_save_observation(new_assessment)
-        
+
     return {"status": "reassessed", "disc_fingerprint": disc_fingerprint}
 
 
@@ -3771,31 +3789,41 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
     current_route = None
     evidence_status = None
     exhausted_reason = None
-    
+
     if disc_fingerprint and title_index is not None:
         try:
             from mkv_episode_matcher.disc.routing_controller import next_route
+
             # We already imported get_pipeline_queue_store globally
             store_instance = get_pipeline_queue_store()
             assessment = store_instance.routing_latest(disc_fingerprint)
             if assessment:
                 user_hint = assessment.user_hint
                 assessed_composition = assessment.composition
-                evidence = next((e for e in assessment.evidence if e.title_index == title_index), None)
+                evidence = next(
+                    (e for e in assessment.evidence if e.title_index == title_index),
+                    None,
+                )
                 if evidence:
                     assessed_role = evidence.role
                     evidence_status = evidence.status
                 roles = assessment.title_roles()
-                role_info = next((r for r in roles if r.title_index == title_index), None)
+                role_info = next(
+                    (r for r in roles if r.title_index == title_index), None
+                )
                 if role_info and not assessed_role:
                     assessed_role = role_info.role
-                attempts = store_instance.routing_attempts(disc_fingerprint, title_index)
+                attempts = store_instance.routing_attempts(
+                    disc_fingerprint, title_index
+                )
                 if attempts:
                     current_route = attempts[-1].route
                     outcome = attempts[-1].outcome
                     if outcome in ("review", "service_failed", "interrupted"):
                         exhausted_reason = outcome
-                    elif outcome == "no_match" and not next_route(assessment, title_index=title_index, attempts=attempts):
+                    elif outcome == "no_match" and not next_route(
+                        assessment, title_index=title_index, attempts=attempts
+                    ):
                         exhausted_reason = "exhausted"
         except Exception:
             pass

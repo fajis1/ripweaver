@@ -225,12 +225,12 @@ automatically treated as episodes or deleted.
 
 ### M7 — Separately authorized live canary (not yet approved)
 
-- [x] Before requesting a live Short Circuit 2 test, present the exact disc
+- [ ] Before requesting a live Short Circuit 2 test, present the exact disc
   identity/fingerprint, drive, title set, plan digest, output/run roots, tool
   paths, timeout, provider/media operations, and whether eject/auto-processing
   is enabled. Confirm no competing MakeMKV child and obtain **separate exact
   authorization** for each media-changing or provider operation required.
-- [x] Capture path-redacted preparation, assessment revisions, route attempts,
+- [ ] Capture path-redacted preparation, assessment revisions, route attempts,
   and per-title outcomes. Success means the feature film and extras are
   considered without TV episode misrouting; no relevant title disappears,
   rerips are not requested without evidence, and existing TV behavior remains
