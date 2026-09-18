@@ -406,7 +406,7 @@ class DownstreamWorker:
 
                         store.routing_settle(assessment, title_index, route, outcome)
                         settled = True
-                        
+
                         current_latest = assessment
                         for _ in range(10):
                             new_item = TitleEvidence(
@@ -425,20 +425,31 @@ class DownstreamWorker:
                             )
                             try:
                                 store.routing_append(
-                                    new_assessment, expected_revision=current_latest.revision
+                                    new_assessment,
+                                    expected_revision=current_latest.revision,
                                 )
                                 break
                             except Exception as exc:
                                 from mkv_episode_matcher.disc.routing import (
                                     RoutingError,
                                 )
+
                                 if not isinstance(exc, RoutingError):
                                     raise
-                                current_latest = store.routing_latest(assessment.inventory_fingerprint)
-                                if current_latest is None or current_latest.revision <= assessment.revision:
-                                    raise ValueError("Could not resolve sibling revision race during append") from exc
+                                current_latest = store.routing_latest(
+                                    assessment.inventory_fingerprint
+                                )
+                                if (
+                                    current_latest is None
+                                    or current_latest.revision <= assessment.revision
+                                ):
+                                    raise ValueError(
+                                        "Could not resolve sibling revision race during append"
+                                    ) from exc
                         else:
-                            raise ValueError("Exceeded maximum retries for sibling revision race")
+                            raise ValueError(
+                                "Exceeded maximum retries for sibling revision race"
+                            )
                     else:
                         store.routing_settle(assessment, title_index, route, outcome)
                         settled = True

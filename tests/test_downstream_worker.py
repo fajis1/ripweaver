@@ -1,10 +1,357 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from mkv_episode_matcher.backend.downstream_worker import (
     DownstreamWorker,
     _contract_disc_title_identity,
 )
+from mkv_episode_matcher.backend.gemini_fallback import (
+    GeminiFallbackOutcome,
+    GeminiTitleOutcome,
+)
+from mkv_episode_matcher.disc.routing import DiscAssessment, TitleEvidence
+from mkv_episode_matcher.pipeline_queue import PipelineQueueStore, build_artifact
+
+
+def test_worker_settles_one_actual_gemini_route_result(tmp_path, monkeypatch):
+    fingerprint = "0123456789abcdef"
+    media_id = "disc-01-title-000"
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    assessment = store.routing_append(
+        DiscAssessment(fingerprint, (0,), user_hint="tv"), expected_revision=0
+    )
+    original = tmp_path / "original.json"
+    original.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "disc_fingerprint": fingerprint,
+            "title_index": 0,
+            "media_context": {
+                "routing_assessment": assessment.to_dict(),
+                "routing_assessment_digest": assessment.digest,
+                "routing_assessment_revision": assessment.revision,
+            },
+        }),
+        encoding="utf-8",
+    )
+    store.enqueue_verified_rip(media_id, build_artifact("rip", original))
+    store.hold_for_review(media_id, "content_classification_required")
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                automatic_processing_enabled=True,
+                automatic_gemini_ambiguity_fallback=True,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_engine",
+        lambda: SimpleNamespace(asr=object()),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root",
+        lambda: tmp_path / "contracts",
+    )
+    calls = []
+
+    def fake_gemini(_store, ids, _config, _asr, _root, *, return_outcomes):
+        calls.append(ids)
+        assert return_outcomes is True
+        revised = tmp_path / "revised.json"
+        revised_payload = json.loads(original.read_text(encoding="utf-8"))
+        revised_payload["media_context"]["special_feature_assignments"] = [
+            {
+                "title_index": 0,
+                "classification": "matched-feature",
+                "media_kind": "movie",
+                "provisional_match": False,
+            }
+        ]
+        revised.write_text(json.dumps(revised_payload), encoding="utf-8")
+        _store.apply_reviewed_identification_input(
+            media_id, build_artifact("rip", revised)
+        )
+        return GeminiFallbackOutcome(
+            (media_id,), (GeminiTitleOutcome(media_id, "matched", "movie"),)
+        )
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.gemini_fallback.execute_gemini_fallback",
+        fake_gemini,
+    )
+    worker = DownstreamWorker(
+        SimpleNamespace(store=store), allowed_stages=("identify",)
+    )
+    store.set_paused(True)
+    assert worker._apply_automatic_assessed_gemini_route() is False
+    store.set_paused(False)
+    worker._stop.set()
+    assert worker._apply_automatic_assessed_gemini_route() is False
+    worker._stop.clear()
+    assert worker._apply_automatic_assessed_gemini_route() is True
+    assert worker._apply_automatic_assessed_gemini_route() is False
+    assert calls == [(media_id,)]
+    assert store.routing_attempts(fingerprint, 0)[0].outcome == "matched"
+    assert store.get(media_id).state == "queued"
+
+
+@pytest.mark.parametrize(
+    ("provider_result", "expected_outcome", "expected_review_code"),
+    [
+        ("no_match", "no_match", "gemini_descriptive_review_required"),
+        ("review", "review", "gemini_descriptive_review_required"),
+        ("failure", "service_failed", "gemini_provider_failed"),
+        ("partial_failure", "review", "gemini_analysis_failed"),
+        ("provisional_movie", "review", "provisional_content_identity_review_required"),
+        ("unapplied_match", "review", "gemini_evidence_required"),
+    ],
+)
+def test_worker_distinguishes_gemini_route_results(
+    tmp_path, monkeypatch, provider_result, expected_outcome, expected_review_code
+):
+    fingerprint = "0123456789abcdef"
+    media_id = "disc-01-title-000"
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    assessment = store.routing_append(
+        DiscAssessment(fingerprint, (0,), user_hint="movie"), expected_revision=0
+    )
+    contract = tmp_path / "rip.json"
+    contract.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "disc_fingerprint": fingerprint,
+            "title_index": 0,
+            "media_context": {
+                "routing_assessment": assessment.to_dict(),
+                "routing_assessment_digest": assessment.digest,
+                "routing_assessment_revision": assessment.revision,
+            },
+        }),
+        encoding="utf-8",
+    )
+    store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+    store.hold_for_review(media_id, "content_classification_required")
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                automatic_processing_enabled=True,
+                automatic_gemini_ambiguity_fallback=True,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_engine",
+        lambda: SimpleNamespace(asr=object()),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root",
+        lambda: tmp_path / "contracts",
+    )
+
+    def fake_gemini(_store, ids, _config, _asr, _root, *, return_outcomes):
+        assert ids == (media_id,)
+        assert return_outcomes is True
+        if provider_result == "failure":
+            raise RuntimeError("synthetic provider outage")
+        if provider_result == "partial_failure":
+            revised = tmp_path / "partial.json"
+            revised.write_text(contract.read_text(encoding="utf-8"), encoding="utf-8")
+            _store.apply_reviewed_identification_input(
+                media_id, build_artifact("rip", revised)
+            )
+            raise RuntimeError("synthetic failure after contract application")
+        if provider_result == "provisional_movie":
+            revised = tmp_path / "provisional.json"
+            revised_payload = json.loads(contract.read_text(encoding="utf-8"))
+            revised_payload["media_context"]["special_feature_assignments"] = [
+                {
+                    "title_index": 0,
+                    "classification": "matched-feature",
+                    "media_kind": "movie",
+                    "provisional_match": True,
+                }
+            ]
+            revised.write_text(json.dumps(revised_payload), encoding="utf-8")
+            _store.apply_reviewed_identification_input(
+                media_id, build_artifact("rip", revised)
+            )
+            return GeminiFallbackOutcome(
+                (media_id,), (GeminiTitleOutcome(media_id, "matched", "movie"),)
+            )
+        if provider_result in {"no_match", "review"}:
+            _store.choose_review_path(media_id, "gemini_descriptive_review_required")
+        disposition = (
+            "matched" if provider_result == "unapplied_match" else provider_result
+        )
+        return GeminiFallbackOutcome((), (GeminiTitleOutcome(media_id, disposition),))
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.gemini_fallback.execute_gemini_fallback",
+        fake_gemini,
+    )
+    worker = DownstreamWorker(
+        SimpleNamespace(store=store), allowed_stages=("identify",)
+    )
+    assert worker._apply_automatic_assessed_gemini_route() is True
+    assert store.routing_attempts(fingerprint, 0)[0].outcome == expected_outcome
+    assert store.get(media_id).review_code == expected_review_code
+    if provider_result != "no_match":
+        assert worker._apply_automatic_assessed_gemini_route() is False
+
+
+def test_eleven_title_movie_with_extras_keeps_every_title_in_routing(
+    tmp_path, monkeypatch
+):
+    fingerprint = "0123456789abcdef"
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    assessment = store.routing_append(
+        DiscAssessment(
+            fingerprint,
+            tuple(range(11)),
+            user_hint="tv",
+            evidence=(
+                TitleEvidence(0, "database", "supported", "movie"),
+                *(
+                    TitleEvidence(index, "database", "supported", "extra")
+                    for index in range(2, 8)
+                ),
+            ),
+        ),
+        expected_revision=0,
+    )
+    for index in range(11):
+        media_id = f"disc-01-title-{index:03d}"
+        contract = tmp_path / f"{media_id}.json"
+        contract.write_text(
+            json.dumps({
+                "mode": "verified-rip-contract",
+                "disc_fingerprint": fingerprint,
+                "title_index": index,
+                "media_context": {
+                    "routing_assessment": assessment.to_dict(),
+                    "routing_assessment_digest": assessment.digest,
+                    "routing_assessment_revision": assessment.revision,
+                },
+            }),
+            encoding="utf-8",
+        )
+        store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+        store.hold_for_review(media_id, "content_classification_required")
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                automatic_processing_enabled=True,
+                automatic_gemini_ambiguity_fallback=True,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_engine",
+        lambda: SimpleNamespace(asr=object()),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root",
+        lambda: tmp_path / "contracts",
+    )
+    requested = []
+
+    def fake_gemini(_store, ids, _config, _asr, _root, *, return_outcomes):
+        assert return_outcomes is True
+        requested.append(ids[0])
+        _store.choose_review_path(ids[0], "gemini_descriptive_review_required")
+        return GeminiFallbackOutcome((), (GeminiTitleOutcome(ids[0], "review"),))
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.gemini_fallback.execute_gemini_fallback",
+        fake_gemini,
+    )
+    worker = DownstreamWorker(
+        SimpleNamespace(store=store), allowed_stages=("identify",)
+    )
+    assert all(worker._apply_automatic_assessed_gemini_route() for _ in range(11))
+    assert worker._apply_automatic_assessed_gemini_route() is False
+    assert len(set(requested)) == 11
+    assert [
+        store.routing_attempts(fingerprint, index)[0].route for index in range(11)
+    ] == [
+        "movie",
+        "classify",
+        *("extra" for _ in range(6)),
+        "classify",
+        "classify",
+        "classify",
+    ]
+    assert all(store.get(media_id).state == "review_required" for media_id in requested)
+
+
+def test_worker_settles_terminal_tv_route_without_rerouting_uncertainty(
+    tmp_path, monkeypatch
+):
+    fingerprint = "0123456789abcdef"
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    assessment = store.routing_append(
+        DiscAssessment(
+            fingerprint,
+            (0, 1, 2),
+            user_hint="movie",
+            evidence=(
+                TitleEvidence(0, "database", "supported", "tv"),
+                TitleEvidence(1, "database", "supported", "tv"),
+                TitleEvidence(2, "database", "supported", "tv"),
+            ),
+        ),
+        expected_revision=0,
+    )
+    for title_index, review_code in enumerate((
+        "all_season_series_not_found",
+        "all_season_catalog_unavailable",
+        "independent_episode_evidence_required",
+    )):
+        media_id = f"disc-01-title-{title_index:03d}"
+        contract = tmp_path / f"{media_id}.json"
+        contract.write_text(
+            json.dumps({
+                "mode": "verified-rip-contract",
+                "disc_fingerprint": fingerprint,
+                "title_index": title_index,
+                "media_context": {
+                    "routing_assessment": assessment.to_dict(),
+                    "routing_assessment_digest": assessment.digest,
+                    "routing_assessment_revision": assessment.revision,
+                },
+            }),
+            encoding="utf-8",
+        )
+        store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+        store.hold_for_review(media_id, review_code)
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(automatic_processing_enabled=True)
+        ),
+    )
+    worker = DownstreamWorker(
+        SimpleNamespace(store=store), allowed_stages=("identify",)
+    )
+    store.set_paused(True)
+    assert worker._settle_terminal_tv_route() is False
+    assert store.routing_attempts(fingerprint, 0) == ()
+    store.set_paused(False)
+    assert worker._settle_terminal_tv_route() is True
+    assert worker._settle_terminal_tv_route() is True
+    assert worker._settle_terminal_tv_route() is True
+    assert worker._settle_terminal_tv_route() is False
+    assert store.routing_attempts(fingerprint, 0)[0].outcome == "review"
+    assert store.routing_attempts(fingerprint, 1)[0].outcome == "service_failed"
+    assert store.routing_attempts(fingerprint, 2)[0].outcome == "review"
+    assert store.routing_claim_next(assessment, 2) is None
+    assert store.routing_claim_next(assessment, 1) is None
+    assert store.routing_claim_next(assessment, 0) is None
 
 
 def test_worker_quarantines_legacy_sequence_only_downstream_assignments(
@@ -839,44 +1186,638 @@ def test_automatic_transcode_is_disabled_with_automatic_processing(monkeypatch):
     assert worker._start_automatic_transcode_if_ready() is False
 
 
+def test_genuine_tv_no_match_tries_eligible_movie_route(tmp_path, monkeypatch):
+    fingerprint = "0123456789abcdef"
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    assessment = store.routing_append(
+        DiscAssessment(
+            fingerprint,
+            (0,),
+            user_hint="movie",
+            evidence=(TitleEvidence(0, "database", "supported", "tv"),),
+        ),
+        expected_revision=0,
+    )
 
-def test_m5_sibling_revision_idempotent_retry(tmp_path, monkeypatch):
+    media_id = "disc-01-title-000"
+    contract = tmp_path / f"{media_id}.json"
+    contract.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "disc_fingerprint": fingerprint,
+            "title_index": 0,
+            "media_context": {
+                "routing_assessment": assessment.to_dict(),
+                "routing_assessment_digest": assessment.digest,
+                "routing_assessment_revision": assessment.revision,
+            },
+        }),
+        encoding="utf-8",
+    )
+    store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+    store.hold_for_review(media_id, "tv_title_no_match")
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                automatic_processing_enabled=True,
+                automatic_gemini_ambiguity_fallback=True,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_engine",
+        lambda: SimpleNamespace(asr=object()),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root",
+        lambda: tmp_path / "contracts",
+    )
+
+    calls = []
+
+    def fake_gemini(_store, ids, _config, _asr, _root, *, return_outcomes):
+        calls.append(ids)
+        assert return_outcomes is True
+        revised = tmp_path / "revised.json"
+        revised_payload = json.loads(contract.read_text(encoding="utf-8"))
+        revised_payload["media_context"]["special_feature_assignments"] = [
+            {
+                "title_index": 0,
+                "classification": "matched-feature",
+                "media_kind": "movie",
+                "provisional_match": False,
+            }
+        ]
+        revised.write_text(json.dumps(revised_payload), encoding="utf-8")
+        _store.apply_reviewed_identification_input(
+            media_id, build_artifact("rip", revised)
+        )
+        from mkv_episode_matcher.backend.gemini_fallback import (
+            GeminiFallbackOutcome,
+            GeminiTitleOutcome,
+        )
+
+        return GeminiFallbackOutcome(
+            (media_id,), (GeminiTitleOutcome(media_id, "matched", "movie"),)
+        )
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.gemini_fallback.execute_gemini_fallback",
+        fake_gemini,
+    )
+
+    worker = DownstreamWorker(
+        SimpleNamespace(store=store), allowed_stages=("identify",)
+    )
+
+    # 1. Settle TV route as no_match
+    assert worker._settle_terminal_tv_route() is True
+    assert store.routing_attempts(fingerprint, 0)[0].outcome == "no_match"
+
+    # 2. Worker claims alternate route (movie) and executes Gemini
+    assert worker._apply_automatic_assessed_gemini_route() is True
+    assert worker._apply_automatic_assessed_gemini_route() is False
+
+    assert calls == [(media_id,)]
+    assert store.routing_attempts(fingerprint, 0)[0].outcome == "matched"
+    assert store.routing_attempts(fingerprint, 0)[0].route == "movie"
+    assert store.get(media_id).state == "queued"
+
+
+def test_automatic_gemini_route_aborts_when_paused_or_stopped(tmp_path, monkeypatch):
+    fingerprint = "0123456789abcdef"
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    assessment = store.routing_append(
+        DiscAssessment(
+            fingerprint,
+            (0, 1),
+            user_hint="movie",
+            evidence=(
+                TitleEvidence(0, "database", "supported", "tv"),
+                TitleEvidence(1, "database", "supported", "tv"),
+            ),
+        ),
+        expected_revision=0,
+    )
+    for title_index in (0, 1):
+        media_id = f"disc-01-title-00{title_index}"
+        contract = tmp_path / f"{media_id}.json"
+        contract.write_text(
+            json.dumps({
+                "mode": "verified-rip-contract",
+                "disc_fingerprint": fingerprint,
+                "title_index": title_index,
+                "media_context": {
+                    "routing_assessment": assessment.to_dict(),
+                    "routing_assessment_digest": assessment.digest,
+                    "routing_assessment_revision": assessment.revision,
+                },
+            }),
+            encoding="utf-8",
+        )
+        store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+        store.hold_for_review(media_id, "tv_title_no_match")
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                automatic_processing_enabled=True,
+                automatic_gemini_ambiguity_fallback=True,
+            )
+        ),
+    )
+
+    worker = DownstreamWorker(
+        SimpleNamespace(store=store, stop_event=SimpleNamespace(is_set=lambda: False)),
+        allowed_stages=("identify",),
+    )
+
+    assert worker._settle_terminal_tv_route() is True
+    assert worker._settle_terminal_tv_route() is True
+
+    store.set_paused(True)
+    assert worker._apply_automatic_assessed_gemini_route() is False
+
+    store.set_paused(False)
+    worker._stop = SimpleNamespace(is_set=lambda: True)
+    assert worker._apply_automatic_assessed_gemini_route() is False
+
+
+def test_automatic_gemini_route_aborts_on_sibling_revision(tmp_path, monkeypatch):
+    fingerprint = "0123456789abcdef"
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    assessment = store.routing_append(
+        DiscAssessment(
+            fingerprint,
+            (0, 1),
+            user_hint="movie",
+            evidence=(
+                TitleEvidence(0, "database", "supported", "tv"),
+                TitleEvidence(1, "database", "supported", "tv"),
+            ),
+        ),
+        expected_revision=0,
+    )
+    for title_index in (0, 1):
+        media_id = f"disc-01-title-00{title_index}"
+        contract = tmp_path / f"{media_id}.json"
+        contract.write_text(
+            json.dumps({
+                "mode": "verified-rip-contract",
+                "disc_fingerprint": fingerprint,
+                "title_index": title_index,
+                "media_context": {
+                    "routing_assessment": assessment.to_dict(),
+                    "routing_assessment_digest": assessment.digest,
+                    "routing_assessment_revision": assessment.revision,
+                },
+            }),
+            encoding="utf-8",
+        )
+        store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+        store.hold_for_review(media_id, "tv_title_no_match")
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                automatic_processing_enabled=True,
+                automatic_gemini_ambiguity_fallback=True,
+            )
+        ),
+    )
+
+    worker = DownstreamWorker(
+        SimpleNamespace(store=store), allowed_stages=("identify",)
+    )
+
+    # 1. Settle TV route for both
+    assert worker._settle_terminal_tv_route() is True
+    assert worker._settle_terminal_tv_route() is True
+
+    # 2. Advance the database revision
+    from dataclasses import replace
+
+    store.routing_append(
+        replace(
+            assessment,
+            revision=2,
+            evidence=(
+                TitleEvidence(0, "database", "supported", "tv"),
+                TitleEvidence(1, "database", "supported", "movie"),
+            ),
+        ),
+        expected_revision=1,
+    )
+
+    # 3. Attempt Gemini route -> should fail since the database revision moved on
+    assert worker._apply_automatic_assessed_gemini_route() is False
+
+
+def test_automatic_disc_analysis_preserves_tv_title_no_match_for_movie_route(
+    tmp_path, monkeypatch
+):
+    import json
     from types import SimpleNamespace
-    from mkv_episode_matcher.backend.downstream_worker import DownstreamWorker
-    from mkv_episode_matcher.backend.gemini_fallback import GeminiTitleOutcome, GeminiFallbackOutcome
+
+    from mkv_episode_matcher.backend.automatic_rip import (
+        _resolve_automatic_unmatched_disc,
+    )
+    from mkv_episode_matcher.backend.unmatched_disc_analysis import GeminiAnalysisError
     from mkv_episode_matcher.disc.routing import DiscAssessment, TitleEvidence
     from mkv_episode_matcher.pipeline_queue import PipelineQueueStore, build_artifact
+
+    fingerprint = "0123456789abcdef"
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    assessment = store.routing_append(
+        DiscAssessment(
+            fingerprint,
+            (0,),
+            user_hint="movie",
+            evidence=(TitleEvidence(0, "database", "supported", "tv"),),
+        ),
+        expected_revision=0,
+    )
+
+    media_id = "disc-01-title-000"
+    contract = tmp_path / f"{media_id}.json"
+    contract.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "disc_fingerprint": fingerprint,
+            "title_index": 0,
+            "media_context": {
+                "routing_assessment": assessment.to_dict(),
+                "routing_assessment_digest": assessment.digest,
+                "routing_assessment_revision": assessment.revision,
+                "series_name": "Unmatched",
+            },
+        }),
+        encoding="utf-8",
+    )
+    store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+    # It starts out waiting for unmatched disc analysis
+    store.hold_for_review(media_id, "unmatched_disc_analysis_required")
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                automatic_processing_enabled=True,
+                automatic_gemini_ambiguity_fallback=True,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
+        lambda: SimpleNamespace(
+            load=lambda: SimpleNamespace(
+                automatic_processing_enabled=True,
+                automatic_gemini_ambiguity_fallback=True,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_engine",
+        lambda: SimpleNamespace(asr=object()),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_engine",
+        lambda: SimpleNamespace(asr=object()),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root",
+        lambda: tmp_path / "contracts",
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root",
+        lambda: tmp_path / "contracts",
+    )
+
+    def fake_execute(
+        _store, _fingerprint, _series_name, _config, _asr, _contract_root, **kwargs
+    ):
+        _store.choose_review_path(media_id, "tv_title_no_match")
+        raise GeminiAnalysisError(
+            "gemini_analysis_failed",
+            "Gemini did not identify any disc title confidently",
+        )
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.unmatched_disc_analysis.execute_unmatched_disc_analysis",
+        fake_execute,
+    )
+
+    # 1. Run the automatic disc analysis entry point
+    _resolve_automatic_unmatched_disc(
+        (media_id,),
+        store,
+        SimpleNamespace(automatic_gemini_ambiguity_fallback=True),
+        tmp_path / "contracts",
+    )
+
+    # Verify that the tv_title_no_match result survived the outer exception handler
+    assert store.get(media_id).review_code == "tv_title_no_match"
+
+    def fake_gemini(_store, ids, _config, _asr, _root, *, return_outcomes):
+        import json
+
+        from mkv_episode_matcher.backend.gemini_fallback import (
+            GeminiFallbackOutcome,
+            GeminiTitleOutcome,
+        )
+
+        assert return_outcomes is True
+        revised = tmp_path / "revised.json"
+        revised_payload = json.loads(contract.read_text(encoding="utf-8"))
+        revised_payload["media_context"]["special_feature_assignments"] = [
+            {
+                "title_index": 0,
+                "classification": "matched-feature",
+                "media_kind": "movie",
+                "provisional_match": False,
+            }
+        ]
+        revised.write_text(json.dumps(revised_payload), encoding="utf-8")
+        _store.apply_reviewed_identification_input(
+            media_id, build_artifact("rip", revised)
+        )
+        return GeminiFallbackOutcome(
+            (media_id,), (GeminiTitleOutcome(media_id, "matched", "movie"),)
+        )
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.gemini_fallback.execute_gemini_fallback",
+        fake_gemini,
+    )
+
+    # 2. Run the routing worker
+    from mkv_episode_matcher.backend.downstream_worker import DownstreamWorker
+
+    worker = DownstreamWorker(
+        SimpleNamespace(store=store), allowed_stages=("identify",)
+    )
+    assert worker._settle_terminal_tv_route() is True
+    worker._apply_automatic_assessed_gemini_route()
+
+    # Verify it routed to the movie route!
+    final_item = store.get(media_id)
+    assert final_item.state == "queued"
+    assert final_item.review_code is None
+
+    # Reload assessment to verify it transitioned
+    attempts = store.routing_attempts(fingerprint, 0)
+    assert len(attempts) == 2
+    assert {(a.route, a.outcome) for a in attempts} == {
+        ("tv", "no_match"),
+        ("movie", "matched"),
+    }
+
+
+def test_m5_end_to_end_tv_no_match_to_movie_route(tmp_path, monkeypatch):
     import json
+    from types import SimpleNamespace
 
-    config_mock = SimpleNamespace(automatic_processing_enabled=True, automatic_gemini_ambiguity_fallback=True)
-    monkeypatch.setattr("mkv_episode_matcher.backend.downstream_worker.get_config_manager", lambda: type("m", (), {"load": lambda self: config_mock})())
+    from mkv_episode_matcher.backend import unmatched_disc_analysis as analysis
+    from mkv_episode_matcher.backend.automatic_rip import (
+        _resolve_automatic_unmatched_disc,
+    )
+    from mkv_episode_matcher.backend.downstream_worker import DownstreamWorker
+    from mkv_episode_matcher.backend.gemini_fallback import (
+        GeminiFallbackOutcome,
+        GeminiTitleOutcome,
+    )
+    from mkv_episode_matcher.backend.identification_dossier import UnmatchedFileEvidence
+    from mkv_episode_matcher.disc.routing import DiscAssessment, TitleEvidence
+    from mkv_episode_matcher.media.episode_catalog import EpisodeCatalogEntry
+    from mkv_episode_matcher.pipeline_queue import PipelineQueueStore, build_artifact
+    from mkv_episode_matcher.tmdb_client import TvShowCandidate
 
+    contracts = tmp_path / "contracts"
+    contracts.mkdir(exist_ok=True)
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    fingerprint = "0123456789abcdef"
+
+    assessment = store.routing_append(
+        DiscAssessment(
+            fingerprint,
+            (0,),
+            user_hint="movie",
+            evidence=(TitleEvidence(0, "database", "supported", "tv"),),
+        ),
+        expected_revision=0,
+    )
+
+    media_id = "disc-01-title-000"
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contract = contracts / f"{media_id}.json"
+    contract.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "media_id": media_id,
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "disc_fingerprint": fingerprint,
+            "title_index": 0,
+            "media_context": {
+                "series_name": "Example",
+                "season": None,
+                "routing_assessment": assessment.to_dict(),
+                "routing_assessment_digest": assessment.digest,
+                "routing_assessment_revision": assessment.revision,
+            },
+        }),
+        encoding="utf-8",
+    )
+    store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+    store.hold_for_review(media_id, "unmatched_disc_analysis_required")
+
+    catalog = tuple(
+        EpisodeCatalogEntry(
+            f"S01E{episode:02d}", 1, episode, f"Title {episode}", "", 1200
+        )
+        for episode in range(1, 4)
+    )
+
+    monkeypatch.setattr(
+        analysis,
+        "search_tv_show_candidates",
+        lambda _name: (TvShowCandidate(1, "Example", "", None, ""),),
+    )
+    monkeypatch.setattr(
+        analysis, "fetch_aired_episode_catalog", lambda _show_id: catalog
+    )
+    monkeypatch.setattr(
+        analysis, "existing_library_episodes", lambda *_args: frozenset()
+    )
+
+    class FakeDossier:
+        def record_attempt(self, *_args, **_kwargs):
+            pass
+
+        def safe_attempts(self, _media_id):
+            return ()
+
+    monkeypatch.setattr(
+        analysis,
+        "collect_dossier_evidence",
+        lambda items, *_args: (
+            (UnmatchedFileEvidence(media_id, 1200, ("dialogue",)),),
+            FakeDossier(),
+        ),
+    )
+
+    def fake_rank(*_args, **_kwargs):
+        return {media_id: SimpleNamespace(episode_id=None, confidence=0.9)}
+
+    monkeypatch.setattr(analysis, "_rank_gemini_chunks", fake_rank)
+    monkeypatch.setattr(
+        analysis, "match_opensubtitles_seasons", lambda *_args, **_kwargs: ({}, {})
+    )
+    monkeypatch.setattr(
+        analysis,
+        "plan_disc_sequences",
+        lambda *_args, **_kwargs: analysis._ReviewSequencePlan(),
+    )
+    monkeypatch.setattr(
+        analysis, "discover_opensubtitles_season", lambda *_args, **_kwargs: ()
+    )
+
+    config = SimpleNamespace(
+        gemini_model="gemini-test",
+        automatic_processing_enabled=True,
+        automatic_gemini_ambiguity_fallback=True,
+        min_confidence=0.8,
+    )
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
+        lambda: SimpleNamespace(load=lambda: config),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_engine",
+        lambda: SimpleNamespace(asr=object()),
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root",
+        lambda: contracts,
+    )
+
+    # 1. Run the automatic disc analysis entry point - REAL coordinator (which raises)
+    # caught by REAL exception handler (which preserves tv_title_no_match)
+    _resolve_automatic_unmatched_disc((media_id,), store, config, contracts)
+
+    # Verify that the tv_title_no_match result survived the outer exception handler
+    assert store.get(media_id).review_code == "tv_title_no_match"
+
+    def fake_gemini(_store, ids, _config, _asr, _root, *, return_outcomes):
+        assert return_outcomes is True
+        revised = tmp_path / "revised.json"
+        revised_payload = json.loads(contract.read_text(encoding="utf-8"))
+        revised_payload["media_context"]["special_feature_assignments"] = [
+            {
+                "title_index": 0,
+                "classification": "matched-feature",
+                "media_kind": "movie",
+                "provisional_match": False,
+            }
+        ]
+        revised.write_text(json.dumps(revised_payload), encoding="utf-8")
+        _store.apply_reviewed_identification_input(
+            media_id, build_artifact("rip", revised)
+        )
+        return GeminiFallbackOutcome(
+            (media_id,), (GeminiTitleOutcome(media_id, "matched", "movie"),)
+        )
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.gemini_fallback.execute_gemini_fallback",
+        fake_gemini,
+    )
+
+    # 2. Run the routing worker
+    worker = DownstreamWorker(
+        SimpleNamespace(store=store), allowed_stages=("identify",)
+    )
+    assert worker._settle_terminal_tv_route() is True
+    worker._apply_automatic_assessed_gemini_route()
+
+    # Verify it routed to the movie route!
+    final_item = store.get(media_id)
+    assert final_item.state == "queued"
+    assert final_item.review_code is None
+
+    # Reload assessment to verify it transitioned
+    attempts = store.routing_attempts(fingerprint, 0)
+    assert len(attempts) == 2
+    assert {(a.route, a.outcome) for a in attempts} == {
+        ("tv", "no_match"),
+        ("movie", "matched"),
+    }
+
+
+def test_m5_sibling_revision_idempotent_retry(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    from mkv_episode_matcher.backend.downstream_worker import DownstreamWorker
+    from mkv_episode_matcher.backend.gemini_fallback import (
+        GeminiFallbackOutcome,
+        GeminiTitleOutcome,
+    )
+    from mkv_episode_matcher.disc.routing import DiscAssessment, TitleEvidence
+    from mkv_episode_matcher.pipeline_queue import PipelineQueueStore, build_artifact
+
+    config_mock = SimpleNamespace(
+        automatic_processing_enabled=True, automatic_gemini_ambiguity_fallback=True
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
+        lambda: type("m", (), {"load": lambda self: config_mock})(),
+    )
 
     def fake_execute_gemini_fallback(store, media_ids, *args, **kwargs):
         contract_path = tmp_path / f"{media_ids[0]}_new.json"
         contract_path.write_text("{}", encoding="utf-8")
         from mkv_episode_matcher.pipeline_queue import build_artifact
-        store.apply_reviewed_identification_input(media_ids[0], build_artifact("rip", contract_path))
-        return GeminiFallbackOutcome(handled_ids=media_ids, titles=(GeminiTitleOutcome(media_id=media_ids[0], disposition="matched", accepted_role="movie"),))
 
-    monkeypatch.setattr("mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root", lambda: tmp_path)
+        store.apply_reviewed_identification_input(
+            media_ids[0], build_artifact("rip", contract_path)
+        )
+        return GeminiFallbackOutcome(
+            handled_ids=media_ids,
+            titles=(
+                GeminiTitleOutcome(
+                    media_id=media_ids[0], disposition="matched", accepted_role="movie"
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root",
+        lambda: tmp_path,
+    )
 
     store = PipelineQueueStore(tmp_path / "test.db")
     media_id = "test-media"
-    
-    initial_assessment = DiscAssessment("0"*16, (1,2,3))
+
+    initial_assessment = DiscAssessment("0" * 16, (1, 2, 3))
     initial_assessment = store.routing_append(initial_assessment, expected_revision=0)
 
     contract = tmp_path / f"{media_id}.json"
     contract.write_text(
         json.dumps({
             "mode": "verified-rip-contract",
-            "disc_fingerprint": "0"*16,
+            "disc_fingerprint": "0" * 16,
             "title_index": 1,
             "media_context": {
                 "routing_assessment": initial_assessment.to_dict(),
                 "routing_assessment_digest": initial_assessment.digest,
-                "routing_assessment_revision": initial_assessment.revision
+                "routing_assessment_revision": initial_assessment.revision,
             },
         }),
         encoding="utf-8",
@@ -885,66 +1826,120 @@ def test_m5_sibling_revision_idempotent_retry(tmp_path, monkeypatch):
     store.hold_for_review(media_id, "gemini_evidence_required")
     media_id = store.list_items()[0].media_id
 
-    monkeypatch.setattr("mkv_episode_matcher.backend.dependencies.get_pipeline_queue_store", lambda: store)
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_pipeline_queue_store",
+        lambda: store,
+    )
 
-    worker = DownstreamWorker(SimpleNamespace(store=store), allowed_stages=("identify",))
+    worker = DownstreamWorker(
+        SimpleNamespace(store=store), allowed_stages=("identify",)
+    )
 
     real_routing_append = store.routing_append
-    
+
     call_count = 0
+
     def mock_routing_append(assessment, expected_revision=None):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
             from dataclasses import replace
-            sibling_assessment = replace(initial_assessment, revision=initial_assessment.revision + 1, evidence=(TitleEvidence(title_index=1, source="content", status="supported", role="movie"),))
-            real_routing_append(sibling_assessment, expected_revision=initial_assessment.revision)
+
+            sibling_assessment = replace(
+                initial_assessment,
+                revision=initial_assessment.revision + 1,
+                evidence=(
+                    TitleEvidence(
+                        title_index=1,
+                        source="content",
+                        status="supported",
+                        role="movie",
+                    ),
+                ),
+            )
+            real_routing_append(
+                sibling_assessment, expected_revision=initial_assessment.revision
+            )
         return real_routing_append(assessment, expected_revision=expected_revision)
-        
+
     store.routing_append = mock_routing_append
 
     import unittest.mock as mock
-    with mock.patch("mkv_episode_matcher.backend.gemini_fallback.execute_gemini_fallback", fake_execute_gemini_fallback):
-        with mock.patch("mkv_episode_matcher.backend.downstream_worker._verified_gemini_route_assignment", return_value=True):
+
+    with mock.patch(
+        "mkv_episode_matcher.backend.gemini_fallback.execute_gemini_fallback",
+        fake_execute_gemini_fallback,
+    ):
+        with mock.patch(
+            "mkv_episode_matcher.backend.downstream_worker._verified_gemini_route_assignment",
+            return_value=True,
+        ):
             assert worker._apply_automatic_assessed_gemini_route() is True
             assert store.get(media_id).state == "queued"
 
-def test_m5_sibling_revision_idempotent_retry_fail(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-    from mkv_episode_matcher.backend.downstream_worker import DownstreamWorker
-    from mkv_episode_matcher.backend.gemini_fallback import GeminiTitleOutcome, GeminiFallbackOutcome
-    from mkv_episode_matcher.disc.routing import DiscAssessment, TitleEvidence, RoutingError
-    from mkv_episode_matcher.pipeline_queue import PipelineQueueStore, build_artifact
-    import json
 
-    config_mock = SimpleNamespace(automatic_processing_enabled=True, automatic_gemini_ambiguity_fallback=True)
-    monkeypatch.setattr("mkv_episode_matcher.backend.downstream_worker.get_config_manager", lambda: type("m", (), {"load": lambda self: config_mock})())
+def test_m5_sibling_revision_idempotent_retry_fail(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    from mkv_episode_matcher.backend.downstream_worker import DownstreamWorker
+    from mkv_episode_matcher.backend.gemini_fallback import (
+        GeminiFallbackOutcome,
+        GeminiTitleOutcome,
+    )
+    from mkv_episode_matcher.disc.routing import (
+        DiscAssessment,
+        RoutingError,
+        TitleEvidence,
+    )
+    from mkv_episode_matcher.pipeline_queue import PipelineQueueStore, build_artifact
+
+    config_mock = SimpleNamespace(
+        automatic_processing_enabled=True, automatic_gemini_ambiguity_fallback=True
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
+        lambda: type("m", (), {"load": lambda self: config_mock})(),
+    )
 
     def fake_execute_gemini_fallback(store, media_ids, *args, **kwargs):
         contract_path = tmp_path / f"{media_ids[0]}_new.json"
         contract_path.write_text("{}", encoding="utf-8")
         from mkv_episode_matcher.pipeline_queue import build_artifact
-        store.apply_reviewed_identification_input(media_ids[0], build_artifact("rip", contract_path))
-        return GeminiFallbackOutcome(handled_ids=media_ids, titles=(GeminiTitleOutcome(media_id=media_ids[0], disposition="matched", accepted_role="movie"),))
 
-    monkeypatch.setattr("mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root", lambda: tmp_path)
+        store.apply_reviewed_identification_input(
+            media_ids[0], build_artifact("rip", contract_path)
+        )
+        return GeminiFallbackOutcome(
+            handled_ids=media_ids,
+            titles=(
+                GeminiTitleOutcome(
+                    media_id=media_ids[0], disposition="matched", accepted_role="movie"
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root",
+        lambda: tmp_path,
+    )
 
     store = PipelineQueueStore(tmp_path / "test.db")
     media_id = "test-media"
-    
-    initial_assessment = DiscAssessment("0"*16, (1,2,3))
+
+    initial_assessment = DiscAssessment("0" * 16, (1, 2, 3))
     initial_assessment = store.routing_append(initial_assessment, expected_revision=0)
 
     contract = tmp_path / f"{media_id}.json"
     contract.write_text(
         json.dumps({
             "mode": "verified-rip-contract",
-            "disc_fingerprint": "0"*16,
+            "disc_fingerprint": "0" * 16,
             "title_index": 1,
             "media_context": {
                 "routing_assessment": initial_assessment.to_dict(),
                 "routing_assessment_digest": initial_assessment.digest,
-                "routing_assessment_revision": initial_assessment.revision
+                "routing_assessment_revision": initial_assessment.revision,
             },
         }),
         encoding="utf-8",
@@ -952,38 +1947,67 @@ def test_m5_sibling_revision_idempotent_retry_fail(tmp_path, monkeypatch):
     store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
     store.hold_for_review(media_id, "gemini_evidence_required")
 
-    monkeypatch.setattr("mkv_episode_matcher.backend.dependencies.get_pipeline_queue_store", lambda: store)
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_pipeline_queue_store",
+        lambda: store,
+    )
 
-    worker = DownstreamWorker(SimpleNamespace(store=store), allowed_stages=("identify",))
+    worker = DownstreamWorker(
+        SimpleNamespace(store=store), allowed_stages=("identify",)
+    )
 
     real_routing_append = store.routing_append
-    
+
     call_count = 0
+
     def mock_routing_append(assessment, expected_revision=None):
         nonlocal call_count
         call_count += 1
         from dataclasses import replace
-        current = store.routing_latest("0"*16)
-        sibling = replace(current, revision=current.revision + 1, evidence=current.evidence + (TitleEvidence(title_index=100+call_count, source="content", status="supported", role="tv"),))
+
+        current = store.routing_latest("0" * 16)
+        sibling = replace(
+            current,
+            revision=current.revision + 1,
+            evidence=current.evidence
+            + (
+                TitleEvidence(
+                    title_index=100 + call_count,
+                    source="content",
+                    status="supported",
+                    role="tv",
+                ),
+            ),
+        )
         real_routing_append(sibling, expected_revision=current.revision)
         raise RoutingError("Routing revision is stale")
-        
+
     store.routing_append = mock_routing_append
 
     import unittest.mock as mock
-    with mock.patch("mkv_episode_matcher.backend.gemini_fallback.execute_gemini_fallback", fake_execute_gemini_fallback):
-        with mock.patch("mkv_episode_matcher.backend.downstream_worker._verified_gemini_route_assignment", return_value=True):
+
+    with mock.patch(
+        "mkv_episode_matcher.backend.gemini_fallback.execute_gemini_fallback",
+        fake_execute_gemini_fallback,
+    ):
+        with mock.patch(
+            "mkv_episode_matcher.backend.downstream_worker._verified_gemini_route_assignment",
+            return_value=True,
+        ):
             assert worker._apply_automatic_assessed_gemini_route() is False
+
+
 def test_manual_endpoints_queue_transition_lock(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-    from mkv_episode_matcher.backend.downstream_worker import DownstreamWorker
-    from mkv_episode_matcher.backend.routers.rip import execute_pipeline_gemini_fallback, GeminiFallbackExecutionRequest
-    from mkv_episode_matcher.backend.automatic_rip import _downstream_lock
-    from mkv_episode_matcher.pipeline_queue import PipelineQueueStore, build_artifact
     import json
-    import threading
     import time
     import unittest.mock as mock
+
+    from mkv_episode_matcher.backend.automatic_rip import _downstream_lock
+    from mkv_episode_matcher.backend.routers.rip import (
+        GeminiFallbackExecutionRequest,
+        execute_pipeline_gemini_fallback,
+    )
+    from mkv_episode_matcher.pipeline_queue import PipelineQueueStore, build_artifact
 
     store = PipelineQueueStore(tmp_path / "test.db")
     media_id = "test-media"
@@ -991,7 +2015,7 @@ def test_manual_endpoints_queue_transition_lock(tmp_path, monkeypatch):
     contract.write_text(
         json.dumps({
             "mode": "verified-rip-contract",
-            "disc_fingerprint": "0"*16,
+            "disc_fingerprint": "0" * 16,
             "title_index": 1,
             "media_context": {},
         }),
@@ -1000,21 +2024,35 @@ def test_manual_endpoints_queue_transition_lock(tmp_path, monkeypatch):
     store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
     store.hold_for_review(media_id, "gemini_evidence_required")
 
-    monkeypatch.setattr("mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.dependencies.get_pipeline_contract_root",
+        lambda: tmp_path,
+    )
 
     _downstream_lock.acquire()
     try:
-        request = GeminiFallbackExecutionRequest(media_ids=[media_id], confirm_media_read=True, confirm_external_transmission=True, confirm_classification=True, disc_fingerprint="0"*16)
-        
-        with mock.patch("mkv_episode_matcher.backend.routers.rip.execute_gemini_fallback") as mock_exec:
+        request = GeminiFallbackExecutionRequest(
+            media_ids=[media_id],
+            confirm_media_read=True,
+            confirm_external_transmission=True,
+            confirm_classification=True,
+            disc_fingerprint="0" * 16,
+        )
+
+        with mock.patch(
+            "mkv_episode_matcher.backend.routers.rip.execute_gemini_fallback"
+        ) as mock_exec:
             mock_exec.side_effect = lambda store, ids, *a: [ids[0]]
-            response = execute_pipeline_gemini_fallback(request, store, tmp_path)
+            execute_pipeline_gemini_fallback(request, store, tmp_path)
             assert store.get(media_id).review_code == "gemini_evidence_required"
-            
+
             _downstream_lock.release()
             time.sleep(0.1)
-            
-            assert store.get(media_id).review_code == "gemini_analysis_running" or store.get(media_id).state != "review_required"
+
+            assert (
+                store.get(media_id).review_code == "gemini_analysis_running"
+                or store.get(media_id).state != "review_required"
+            )
     except Exception:
         if _downstream_lock.locked():
             _downstream_lock.release()

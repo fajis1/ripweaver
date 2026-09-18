@@ -354,7 +354,7 @@ class TestMatchEngineV2:
                 test_file = test_dir / "Some.Show.S02E05.mkv"
                 test_file.touch()
 
-                show_name, season = engine._detect_context(test_file)
+                _, season = engine._detect_context(test_file)
 
                 # Should detect season from filename
                 assert season == 2
@@ -621,14 +621,11 @@ class TestIntegrationUseCases:
             ].return_value.get_subtitles.return_value = [Mock()]
 
             # Process with manual TMDB ID to override show detection
-            results, _ = engine.process_path(test_file, tmdb_id=549, dry_run=True)
+            engine.process_path(test_file, tmdb_id=549, dry_run=True)
 
             # Verify tmdb_id was passed to subtitle providers
             # Check if get_subtitles was called on any provider
             local_called = mock_dependencies["local"].return_value.get_subtitles.called
-            os_called = mock_dependencies[
-                "opensubtitles"
-            ].return_value.get_subtitles.called
 
             if local_called:
                 call_args = mock_dependencies[

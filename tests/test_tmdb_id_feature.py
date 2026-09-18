@@ -187,7 +187,7 @@ class TestOpenSubtitlesProviderWithTmdbId:
             )
 
             # Call get_subtitles with tmdb_id
-            result = provider.get_subtitles(
+            provider.get_subtitles(
                 show_name="Law & Order SVU",  # Wrong name
                 season=1,
                 tmdb_id=549,  # Correct ID for Law & Order
@@ -242,7 +242,7 @@ class TestOpenSubtitlesProviderWithTmdbId:
             )
 
             # Call get_subtitles WITHOUT tmdb_id
-            result = provider.get_subtitles(
+            provider.get_subtitles(
                 show_name="Test Show",
                 season=1,
                 # No tmdb_id parameter
@@ -315,7 +315,7 @@ class TestOpenSubtitlesProviderWithTmdbId:
 
             # Simulate the issue: auto-detection returned "Law & Order SVU"
             # but user provides tmdb_id=549 for the correct show
-            result = provider.get_subtitles(
+            provider.get_subtitles(
                 show_name="Law & Order SVU",  # WRONG name (auto-detected, sanitized for path)
                 season=1,
                 tmdb_id=549,  # CORRECT ID for "Law & Order"
@@ -388,9 +388,7 @@ class TestOpenSubtitlesProviderWithTmdbId:
             )
 
             # Call with tmdb_id but expect fallback
-            result = provider.get_subtitles(
-                show_name="Test Show", season=1, tmdb_id=549
-            )
+            provider.get_subtitles(show_name="Test Show", season=1, tmdb_id=549)
 
             # Verify search still used TMDB ID even though lookup failed
             # The TMDB ID is more reliable than the show name
