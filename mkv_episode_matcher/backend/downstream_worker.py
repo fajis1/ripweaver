@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+from dataclasses import dataclass
 
 from loguru import logger
 
@@ -99,28 +100,72 @@ def _contract_disc_title_identity(
     return media_match.group(1).lower(), int(media_match.group(2))
 
 
-def _verified_gemini_route_assignment(
+@dataclass(frozen=True)
+class _GeminiRouteAssignmentDecision:
+    role_accepted: bool
+    identity_status: str
+
+    def __post_init__(self) -> None:
+        if self.identity_status not in {
+            "invalid",
+            "exact_verified",
+            "exact_pending",
+            "descriptive_pending",
+        }:
+            raise ValueError("Gemini route identity status is invalid")
+        if self.role_accepted != (self.identity_status != "invalid"):
+            raise ValueError("Gemini route decision is inconsistent")
+
+
+def _gemini_route_assignment_decision(
     item: object, title_index: int, accepted_role: str | None
-) -> bool:
-    """A requeued contract is not a verified identity when Gemini named it provisionally."""
+) -> _GeminiRouteAssignmentDecision:
+    """Separate an accepted content role from its final identity confidence."""
 
     if accepted_role not in {"movie", "extra"}:
-        return False
+        return _GeminiRouteAssignmentDecision(False, "invalid")
     try:
         payload = json.loads(item.artifact.contract_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, AttributeError):
-        return False
+        return _GeminiRouteAssignmentDecision(False, "invalid")
     context = payload.get("media_context")
     if not isinstance(context, dict):
-        return False
+        return _GeminiRouteAssignmentDecision(False, "invalid")
     assignments = context.get("special_feature_assignments")
-    return isinstance(assignments, list) and any(
-        isinstance(assignment, dict)
-        and assignment.get("title_index") == title_index
-        and assignment.get("classification") == "matched-feature"
-        and assignment.get("media_kind") == accepted_role
-        and assignment.get("provisional_match") is False
-        for assignment in assignments
+    if not isinstance(assignments, list):
+        return _GeminiRouteAssignmentDecision(False, "invalid")
+    assignment = next(
+        (
+            assignment
+            for assignment in assignments
+            if isinstance(assignment, dict)
+            and assignment.get("title_index") == title_index
+            and assignment.get("classification") == "matched-feature"
+            and assignment.get("media_kind") == accepted_role
+            and type(assignment.get("provisional_match")) is bool
+        ),
+        None,
+    )
+    if assignment is None:
+        return _GeminiRouteAssignmentDecision(False, "invalid")
+    if assignment["provisional_match"] is False:
+        return _GeminiRouteAssignmentDecision(True, "exact_verified")
+    return _GeminiRouteAssignmentDecision(
+        True,
+        "exact_pending" if accepted_role == "movie" else "descriptive_pending",
+    )
+
+
+def _verified_gemini_route_assignment(
+    item: object, title_index: int, accepted_role: str | None
+) -> bool:
+    """Compatibility predicate for callers that require a final exact identity."""
+
+    return (
+        _gemini_route_assignment_decision(
+            item, title_index, accepted_role
+        ).identity_status
+        == "exact_verified"
     )
 
 
@@ -389,20 +434,26 @@ class DownstreamWorker:
                         raise ValueError("Gemini route report is invalid")
                     current = store.get(item.media_id)
                     outcome = result.disposition
+                    assignment_decision = _GeminiRouteAssignmentDecision(
+                        False, "invalid"
+                    )
                     if outcome == "matched" and (
                         current.state != "queued"
                         or current.stage != "identify"
                         or current.artifact.contract_path == item.artifact.contract_path
                     ):
                         outcome = "review"
-                    elif outcome == "matched" and not _verified_gemini_route_assignment(
-                        current, title_index, result.accepted_role
-                    ):
-                        store.hold_for_review(
-                            item.media_id,
-                            "provisional_content_identity_review_required",
+                    elif outcome == "matched":
+                        assignment_decision = _gemini_route_assignment_decision(
+                            current, title_index, result.accepted_role
                         )
-                        outcome = "review"
+                        if not assignment_decision.role_accepted:
+                            outcome = "review"
+                        elif assignment_decision.identity_status != "exact_verified":
+                            store.hold_for_review(
+                                item.media_id,
+                                "provisional_content_identity_review_required",
+                            )
                     elif outcome != "matched" and current.state != "review_required":
                         outcome = "review"
                     if outcome == "matched":

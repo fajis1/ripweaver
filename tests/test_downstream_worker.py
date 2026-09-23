@@ -6,6 +6,7 @@ import pytest
 from mkv_episode_matcher.backend.downstream_worker import (
     DownstreamWorker,
     _contract_disc_title_identity,
+    _gemini_route_assignment_decision,
 )
 from mkv_episode_matcher.backend.gemini_fallback import (
     GeminiFallbackOutcome,
@@ -105,7 +106,16 @@ def test_worker_settles_one_actual_gemini_route_result(tmp_path, monkeypatch):
         ("review", "review", "gemini_descriptive_review_required"),
         ("failure", "service_failed", "gemini_provider_failed"),
         ("partial_failure", "review", "gemini_analysis_failed"),
-        ("provisional_movie", "review", "provisional_content_identity_review_required"),
+        (
+            "provisional_movie",
+            "matched",
+            "provisional_content_identity_review_required",
+        ),
+        (
+            "provisional_extra",
+            "matched",
+            "provisional_content_identity_review_required",
+        ),
         ("unapplied_match", "review", "gemini_evidence_required"),
     ],
 )
@@ -164,14 +174,15 @@ def test_worker_distinguishes_gemini_route_results(
                 media_id, build_artifact("rip", revised)
             )
             raise RuntimeError("synthetic failure after contract application")
-        if provider_result == "provisional_movie":
+        if provider_result in {"provisional_movie", "provisional_extra"}:
+            role = provider_result.removeprefix("provisional_")
             revised = tmp_path / "provisional.json"
             revised_payload = json.loads(contract.read_text(encoding="utf-8"))
             revised_payload["media_context"]["special_feature_assignments"] = [
                 {
                     "title_index": 0,
                     "classification": "matched-feature",
-                    "media_kind": "movie",
+                    "media_kind": role,
                     "provisional_match": True,
                 }
             ]
@@ -180,7 +191,7 @@ def test_worker_distinguishes_gemini_route_results(
                 media_id, build_artifact("rip", revised)
             )
             return GeminiFallbackOutcome(
-                (media_id,), (GeminiTitleOutcome(media_id, "matched", "movie"),)
+                (media_id,), (GeminiTitleOutcome(media_id, "matched", role),)
             )
         if provider_result in {"no_match", "review"}:
             _store.choose_review_path(media_id, "gemini_descriptive_review_required")
@@ -199,8 +210,55 @@ def test_worker_distinguishes_gemini_route_results(
     assert worker._apply_automatic_assessed_gemini_route() is True
     assert store.routing_attempts(fingerprint, 0)[0].outcome == expected_outcome
     assert store.get(media_id).review_code == expected_review_code
+    if provider_result in {"provisional_movie", "provisional_extra"}:
+        latest = store.routing_latest(fingerprint)
+        assert latest is not None
+        assert latest.title_roles()[0].role == provider_result.removeprefix(
+            "provisional_"
+        )
+        restarted = PipelineQueueStore(store.database_path)
+        assert restarted.routing_latest(fingerprint) == latest
+        assert restarted.get(media_id).review_code == (
+            "provisional_content_identity_review_required"
+        )
     if provider_result != "no_match":
         assert worker._apply_automatic_assessed_gemini_route() is False
+
+
+@pytest.mark.parametrize(
+    ("role", "provisional", "expected_status"),
+    [
+        ("movie", False, "exact_verified"),
+        ("movie", True, "exact_pending"),
+        ("extra", False, "exact_verified"),
+        ("extra", True, "descriptive_pending"),
+    ],
+)
+def test_gemini_route_assignment_separates_role_from_identity(
+    tmp_path, role, provisional, expected_status
+):
+    contract = tmp_path / "assignment.json"
+    contract.write_text(
+        json.dumps({
+            "media_context": {
+                "special_feature_assignments": [
+                    {
+                        "title_index": 3,
+                        "classification": "matched-feature",
+                        "media_kind": role,
+                        "provisional_match": provisional,
+                    }
+                ]
+            }
+        }),
+        encoding="utf-8",
+    )
+    item = SimpleNamespace(artifact=build_artifact("rip", contract))
+
+    decision = _gemini_route_assignment_decision(item, 3, role)
+
+    assert decision.role_accepted is True
+    assert decision.identity_status == expected_status
 
 
 def test_eleven_title_movie_with_extras_keeps_every_title_in_routing(
@@ -1871,8 +1929,10 @@ def test_m5_sibling_revision_idempotent_retry(tmp_path, monkeypatch):
         fake_execute_gemini_fallback,
     ):
         with mock.patch(
-            "mkv_episode_matcher.backend.downstream_worker._verified_gemini_route_assignment",
-            return_value=True,
+            "mkv_episode_matcher.backend.downstream_worker._gemini_route_assignment_decision",
+            return_value=SimpleNamespace(
+                role_accepted=True, identity_status="exact_verified"
+            ),
         ):
             assert worker._apply_automatic_assessed_gemini_route() is True
             assert store.get(media_id).state == "queued"
@@ -1991,8 +2051,10 @@ def test_m5_sibling_revision_idempotent_retry_fail(tmp_path, monkeypatch):
         fake_execute_gemini_fallback,
     ):
         with mock.patch(
-            "mkv_episode_matcher.backend.downstream_worker._verified_gemini_route_assignment",
-            return_value=True,
+            "mkv_episode_matcher.backend.downstream_worker._gemini_route_assignment_decision",
+            return_value=SimpleNamespace(
+                role_accepted=True, identity_status="exact_verified"
+            ),
         ):
             assert worker._apply_automatic_assessed_gemini_route() is False
 

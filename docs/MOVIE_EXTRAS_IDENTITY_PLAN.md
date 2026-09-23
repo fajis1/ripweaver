@@ -178,7 +178,7 @@ media; it performed no live operation.
 
 ### P1 - Separate role and identity outcomes
 
-Status: pending.
+Status: complete (2026-09-22, synthetic validation).
 
 - Add explicit typed outcomes for accepted content role versus accepted exact
   identity.
@@ -191,6 +191,16 @@ Status: pending.
 
 Acceptance gate: synthetic tests prove role evidence survives restart without
 promoting a provisional main movie to an exact identity.
+
+Implementation note: the downstream worker now produces a typed assignment
+decision that separates accepted role from `exact_verified`, `exact_pending`,
+and `descriptive_pending` identity states. A valid provisional movie or extra
+settles its content route as matched and appends immutable content-role evidence
+to a new assessment revision, while the queue remains held at
+`provisional_content_identity_review_required`. Reopening the queue store
+preserves both the role revision and identity hold. Invalid or unapplied results
+still append no role evidence, and an exact identity remains required before a
+movie can advance.
 
 ### P2 - Disc-level `movie_with_extras` settlement
 
@@ -317,6 +327,13 @@ media mutation.
 
 ## Current Progress Log
 
+- 2026-09-22: Completed P1's worker/model slice with synthetic-only changes.
+  Added explicit role/identity assignment decisions and restart coverage for
+  provisional movie and descriptive-extra results. Focused worker tests and
+  modified-file Ruff checks pass. The identify adapter still holds routed
+  provisional assignments; changing extra acceptance belongs to later phases.
+  No live provider, media, disc, transcode, organization, or eject operation
+  occurred.
 - 2026-09-22: Completed P0 in the active test worktree. Located the two blanket
   provisional-identity gates and the descriptive-assignment producer described
   above. Confirmed that the live result is a routed-disc policy gap rather than
