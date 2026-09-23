@@ -1,0 +1,168 @@
+{
+  "created_at": "2026-09-18T14:12:47.228792+00:00",
+  "disc_proofs": [
+    {
+      "batch_eligible": true,
+      "disc_id": "disc-01",
+      "drive_index": 2,
+      "inventory_signature_sha256": "52d68b26acfae9208e0e57b1c8e5ff69c6618f983f5f1ca8cb073b56584e71d2",
+      "minimum_length_seconds": 0,
+      "selected_title_indexes": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ]
+    }
+  ],
+  "jobs": [
+    {
+      "drive_index": 2,
+      "duration_seconds": 6624,
+      "estimated_bytes": 24945592320,
+      "final_relative_dir": null,
+      "job_id": "disc-01-title-000",
+      "output_basename": "Short-Circuit-2--disc-01-6f9afc599cf192c8-title-000.mkv",
+      "relative_output_dir": ".staging/disc-01/6f9afc599cf192c8/title-000",
+      "title_index": 0
+    },
+    {
+      "drive_index": 2,
+      "duration_seconds": 24,
+      "estimated_bytes": 20287488,
+      "final_relative_dir": null,
+      "job_id": "disc-01-title-001",
+      "output_basename": "Short-Circuit-2--disc-01-6f9afc599cf192c8-title-001.mkv",
+      "relative_output_dir": ".staging/disc-01/6f9afc599cf192c8/title-001",
+      "title_index": 1
+    },
+    {
+      "drive_index": 2,
+      "duration_seconds": 891,
+      "estimated_bytes": 1036572672,
+      "final_relative_dir": null,
+      "job_id": "disc-01-title-002",
+      "output_basename": "Short-Circuit-2--disc-01-6f9afc599cf192c8-title-002.mkv",
+      "relative_output_dir": ".staging/disc-01/6f9afc599cf192c8/title-002",
+      "title_index": 2
+    },
+    {
+      "drive_index": 2,
+      "duration_seconds": 190,
+      "estimated_bytes": 500766720,
+      "final_relative_dir": null,
+      "job_id": "disc-01-title-003",
+      "output_basename": "Short-Circuit-2--disc-01-6f9afc599cf192c8-title-003.mkv",
+      "relative_output_dir": ".staging/disc-01/6f9afc599cf192c8/title-003",
+      "title_index": 3
+    },
+    {
+      "drive_index": 2,
+      "duration_seconds": 1630,
+      "estimated_bytes": 4328675328,
+      "final_relative_dir": null,
+      "job_id": "disc-01-title-004",
+      "output_basename": "Short-Circuit-2--disc-01-6f9afc599cf192c8-title-004.mkv",
+      "relative_output_dir": ".staging/disc-01/6f9afc599cf192c8/title-004",
+      "title_index": 4
+    },
+    {
+      "drive_index": 2,
+      "duration_seconds": 636,
+      "estimated_bytes": 1672329216,
+      "final_relative_dir": null,
+      "job_id": "disc-01-title-005",
+      "output_basename": "Short-Circuit-2--disc-01-6f9afc599cf192c8-title-005.mkv",
+      "relative_output_dir": ".staging/disc-01/6f9afc599cf192c8/title-005",
+      "title_index": 5
+    },
+    {
+      "drive_index": 2,
+      "duration_seconds": 747,
+      "estimated_bytes": 1976770560,
+      "final_relative_dir": null,
+      "job_id": "disc-01-title-006",
+      "output_basename": "Short-Circuit-2--disc-01-6f9afc599cf192c8-title-006.mkv",
+      "relative_output_dir": ".staging/disc-01/6f9afc599cf192c8/title-006",
+      "title_index": 6
+    },
+    {
+      "drive_index": 2,
+      "duration_seconds": 974,
+      "estimated_bytes": 2897713152,
+      "final_relative_dir": null,
+      "job_id": "disc-01-title-007",
+      "output_basename": "Short-Circuit-2--disc-01-6f9afc599cf192c8-title-007.mkv",
+      "relative_output_dir": ".staging/disc-01/6f9afc599cf192c8/title-007",
+      "title_index": 7
+    },
+    {
+      "drive_index": 2,
+      "duration_seconds": 60,
+      "estimated_bytes": 116152320,
+      "final_relative_dir": null,
+      "job_id": "disc-01-title-008",
+      "output_basename": "Short-Circuit-2--disc-01-6f9afc599cf192c8-title-008.mkv",
+      "relative_output_dir": ".staging/disc-01/6f9afc599cf192c8/title-008",
+      "title_index": 8
+    },
+    {
+      "drive_index": 2,
+      "duration_seconds": 12,
+      "estimated_bytes": 6789120,
+      "final_relative_dir": null,
+      "job_id": "disc-01-title-009",
+      "output_basename": "Short-Circuit-2--disc-01-6f9afc599cf192c8-title-009.mkv",
+      "relative_output_dir": ".staging/disc-01/6f9afc599cf192c8/title-009",
+      "title_index": 9
+    },
+    {
+      "drive_index": 2,
+      "duration_seconds": 12,
+      "estimated_bytes": 34977792,
+      "final_relative_dir": null,
+      "job_id": "disc-01-title-010",
+      "output_basename": "Short-Circuit-2--disc-01-6f9afc599cf192c8-title-010.mkv",
+      "relative_output_dir": ".staging/disc-01/6f9afc599cf192c8/title-010",
+      "title_index": 10
+    }
+  ],
+  "media_contexts": [
+    {
+      "catalogue_help_assignments": [],
+      "content_hint": "movie",
+      "disc_id": "disc-01",
+      "disc_metadata_matched_title_count": 0,
+      "disc_metadata_source": null,
+      "disc_metadata_status": null,
+      "disc_number": null,
+      "downstream_skip_title_indexes": [],
+      "episode_assignments": [],
+      "existing_output_policy": "preserve",
+      "handbrake_profile_id": null,
+      "routing_assessment": null,
+      "routing_assessment_digest": null,
+      "routing_assessment_revision": null,
+      "season": null,
+      "selected_title_indexes": null,
+      "series_name": "Short Circuit 2",
+      "special_feature_assignments": [],
+      "special_feature_catalog_id": null,
+      "special_feature_library_title": null,
+      "special_feature_library_year": null,
+      "special_feature_release_id": null,
+      "staging_attempt": null,
+      "tmdb_id": null,
+      "volume_number": null
+    }
+  ],
+  "mode": "approved-rip-plan",
+  "skipped_discs": []
+}

@@ -2150,9 +2150,16 @@ def prepare_drive_pipeline(  # noqa: C901
         pipeline_store.remember_disc_matching_scope(
             disc_fingerprint, tuple(sorted(set(selected_title_indexes)))
         )
-        pipeline_store.remember_disc_recovery_scope(
-            disc_fingerprint, tuple(sorted(set(recovery_title_indexes)))
-        )
+        # A recovery scope is meaningful only after a failed acquisition. A
+        # fresh preparation may have classifier-relevant titles, but persisting
+        # those as recovery work makes the next dashboard render label the new
+        # plan as a missing-title rerip before any rip has failed.
+        if failed_title_indexes:
+            pipeline_store.remember_disc_recovery_scope(
+                disc_fingerprint, tuple(sorted(set(recovery_title_indexes)))
+            )
+        else:
+            pipeline_store.clear_disc_recovery_scope(disc_fingerprint)
         # Normal fresh acquisition mirrors MakeMKV's per-drive GUI mode:
         # authorize every title in the zero-minimum inventory so the executor
         # can keep one ``mkv ... all`` process open for this disc.  A known
@@ -3012,6 +3019,7 @@ class PipelineQueueResponse(BaseModel):
     startup_resume_in_seconds: int | None = None
     downstream_worker_limit: int
     automatic_processing_enabled: bool
+    downstream_processing_enabled: bool
     automatic_organization_enabled: bool
     items: list[PipelineItemResponse]
     title_dispositions: list[DiscTitleDispositionResponse] = Field(default_factory=list)
@@ -5223,6 +5231,9 @@ def get_pipeline_items(
         "startup_resume_in_seconds": startup_queue_resume_seconds(),
         "downstream_worker_limit": 1,
         "automatic_processing_enabled": config.automatic_processing_enabled,
+        "downstream_processing_enabled": getattr(
+            config, "downstream_processing_enabled", True
+        ),
         "automatic_organization_enabled": config.automatic_organization_enabled,
         "title_dispositions": [
             disposition

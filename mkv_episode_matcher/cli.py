@@ -3769,8 +3769,8 @@ def serve(
         False,
         "--hold-automatic-rips",
         help=(
-            "Discover and review loaded discs without launching unattended rip or "
-            "downstream workers for this server lifetime"
+            "Discover and review loaded discs without launching unattended rips for "
+            "this server lifetime"
         ),
     ),
 ):
@@ -3803,8 +3803,8 @@ def serve(
     console.print(f"[blue]Starting Web UI server on http://{host}:{port}[/blue]")
     if hold_automatic_rips:
         console.print(
-            "[yellow]Automatic disc ripping and downstream processing are held for "
-            "this server lifetime.[/yellow]"
+            "[yellow]Automatic disc ripping is held for this server lifetime. "
+            "Previously approved downstream items may continue.[/yellow]"
         )
     console.print("[dim]Press Ctrl+C to stop the server[/dim]\n")
 

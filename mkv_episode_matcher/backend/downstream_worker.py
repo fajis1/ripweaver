@@ -31,6 +31,12 @@ _AUTOMATIC_DISC_IMMEDIATE_CODES = (
 )
 
 
+def downstream_processing_enabled(config: object) -> bool:
+    """Keep approved downstream work independent from unattended disc ripping."""
+
+    return bool(getattr(config, "downstream_processing_enabled", True))
+
+
 def _sequence_only_attempts(attempts: tuple[dict[str, object], ...]) -> bool:
     sequence_matched = any(
         attempt.get("branch") == "tv-local" and attempt.get("disposition") == "matched"
@@ -226,7 +232,7 @@ class DownstreamWorker:
         config = get_config_manager().load()
         store = self.dispatcher.store
         paused = getattr(store, "is_paused", None)
-        if not config.automatic_processing_enabled or (callable(paused) and paused()):
+        if not downstream_processing_enabled(config) or (callable(paused) and paused()):
             return False
         from mkv_episode_matcher.disc.routing import assessment_from_contract
         from mkv_episode_matcher.disc.routing_controller import (
@@ -286,7 +292,7 @@ class DownstreamWorker:
         config = get_config_manager().load()
         store = self.dispatcher.store
         if (
-            not config.automatic_processing_enabled
+            not downstream_processing_enabled(config)
             or not config.automatic_gemini_ambiguity_fallback
             or self._stop.is_set()
             or store.is_paused()
@@ -489,7 +495,7 @@ class DownstreamWorker:
             return False
         config = get_config_manager().load()
         if not (
-            config.automatic_processing_enabled
+            downstream_processing_enabled(config)
             and config.automatic_organization_enabled
         ):
             return False
@@ -600,7 +606,7 @@ class DownstreamWorker:
         """Recover automatic TV batches that settled into a sequence hold."""
 
         config = get_config_manager().load()
-        if not config.automatic_processing_enabled:
+        if not downstream_processing_enabled(config):
             return False
         if self._automatic_transcode_media_ids:
             active = tuple(
@@ -748,7 +754,7 @@ class DownstreamWorker:
         """Recover automatic TV triage / loose-file items without a physical disc fingerprint."""
 
         config = get_config_manager().load()
-        if not config.automatic_processing_enabled:
+        if not downstream_processing_enabled(config):
             return False
         if self._automatic_transcode_media_ids:
             active = tuple(

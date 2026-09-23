@@ -62,6 +62,9 @@ class MediaContext:
     routing_assessment_revision: int | None = None
 
 
+_LEGACY_DERIVED_CONTEXT_FIELDS = frozenset({"routing_composition"})
+
+
 def _validate_context_routing(value: dict[str, object]) -> None:
     routing_value = value.get("routing_assessment")
     if routing_value is not None:
@@ -87,6 +90,13 @@ def media_context_from_dict(value: dict[str, object]) -> MediaContext:
     """Restore immutable tuple fields from a serialized private context."""
 
     normalized = dict(value)
+    # ``routing_composition`` was briefly persisted as a convenience field, but
+    # composition is derived from the routing assessment and is not part of the
+    # MediaContext contract.  Ignore it when reading old private bindings so a
+    # restart can recover existing jobs; new serialization comes from the
+    # dataclass and therefore never writes it again.
+    for field in _LEGACY_DERIVED_CONTEXT_FIELDS:
+        normalized.pop(field, None)
     _validate_context_routing(normalized)
     indexes = normalized.get("selected_title_indexes")
     if indexes is not None:

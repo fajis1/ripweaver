@@ -1151,6 +1151,17 @@ class PipelineQueueStore:
             raise PipelineQueueError("Disc recovery scope is invalid")
         return tuple(sorted(set(values)))
 
+    def clear_disc_recovery_scope(self, disc_fingerprint: str) -> None:
+        """Remove recovery-only scope when a new acquisition is prepared."""
+
+        if re.fullmatch(r"[0-9a-f]{16}", disc_fingerprint) is None:
+            raise PipelineQueueError("Disc fingerprint is invalid")
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM disc_recovery_scopes WHERE disc_fingerprint = ?",
+                (disc_fingerprint,),
+            )
+
     def list_title_dispositions(self) -> tuple[dict[str, str | int], ...]:
         """Return every path-free future-rip decision for local presentation."""
 

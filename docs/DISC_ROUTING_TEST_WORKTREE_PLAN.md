@@ -7,6 +7,14 @@
 
 ## Status (2026-09-17)
 
+> **September 22 continuation:** The live Short Circuit 2 trail now continues in
+> `docs/MOVIE_EXTRAS_IDENTITY_PLAN.md`. Read the two September 22 progress entries
+> at the end of this file for the observed queue-control repair and live matching
+> outcome, then follow that newer plan. M0-M6 and the original M7 canary describe
+> how this point was reached; they are not the current implementation backlog.
+> The remaining problem is the coupling between an accepted movie/extra role and
+> an exact final identity, not another disc scan or rerip.
+
 Milestones M0-M6: **complete in synthetic validation; M7 pending**. Preparation
 and identify now consume the queue-owned routing assessment, and the automatic
 alternate-route worker is successfully routing failures, but no fresh Short Circuit 2 live rip has
@@ -242,6 +250,83 @@ complete solely because another checkout passed tests.
 
 ## Progress log
 
+- 2026-09-19: Diagnosed the sidebar's "Failed to load resources" report in the
+  active test build. `/system/status` returned the valid `idle` state while
+  automatic processing was held, and `/system/health` returned 200/ready.
+  The sidebar now describes idle ASR as available on demand, and a manual
+  library scan may initialize it. Rebuilt the frontend; TypeScript/Vite and
+  modified-file ESLint pass. Repository-wide ESLint still reports six existing
+  findings in MediaTriageView and RipPipelineView. No disc or media operation
+  occurred; M7 remains pending.
+- 2026-09-19: Fixed the system-health tool discovery failure caused by an
+  unavailable `F:\\downloads` probe. Health/support checks now pass configured
+  executable paths directly and do not scan portable download roots when those
+  paths are supplied; disconnected roots are also skipped safely. Added two
+  regression tests. Focused system-health tests (5) and Ruff checks pass. No
+  disc or media operation occurred.
+- 2026-09-18: Diagnosed the live test-worktree "Media context structure is
+  invalid" failure. Existing private execution bindings contained the legacy
+  derived `routing_composition` field, which is not part of `MediaContext` and
+  caused restart decoding to fail. The parser now ignores that derived field;
+  new serialization never writes it. Added manifest and private-binding
+  regression tests (23 focused tests pass; no disc or provider access). M7
+  remains pending and no live retry is authorized.
+- 2026-09-18: With explicit user authorization, cleared only the exact
+  Short Circuit 2 fingerprint `6f9afc599cf192c8` from orchestration,
+  private-binding, routing, recovery-scope, and queue metadata. Two inactive
+  jobs and two private bindings were removed; no staged MKVs were found or
+  deleted, and unrelated records were preserved. Verification shows no jobs,
+  scopes, routing revision, or route attempts remain for the fingerprint.
+  M7 still requires a fresh read-only inventory and separate exact rip
+  authorization.
+- 2026-09-19: Diagnosed the repeated "rerip 7 missing titles" card after the
+  metadata forget. The test launcher and live process both use `ripweaver-test`.
+  The fresh preparation created an 11-title awaiting-review job, while the
+  frontend incorrectly treated any awaiting-review inventory with missing
+  classifier-relevant titles as failed-rip recovery. Guarded that recovery
+  presentation on an actual failed job or persisted recovery scope. Rebuilt
+  the frontend; M7 physical ripping remains pending.
+- 2026-09-19: Diagnosed the subsequent false "11 previously seen titles are
+  missing from inventory" card. The live 11-title awaiting-review preview was
+  complete, but the UI compared it with an empty identification matching scope
+  and treated that scope as physical inventory. The drive card now compares
+  acquisition titles with the current preview; the frontend build passes.
+  This was a presentation bug, not a failed MakeMKV inventory. No rip started.
+- 2026-09-19: Removed the remaining fresh-plan warning that listed every
+  title as "not safely present" before acquisition. That status is now shown
+  only for an actual recovery/rerip plan; a new awaiting-review plan correctly
+  proceeds to exact review and authorization. Frontend build passes.
+- 2026-09-19: At the owner's request, reverted the frontend-only suppression
+  of the missing-title and recovery messages. Both diagnostic UI elements are
+  visible again. The live backend still has two 11-title `awaiting_review`
+  plans and no recorded execute failure; the next investigation must capture
+  the exact API/UI error when the owner clicks the control that fails. Do not
+  infer a physical-disc failure or delete further metadata from these labels.
+- 2026-09-19: Compared the live API with the screenshot. The current-drive
+  preview contains titles 0–10, has no collision and no required review, while
+  the identification matching scope is empty. The dashboard had incorrectly
+  used that matching scope as the physical inventory and called all 11 titles
+  absent. Corrected the comparison to use the current acquisition preview;
+  kept both diagnostic panels, and labeled unacquired titles as awaiting their
+  first rip. A fresh awaiting-review plan no longer creates a false rerip
+  action. Frontend build and fake-runner rip API composition tests pass. M7
+  physical execution has not begun; the owner must still confirm the exact
+  current plan through the normal queued-job execute control.
+- 2026-09-19: Corrected manual-start workflow in the test frontend. With
+  automatic processing disabled, the drive's manual action now inventories
+  the disc and, when the plan is clean, authorizes and queues the exact plan
+  before scrolling to the final physical-rip confirmation. The confirmation
+  shows drive, title indexes, estimated size, and plan digest. Plans with
+  collisions or required review still open the review. This does not perform
+  a physical rip until the owner confirms the displayed exact plan. Frontend
+  TypeScript and production build pass; live execution remains M7 pending.
+- 2026-09-19: Refined that manual flow following owner feedback: the drive
+  button now opens the detected title list with checkboxes and estimated
+  sizes before queueing. `Rip checked titles` creates an exact subset plan
+  when needed, queues only a clean reviewed selection, and opens the final
+  physical-rip confirmation. The previous automatic queue-after-inventory
+  behavior was removed. Frontend TypeScript and production build pass; no
+  physical rip or media mutation was performed.
 - 2026-09-16: Confirmed the desktop test launcher targets `ripweaver-test` and
   that the other checkout's routing modules are absent here. Added a prominent
   location warning to this worktree's `AGENTS.md`. Began read-only audit of the
@@ -365,3 +450,22 @@ complete solely because another checkout passed tests.
   re-reading physical media or altering completed assignments.
   Frontend compilation, Ruff checks, and pytest suite passed cleanly. No live
   operations occurred. Next: Hand-off/Completion.
+- 2026-09-22: Live Short Circuit 2 follow-up exposed a post-rip control
+  coupling: disabling unattended disc processing also prevented the
+  identification worker from starting, leaving seven verified substantial
+  titles queued while four short titles correctly entered review. Split the
+  controls by adding a default-enabled `downstream_processing_enabled`
+  preference. `automatic_processing_enabled` now remains the inserted-disc /
+  autorip and automatic-transcode control; the new preference starts and
+  governs identification and routing for already verified items independently.
+  The CLI `--hold-automatic-rips` lifetime hold no longer suppresses approved
+  downstream identification. Settings and queue status expose the distinction.
+  Focused backend tests, modified-file Ruff, and the frontend production build
+  pass. No disc, provider, transcode, organization, deletion, or eject operation
+  was performed by this repair.
+- 2026-09-22: Added `docs/MOVIE_EXTRAS_IDENTITY_PLAN.md` for the next repair.
+  It separates verified content roles from exact identities: the main movie
+  requires a canonical provider-verified identity, while related extras may use
+  stable evidence-derived descriptive names. The plan preserves the TV path,
+  adds queue-fairness and restart gates, and requires synthetic validation
+  before a separately authorized continuation of the existing live MKVs.

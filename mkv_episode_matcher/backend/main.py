@@ -21,7 +21,10 @@ from mkv_episode_matcher.backend.dependencies import (
     start_windows_drive_events,
     stop_windows_drive_events,
 )
-from mkv_episode_matcher.backend.downstream_worker import DownstreamWorker
+from mkv_episode_matcher.backend.downstream_worker import (
+    DownstreamWorker,
+    downstream_processing_enabled,
+)
 from mkv_episode_matcher.backend.routers import (
     acquisition,
     catalogue,
@@ -86,11 +89,9 @@ def _authorization_required(_item):
 
 
 def _automatic_downstream_enabled(config) -> bool:
-    """Keep exact-plan review sessions free of unattended media work."""
+    """Allow approved queue work independently from unattended disc acquisition."""
 
-    return bool(
-        config.automatic_processing_enabled and not automatic_rip_startup_held()
-    )
+    return downstream_processing_enabled(config)
 
 
 def _start_automatic_transcode_sweeper() -> threading.Thread:
