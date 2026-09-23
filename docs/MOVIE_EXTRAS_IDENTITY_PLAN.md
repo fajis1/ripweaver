@@ -284,7 +284,7 @@ automatic dependent-item re-evaluation remains P5 work.
 
 ### P5 - Worker handoff and restart safety
 
-Status: pending.
+Status: complete (2026-09-23, synthetic validation).
 
 - Update the downstream worker so role settlement, main-movie verification,
   and extra naming occur under the shared routing/provider lock.
@@ -296,6 +296,16 @@ Status: pending.
 Acceptance gate: real queue/fake provider tests cover restart between every
 transition, sibling revision races, provider serialization, queue fairness, and
 partial extra failure.
+
+Implementation note: the worker now performs dependency reconciliation before
+normal queue dispatch, so a restarted worker cannot consume the exact main-movie
+contract before releasing its dependent extras and unrelated triage recovery
+cannot starve that reconciliation. The handoff uses the shared downstream lock,
+requires the latest matching assessment scope, writes a new immutable contract
+for each accepted extra, and leaves invalid extras independently held. Existing
+routing/controller coverage supplies the revision-race and provider-serialization
+checks; the added real-SQLite queue tests cover restart persistence, duplicate
+descriptions, pause/stop behavior, and partial extra failure.
 
 ### P6 - UI and review visibility
 
@@ -361,6 +371,15 @@ media mutation.
 
 ## Current Progress Log
 
+- 2026-09-23: Completed P5's restart-safe worker handoff. Exact main-movie
+  contracts now trigger pre-dispatch dependent-extra reconciliation under the
+  shared downstream lock. Valid descriptive extras receive separate immutable
+  contracts and return to the identify queue; an invalid extra remains held
+  without blocking its sibling or the movie. Added real SQLite queue coverage
+  for restart persistence, duplicate-name stability, pause/stop refusal, and
+  partial failure. The broader worker/queue/routing/adapter/Gemini matrix and
+  modified-file Ruff/format checks pass. No live provider, disc, media,
+  transcode, organization, or eject operation occurred.
 - 2026-09-23: Completed P4's saved-contract descriptive-extra policy and
   identify-adapter boundary. Added safe bounded naming, deterministic duplicate
   handling, exact main-movie linkage, six-extra shape coverage, input
@@ -401,6 +420,6 @@ media mutation.
 
 ## Next Step
 
-Begin P0: capture the current code/state baseline, locate the provisional
-identity gate, and establish a safe checkpoint strategy without including the
-existing private/scratch artifacts.
+Begin P6: expose disc composition, accepted role, exact movie identity, and
+descriptive extra identity as distinct UI/review states without implying that a
+held identity requires reripping verified media.

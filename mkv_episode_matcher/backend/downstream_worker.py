@@ -289,10 +289,131 @@ class DownstreamWorker:
         if not handled:
             handled = self._apply_automatic_triage_analysis()
         if not handled:
+            handled = self._apply_movie_extra_dependents()
+        if not handled:
             handled = self._settle_terminal_tv_route()
         if not handled:
             handled = self._apply_automatic_assessed_gemini_route()
         return handled
+
+    def _apply_movie_extra_dependents(self) -> bool:  # noqa: C901
+        """Requeue descriptive extras only after their main movie is exact."""
+
+        config = get_config_manager().load()
+        store = self.dispatcher.store
+        paused = getattr(store, "is_paused", None)
+        if (
+            not downstream_processing_enabled(config)
+            or self._stop.is_set()
+            or (callable(paused) and paused())
+        ):
+            return False
+
+        from uuid import uuid4
+
+        from mkv_episode_matcher.backend.automatic_rip import _downstream_lock
+        from mkv_episode_matcher.backend.dependencies import get_pipeline_contract_root
+        from mkv_episode_matcher.disc.movie_extras_identity import (
+            MovieExtrasIdentityError,
+            accept_descriptive_extra_identities,
+            verified_movie_identity,
+        )
+        from mkv_episode_matcher.disc.routing import assessment_from_contract
+        from mkv_episode_matcher.pipeline_queue import build_artifact
+
+        with _downstream_lock:
+            if self._stop.is_set() or (callable(paused) and paused()):
+                return False
+            items = _current_disc_title_lineages(tuple(store.list_items()), store)
+            loaded: list[tuple[object, dict, object]] = []
+            for item in items:
+                if item.stage != "identify":
+                    continue
+                try:
+                    payload = json.loads(
+                        item.artifact.contract_path.read_text(encoding="utf-8")
+                    )
+                    assessment = assessment_from_contract(payload)
+                except (OSError, ValueError, TypeError):
+                    continue
+                if assessment is None:
+                    continue
+                latest = store.routing_latest(assessment.inventory_fingerprint)
+                if latest is None or latest.title_indexes != assessment.title_indexes:
+                    continue
+                context = payload["media_context"]
+                payload = dict(payload)
+                payload["media_context"] = dict(context)
+                payload["media_context"].update(
+                    routing_assessment=latest.to_dict(),
+                    routing_assessment_digest=latest.digest,
+                    routing_assessment_revision=latest.revision,
+                )
+                loaded.append((item, payload, latest))
+
+            for main_item, main_payload, assessment in loaded:
+                if main_item.state != "queued":
+                    continue
+                try:
+                    verified_movie_identity(main_payload)
+                except MovieExtrasIdentityError:
+                    continue
+                fingerprint = assessment.inventory_fingerprint
+                candidates = [
+                    (item, payload)
+                    for item, payload, candidate_assessment in loaded
+                    if candidate_assessment.inventory_fingerprint == fingerprint
+                    and item.stage == "identify"
+                    and item.state == "review_required"
+                    and item.review_code
+                    == "provisional_content_identity_review_required"
+                ]
+                valid: list[tuple[object, dict]] = []
+                for item, payload in candidates:
+                    try:
+                        accept_descriptive_extra_identities(main_payload, (payload,))
+                    except MovieExtrasIdentityError:
+                        store.choose_review_path(
+                            item.media_id,
+                            "descriptive_extra_identity_review_required",
+                        )
+                    else:
+                        valid.append((item, payload))
+                if not valid:
+                    continue
+                accepted = accept_descriptive_extra_identities(
+                    main_payload, tuple(payload for _item, payload in valid)
+                )
+                contract_root = get_pipeline_contract_root()
+                contract_root.mkdir(parents=True, exist_ok=True)
+                changed = False
+                for (item, _payload), accepted_payload in zip(
+                    valid, accepted, strict=True
+                ):
+                    if self._stop.is_set() or (callable(paused) and paused()):
+                        return changed
+                    path = (
+                        contract_root
+                        / f"{item.media_id}.movie-extra-{uuid4().hex[:12]}.verified-rip.json"
+                    )
+                    try:
+                        with path.open("x", encoding="utf-8") as handle:
+                            json.dump(
+                                accepted_payload, handle, indent=2, sort_keys=True
+                            )
+                            handle.write("\n")
+                        store.apply_reviewed_identification_input(
+                            item.media_id, build_artifact("rip", path)
+                        )
+                    except (OSError, PipelineQueueError):
+                        store.choose_review_path(
+                            item.media_id,
+                            "descriptive_extra_identity_review_required",
+                        )
+                        continue
+                    changed = True
+                return changed
+        return False
 
     def _settle_terminal_tv_route(self) -> bool:  # noqa: C901 - guarded saved-result handoff
         """Record a final TV result without treating a service outage as no-match."""
@@ -981,6 +1102,13 @@ class DownstreamWorker:
             except Exception as exc:
                 logger.error(
                     "Version-coexistence review reconciliation could not run: {}",
+                    type(exc).__name__,
+                )
+            try:
+                self._apply_movie_extra_dependents()
+            except Exception as exc:
+                logger.error(
+                    "Movie-extra dependency reconciliation could not run: {}",
                     type(exc).__name__,
                 )
             try:
