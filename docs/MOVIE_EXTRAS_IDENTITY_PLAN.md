@@ -138,7 +138,7 @@ review. Do not block unrelated verified titles.
 
 ### P0 - Baseline and recovery checkpoint
 
-Status: pending.
+Status: complete (2026-09-22).
 
 - Record the current live queue state without changing it.
 - Preserve the seven provisional Short Circuit 2 contracts and their redacted
@@ -150,6 +150,31 @@ Status: pending.
 
 Acceptance gate: documented baseline and a safe recovery point, or an explicit
 note explaining why the checkpoint safety rules refused it.
+
+Baseline source map:
+
+- `backend/gemini_fallback.py` writes a `matched-feature` assignment for an
+  accepted descriptive result. It sets `provisional_match` whenever the title
+  lacks an independent related-movie subtitle match; this currently applies to
+  both `movie` and `extra` roles.
+- `backend/downstream_worker.py::_verified_gemini_route_assignment()` accepts
+  both roles only when that assignment has `provisional_match is False`. The
+  automatic route therefore changes an otherwise matched descriptive extra to
+  `provisional_content_identity_review_required` before appending its accepted
+  role evidence.
+- `pipeline_adapters.py::IdentifyStageAdapter` independently applies the same
+  blanket provisional-assignment hold whenever a routing assessment is bound.
+  The older compatibility path without routing permits provisional descriptive
+  extras, which is why existing adapter coverage did not reproduce the live
+  routed-disc result.
+- The existing strict test for an assessed provisional movie is correct and
+  must remain. The missing regression is a routed `movie_with_extras` disc where
+  the main movie remains held until exact verification but evidence-derived
+  extras can persist accepted roles and later receive descriptive identities.
+
+P0 inspected source, tests, the path-redacted plans, and Git state only. It did
+not open private manifests, media context, logs, databases, provider traces, or
+media; it performed no live operation.
 
 ### P1 - Separate role and identity outcomes
 
@@ -292,6 +317,12 @@ media mutation.
 
 ## Current Progress Log
 
+- 2026-09-22: Completed P0 in the active test worktree. Located the two blanket
+  provisional-identity gates and the descriptive-assignment producer described
+  above. Confirmed that the live result is a routed-disc policy gap rather than
+  failed acquisition or failed role inference. The pre-P0 recovery checkpoint
+  is `584f76f273e5`; a post-P0 checkpoint is required after this documentation
+  update. No private state or live operation was used.
 - 2026-09-22: Plan created from the successful live Short Circuit 2 evidence
   review. The current system correctly inferred the feature film and six
   related extras but held all seven because role and exact identity remain
