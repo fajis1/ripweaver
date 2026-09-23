@@ -45,11 +45,14 @@ def _fallback_outcome(
     results: dict[str, object],
     descriptive: bool,
     validated_tv_ids: frozenset[str] = frozenset(),
+    service_failed_ids: frozenset[str] = frozenset(),
 ) -> GeminiFallbackOutcome:
     titles = []
     for media_id in requested:
         result = results.get(media_id)
-        if media_id in applied:
+        if media_id in service_failed_ids:
+            titles.append(GeminiTitleOutcome(media_id, "service_failed"))
+        elif media_id in applied:
             role = (
                 "tv"
                 if media_id in validated_tv_ids
@@ -264,7 +267,24 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
     descriptive = catalog_id is None
     release_hint = _descriptive_release_hint(payloads[0], held[0].media_id)
     related_matches = {}
-    if descriptive and tv_series_context:
+    related_diagnostics = {}
+    service_failed_movie_ids: set[str] = set()
+    movie_identity_ids = frozenset(
+        item.media_id
+        for item, payload in zip(held, payloads, strict=True)
+        if (assessment := assessment_from_contract(payload)) is not None
+        and next(
+            role.role
+            for role in assessment.title_roles()
+            if role.title_index == payload["title_index"]
+        )
+        == "movie"
+    )
+    movie_disc_context = (
+        first_assessment is not None
+        and first_assessment.composition in {"movie", "movie_with_extras"}
+    )
+    if descriptive and (tv_series_context or movie_disc_context):
         from mkv_episode_matcher.backend.related_movie_analysis import (
             match_related_tv_movies,
         )
@@ -281,18 +301,25 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
                     match = re.fullmatch(r"tmdb-movie-(\d+)", str(candidate_id))
                     if match is not None:
                         excluded_movie_ids.add(int(match.group(1)))
+        identity_evidence = (
+            evidence
+            if tv_series_context
+            else tuple(item for item in evidence if item.file_id in movie_identity_ids)
+        )
+        identity_query = series_name if tv_series_context else release_hint
         try:
             related_matches, related_diagnostics = match_related_tv_movies(
-                evidence,
-                series_name,
+                identity_evidence,
+                identity_query,
                 config,
                 asr,
                 excluded_tmdb_ids=frozenset(excluded_movie_ids),
             )
         except Exception as exc:
+            service_failed_movie_ids.update(movie_identity_ids)
             dossier.record_attempt(
-                media_ids,
-                branch="tv-movie",
+                tuple(movie_identity_ids) if movie_identity_ids else media_ids,
+                branch="tv-movie" if tv_series_context else "movie-identity",
                 disposition="failed",
                 analysis_run_id=analysis_run_id,
                 summary={"reason": type(exc).__name__},
@@ -301,7 +328,7 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
             for media_id, summary in related_diagnostics.items():
                 dossier.record_attempt(
                     (media_id,),
-                    branch="tv-movie",
+                    branch="tv-movie" if tv_series_context else "movie-identity",
                     disposition=(
                         "matched" if media_id in related_matches else "review"
                     ),
@@ -310,7 +337,10 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
                 )
 
     comparison_evidence = tuple(
-        item for item in evidence if item.file_id not in related_matches
+        item
+        for item in evidence
+        if item.file_id not in related_matches
+        and item.file_id not in service_failed_movie_ids
     )
     comparison_ids = tuple(item.file_id for item in comparison_evidence)
     results = {}
@@ -448,11 +478,26 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
                     if tv_series_context
                     else "movie"
                 ),
+                identity_verification_status=(
+                    "exact_verified"
+                    if related_movie is not None
+                    else str(
+                        related_diagnostics.get(item.media_id, {}).get(
+                            "reason", "exact_pending"
+                        )
+                    )
+                    if media_kind == "movie"
+                    else "descriptive_pending"
+                ),
             )
             if related_movie is not None:
                 existing.update(
                     tmdb_movie_id=related_movie.candidate.tmdb_id,
-                    identification_method="tv-related-movie-opensubtitles",
+                    identification_method=(
+                        "tv-related-movie-opensubtitles"
+                        if tv_series_context
+                        else "movie-opensubtitles"
+                    ),
                 )
             if media_kind == "movie":
                 context["special_feature_library_title"] = feature_title
@@ -580,5 +625,6 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
         results=results,
         descriptive=descriptive,
         validated_tv_ids=validated_tv_ids,
+        service_failed_ids=frozenset(service_failed_movie_ids),
     )
     return report if return_outcomes else report.handled_ids

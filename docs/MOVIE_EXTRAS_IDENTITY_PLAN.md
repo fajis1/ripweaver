@@ -229,7 +229,7 @@ skips while retaining a contradictory TV hint only as a hint.
 
 ### P3 - Exact main-movie verification
 
-Status: pending.
+Status: complete (2026-09-22, synthetic validation).
 
 - Route only the `main_movie` title through canonical movie identification.
 - Require an exact provider identity, canonical title, and compatible runtime
@@ -241,6 +241,17 @@ Status: pending.
 Acceptance gate: fake-provider tests cover exact match, ambiguous movies,
 runtime mismatch, no match, and outage. Only the exact match unlocks dependent
 extras.
+
+Implementation note: assessment-designated movie titles on `movie` and
+`movie_with_extras` discs now use the existing bounded TMDb/runtime/subtitle
+verifier rather than bypassing it as a TV-only feature. Only the main-movie
+evidence is supplied to that verifier. An exact result writes the canonical
+title, positive TMDb movie ID, `exact_verified` status, compatible runtime
+evidence, and the approved movie-subtitle identification method. The worker
+rejects a bare `provisional_match: false` flag without those exact fields.
+No-match, runtime-incompatible, and ambiguous results retain their diagnostic
+status and remain provisional; provider outages and invalid responses return a
+typed service failure and cannot fall through to a provisional movie contract.
 
 ### P4 - Descriptive extra acceptance
 
@@ -337,6 +348,12 @@ media mutation.
 
 ## Current Progress Log
 
+- 2026-09-22: Completed P3's exact main-movie verification path. Added
+  movie-disc use of the bounded provider/runtime/subtitle verifier, exact-field
+  enforcement at the worker boundary, path-free no-match/ambiguity diagnostics,
+  and typed outage/invalid-response handling. The broader routing, worker,
+  adapter, Gemini, and movie-verifier regression set passes 165 tests; Ruff and
+  formatting checks pass. No live provider, disc, or media operation occurred.
 - 2026-09-22: Completed P2's durable composition model and synthetic canary.
   Added reviewed-skip role provenance, no-route behavior for skips, singular
   `movie_with_extras` settlement, restart persistence, and multi-feature safety

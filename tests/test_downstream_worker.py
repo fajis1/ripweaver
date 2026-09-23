@@ -69,6 +69,10 @@ def test_worker_settles_one_actual_gemini_route_result(tmp_path, monkeypatch):
                 "classification": "matched-feature",
                 "media_kind": "movie",
                 "provisional_match": False,
+                "tmdb_movie_id": 123,
+                "matched_title": "Example Movie",
+                "identity_verification_status": "exact_verified",
+                "identification_method": "movie-opensubtitles",
             }
         ]
         revised.write_text(json.dumps(revised_payload), encoding="utf-8")
@@ -105,6 +109,7 @@ def test_worker_settles_one_actual_gemini_route_result(tmp_path, monkeypatch):
         ("no_match", "no_match", "gemini_descriptive_review_required"),
         ("review", "review", "gemini_descriptive_review_required"),
         ("failure", "service_failed", "gemini_provider_failed"),
+        ("typed_failure", "service_failed", "gemini_provider_failed"),
         ("partial_failure", "review", "gemini_analysis_failed"),
         (
             "provisional_movie",
@@ -195,6 +200,10 @@ def test_worker_distinguishes_gemini_route_results(
             )
         if provider_result in {"no_match", "review"}:
             _store.choose_review_path(media_id, "gemini_descriptive_review_required")
+        if provider_result == "typed_failure":
+            return GeminiFallbackOutcome(
+                (), (GeminiTitleOutcome(media_id, "service_failed"),)
+            )
         disposition = (
             "matched" if provider_result == "unapplied_match" else provider_result
         )
@@ -247,6 +256,16 @@ def test_gemini_route_assignment_separates_role_from_identity(
                         "classification": "matched-feature",
                         "media_kind": role,
                         "provisional_match": provisional,
+                        **(
+                            {
+                                "tmdb_movie_id": 123,
+                                "matched_title": "Example Movie",
+                                "identity_verification_status": "exact_verified",
+                                "identification_method": "movie-opensubtitles",
+                            }
+                            if role == "movie" and provisional is False
+                            else {}
+                        ),
                     }
                 ]
             }
@@ -259,6 +278,31 @@ def test_gemini_route_assignment_separates_role_from_identity(
 
     assert decision.role_accepted is True
     assert decision.identity_status == expected_status
+
+
+def test_gemini_route_rejects_movie_exact_flag_without_provider_identity(tmp_path):
+    contract = tmp_path / "assignment.json"
+    contract.write_text(
+        json.dumps({
+            "media_context": {
+                "special_feature_assignments": [
+                    {
+                        "title_index": 0,
+                        "classification": "matched-feature",
+                        "media_kind": "movie",
+                        "provisional_match": False,
+                    }
+                ]
+            }
+        }),
+        encoding="utf-8",
+    )
+    item = SimpleNamespace(artifact=build_artifact("rip", contract))
+
+    decision = _gemini_route_assignment_decision(item, 0, "movie")
+
+    assert decision.role_accepted is False
+    assert decision.identity_status == "invalid"
 
 
 def test_eleven_title_movie_with_extras_keeps_every_title_in_routing(
@@ -1306,6 +1350,10 @@ def test_genuine_tv_no_match_tries_eligible_movie_route(tmp_path, monkeypatch):
                 "classification": "matched-feature",
                 "media_kind": "movie",
                 "provisional_match": False,
+                "tmdb_movie_id": 123,
+                "matched_title": "Example Movie",
+                "identity_verification_status": "exact_verified",
+                "identification_method": "movie-opensubtitles",
             }
         ]
         revised.write_text(json.dumps(revised_payload), encoding="utf-8")
@@ -1597,6 +1645,10 @@ def test_automatic_disc_analysis_preserves_tv_title_no_match_for_movie_route(
                 "classification": "matched-feature",
                 "media_kind": "movie",
                 "provisional_match": False,
+                "tmdb_movie_id": 123,
+                "matched_title": "Example Movie",
+                "identity_verification_status": "exact_verified",
+                "identification_method": "movie-opensubtitles",
             }
         ]
         revised.write_text(json.dumps(revised_payload), encoding="utf-8")
@@ -1782,6 +1834,10 @@ def test_m5_end_to_end_tv_no_match_to_movie_route(tmp_path, monkeypatch):
                 "classification": "matched-feature",
                 "media_kind": "movie",
                 "provisional_match": False,
+                "tmdb_movie_id": 123,
+                "matched_title": "Example Movie",
+                "identity_verification_status": "exact_verified",
+                "identification_method": "movie-opensubtitles",
             }
         ]
         revised.write_text(json.dumps(revised_payload), encoding="utf-8")

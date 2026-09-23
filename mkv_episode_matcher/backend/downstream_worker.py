@@ -149,6 +149,16 @@ def _gemini_route_assignment_decision(
     if assignment is None:
         return _GeminiRouteAssignmentDecision(False, "invalid")
     if assignment["provisional_match"] is False:
+        if accepted_role == "movie" and not (
+            type(assignment.get("tmdb_movie_id")) is int
+            and assignment["tmdb_movie_id"] > 0
+            and isinstance(assignment.get("matched_title"), str)
+            and bool(assignment["matched_title"].strip())
+            and assignment.get("identity_verification_status") == "exact_verified"
+            and assignment.get("identification_method")
+            in {"movie-opensubtitles", "tv-related-movie-opensubtitles"}
+        ):
+            return _GeminiRouteAssignmentDecision(False, "invalid")
         return _GeminiRouteAssignmentDecision(True, "exact_verified")
     return _GeminiRouteAssignmentDecision(
         True,
@@ -430,6 +440,7 @@ class DownstreamWorker:
                         "matched",
                         "no_match",
                         "review",
+                        "service_failed",
                     }:
                         raise ValueError("Gemini route report is invalid")
                     current = store.get(item.media_id)
@@ -456,6 +467,8 @@ class DownstreamWorker:
                             )
                     elif outcome != "matched" and current.state != "review_required":
                         outcome = "review"
+                    if outcome == "service_failed":
+                        store.hold_for_review(item.media_id, "gemini_provider_failed")
                     if outcome == "matched":
                         from dataclasses import replace
 
