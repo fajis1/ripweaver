@@ -40,7 +40,7 @@ def test_movie_with_extras_and_conflicting_hint():
         "extra",
         "unknown",
     ]
-    assert assessment.composition == "movies_with_extras"
+    assert assessment.composition == "movie_with_extras"
     assert DiscAssessment.from_dict(assessment.to_dict()).digest == assessment.digest
 
 
@@ -82,6 +82,48 @@ def test_tv_and_mixed_composition_from_distinct_title_evidence():
         evidence=tv.evidence + (TitleEvidence(1, "content", "supported", "movie"),),
     )
     assert mixed.composition == "mixed"
+
+
+def test_eleven_title_movie_with_extras_settles_reviewed_skips(tmp_path):
+    assessment = DiscAssessment(
+        FINGERPRINT,
+        tuple(range(11)),
+        user_hint="tv",
+        evidence=(
+            TitleEvidence(0, "content", "supported", "movie"),
+            *(
+                TitleEvidence(index, "content", "supported", "extra")
+                for index in range(2, 8)
+            ),
+            *(
+                TitleEvidence(index, "review", "supported", "skip")
+                for index in (1, 8, 9, 10)
+            ),
+        ),
+    )
+
+    assert assessment.composition == "movie_with_extras"
+    assert [item.role for item in assessment.title_roles()] == [
+        "movie",
+        "skip",
+        "extra",
+        "extra",
+        "extra",
+        "extra",
+        "extra",
+        "extra",
+        "skip",
+        "skip",
+        "skip",
+    ]
+    restored = DiscAssessment.from_dict(assessment.to_dict())
+    assert restored.digest == assessment.digest
+    assert restored.composition == assessment.composition
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    saved = store.routing_append(restored, expected_revision=0)
+    restarted = PipelineQueueStore(store.database_path)
+    assert restarted.routing_latest(FINGERPRINT) == saved
+    assert restarted.routing_latest(FINGERPRINT).composition == "movie_with_extras"
 
 
 def test_legacy_contract_has_no_assessment_and_new_binding_is_exact():

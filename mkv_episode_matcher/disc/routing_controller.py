@@ -52,6 +52,8 @@ def next_route(
     )
     if title is None:
         raise RoutingError("Route title is outside the assessment")
+    if title.role == "skip":
+        return None
     if any(item.outcome == "matched" for item in attempts):
         return None
     current = tuple(item for item in attempts if item.revision == assessment.revision)

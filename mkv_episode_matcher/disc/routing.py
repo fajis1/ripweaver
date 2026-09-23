@@ -7,9 +7,9 @@ import json
 import re
 from dataclasses import asdict, dataclass
 
-_ROLES = frozenset({"tv", "movie", "extra"})
-_HINTS = _ROLES | {"extras", "mixed"}
-_SOURCES = {"inventory": 1, "label": 1, "database": 2, "content": 3}
+_ROLES = frozenset({"tv", "movie", "extra", "skip"})
+_HINTS = frozenset({"tv", "movie", "extra", "extras", "mixed"})
+_SOURCES = {"inventory": 1, "label": 1, "database": 2, "content": 3, "review": 4}
 _STATUSES = frozenset({"supported", "ambiguous", "unavailable"})
 _MAX_TITLES = 10_000
 _MAX_EVIDENCE = 40_000
@@ -146,7 +146,12 @@ class DiscAssessment:
 
     @property
     def composition(self) -> str:
-        roles = {item.role for item in self.title_roles()} - {"unknown", "conflicting"}
+        title_roles = self.title_roles()
+        roles = {item.role for item in title_roles} - {
+            "unknown",
+            "conflicting",
+            "skip",
+        }
         if not roles:
             return "unknown"
         if {"tv", "movie"} <= roles:
@@ -154,6 +159,9 @@ class DiscAssessment:
         if "tv" in roles:
             return "tv_with_extras" if "extra" in roles else "tv"
         if "movie" in roles:
+            movie_count = sum(item.role == "movie" for item in title_roles)
+            if movie_count == 1:
+                return "movie_with_extras" if "extra" in roles else "movie"
             return "movies_with_extras" if "extra" in roles else "movies"
         return "extras"
 

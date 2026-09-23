@@ -148,6 +148,25 @@ def test_movie_with_extras_and_multiple_movies_keep_per_title_routes(tmp_path):
     ]
 
 
+def test_reviewed_skip_has_no_content_route(tmp_path):
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    assessment = store.routing_append(
+        DiscAssessment(
+            FINGERPRINT,
+            (0, 1),
+            evidence=(
+                TitleEvidence(0, "content", "supported", "movie"),
+                TitleEvidence(1, "review", "supported", "skip"),
+            ),
+        ),
+        expected_revision=0,
+    )
+
+    assert assessment.composition == "movie"
+    assert store.routing_claim_next(assessment, 0) == "movie"
+    assert store.routing_claim_next(assessment, 1) is None
+
+
 def test_conflicting_metadata_requires_classification_before_hint_route():
     assessment = DiscAssessment(
         FINGERPRINT,

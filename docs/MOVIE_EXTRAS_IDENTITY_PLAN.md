@@ -204,7 +204,7 @@ movie can advance.
 
 ### P2 - Disc-level `movie_with_extras` settlement
 
-Status: pending.
+Status: complete (2026-09-22, synthetic validation).
 
 - Aggregate accepted title roles into one persisted disc assessment.
 - Require exactly one viable main-movie candidate for automatic settlement.
@@ -216,6 +216,16 @@ Status: pending.
 Acceptance gate: an 11-title synthetic disc matching the live canary settles as
 one main movie, six extras, and four reviewed skips; conflicting TV and
 second-movie cases remain held.
+
+Implementation note: routing assessments now support an explicit `skip` role
+with `review` provenance. Skips remain part of the exact inventory-bound
+assessment but do not contribute to content composition and can claim no
+content route. Exactly one accepted movie plus extras derives
+`movie_with_extras`; multiple accepted movies remain the distinct
+`movies_with_extras` composition with separate movie routes, so a second
+feature is never silently reclassified as bonus material. The 11-title
+synthetic assessment persists and reloads with one movie, six extras, and four
+skips while retaining a contradictory TV hint only as a hint.
 
 ### P3 - Exact main-movie verification
 
@@ -327,6 +337,12 @@ media mutation.
 
 ## Current Progress Log
 
+- 2026-09-22: Completed P2's durable composition model and synthetic canary.
+  Added reviewed-skip role provenance, no-route behavior for skips, singular
+  `movie_with_extras` settlement, restart persistence, and multi-feature safety
+  coverage. The combined routing/controller/worker/adapter suite passes 142
+  tests; modified-file Ruff checks pass. No live state was changed and no disc,
+  provider, or media operation occurred.
 - 2026-09-22: Completed P1's worker/model slice with synthetic-only changes.
   Added explicit role/identity assignment decisions and restart coverage for
   provisional movie and descriptive-extra results. Focused worker tests and
