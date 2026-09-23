@@ -305,6 +305,36 @@ def test_gemini_route_rejects_movie_exact_flag_without_provider_identity(tmp_pat
     assert decision.identity_status == "invalid"
 
 
+def test_gemini_route_accepts_linked_descriptive_extra_identity(tmp_path):
+    contract = tmp_path / "assignment.json"
+    contract.write_text(
+        json.dumps({
+            "media_context": {
+                "special_feature_assignments": [
+                    {
+                        "title_index": 2,
+                        "classification": "matched-feature",
+                        "media_kind": "extra",
+                        "matched_title": "Making Of",
+                        "provisional_match": False,
+                        "identity_verification_status": "descriptive_accepted",
+                        "descriptive_identity_accepted": True,
+                        "related_tmdb_movie_id": 123,
+                        "identification_method": "gemini-descriptive-extra",
+                    }
+                ]
+            }
+        }),
+        encoding="utf-8",
+    )
+    item = SimpleNamespace(artifact=build_artifact("rip", contract))
+
+    decision = _gemini_route_assignment_decision(item, 2, "extra")
+
+    assert decision.role_accepted is True
+    assert decision.identity_status == "descriptive_accepted"
+
+
 def test_eleven_title_movie_with_extras_keeps_every_title_in_routing(
     tmp_path, monkeypatch
 ):

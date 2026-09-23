@@ -255,7 +255,7 @@ typed service failure and cannot fall through to a provisional movie contract.
 
 ### P4 - Descriptive extra acceptance
 
-Status: pending.
+Status: complete (2026-09-23, synthetic validation).
 
 - Convert accepted evidence summaries into concise descriptive names.
 - Prefer a reviewed catalogue name when available; otherwise use the bounded
@@ -268,6 +268,19 @@ Status: pending.
 Acceptance gate: synthetic tests reproduce the six live descriptions, verify
 stable names across restart, reject empty/unsafe/unrelated descriptions, and
 prove collision handling never overwrites.
+
+Implementation note: a saved-contract policy now accepts descriptive extras
+only when the same exact-fingerprint assessment is `movie_with_extras`, the
+title has accepted `extra` role evidence, and a separately supplied main-movie
+contract has an exact canonical title and positive TMDb ID. Accepted names are
+sanitized and bounded, retain the evidence summary and source title index, link
+to the verified movie ID, and are explicitly marked `descriptive_accepted`
+rather than catalogue-verified. Case-insensitive duplicate names receive stable
+`Title NNN` suffixes. Empty, unsafe-only, unrelated-disc, non-extra, and
+evidence-incomplete inputs are refused. The identify adapter validates the
+linked descriptive fields before producing a collision-preserving movie
+`Extras` destination. Synthetic coverage exercises the six-extra live shape;
+automatic dependent-item re-evaluation remains P5 work.
 
 ### P5 - Worker handoff and restart safety
 
@@ -348,6 +361,13 @@ media mutation.
 
 ## Current Progress Log
 
+- 2026-09-23: Completed P4's saved-contract descriptive-extra policy and
+  identify-adapter boundary. Added safe bounded naming, deterministic duplicate
+  handling, exact main-movie linkage, six-extra shape coverage, input
+  immutability checks, and refusal tests for incomplete or unrelated evidence.
+  The relevant routing/worker/adapter/Gemini policy matrix passes 174 tests;
+  modified-file Ruff and formatting checks pass. No live provider, disc, media,
+  transcode, organization, or eject operation occurred.
 - 2026-09-22: Completed P3's exact main-movie verification path. Added
   movie-disc use of the bounded provider/runtime/subtitle verifier, exact-field
   enforcement at the worker boundary, path-free no-match/ambiguity diagnostics,

@@ -111,6 +111,7 @@ class _GeminiRouteAssignmentDecision:
             "exact_verified",
             "exact_pending",
             "descriptive_pending",
+            "descriptive_accepted",
         }:
             raise ValueError("Gemini route identity status is invalid")
         if self.role_accepted != (self.identity_status != "invalid"):
@@ -159,6 +160,18 @@ def _gemini_route_assignment_decision(
             in {"movie-opensubtitles", "tv-related-movie-opensubtitles"}
         ):
             return _GeminiRouteAssignmentDecision(False, "invalid")
+        if accepted_role == "extra" and assignment.get(
+            "identity_verification_status"
+        ) == ("descriptive_accepted"):
+            if not (
+                assignment.get("descriptive_identity_accepted") is True
+                and type(assignment.get("related_tmdb_movie_id")) is int
+                and assignment["related_tmdb_movie_id"] > 0
+                and assignment.get("identification_method")
+                == "gemini-descriptive-extra"
+            ):
+                return _GeminiRouteAssignmentDecision(False, "invalid")
+            return _GeminiRouteAssignmentDecision(True, "descriptive_accepted")
         return _GeminiRouteAssignmentDecision(True, "exact_verified")
     return _GeminiRouteAssignmentDecision(
         True,

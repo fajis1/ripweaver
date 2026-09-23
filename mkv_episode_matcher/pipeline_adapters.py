@@ -458,6 +458,29 @@ class IdentifyStageAdapter:
                     "provisional_content_identity_review_required"
                 )
             media_kind = assignment.get("media_kind", "extra")
+            if (
+                routing is not None
+                and media_kind == "extra"
+                and assignment.get("identification_method")
+                == "gemini-descriptive-extra"
+            ):
+                from mkv_episode_matcher.disc.movie_extras_identity import (
+                    MovieExtrasIdentityError,
+                    descriptive_extra_identity_is_accepted,
+                )
+
+                try:
+                    accepted_description = descriptive_extra_identity_is_accepted(
+                        payload, assignment, routing
+                    )
+                except MovieExtrasIdentityError as exc:
+                    raise PipelineReviewRequiredError(
+                        "descriptive_extra_identity_review_required"
+                    ) from exc
+                if not accepted_description:
+                    raise PipelineReviewRequiredError(
+                        "descriptive_extra_identity_review_required"
+                    )
             tv_library = _special_feature_uses_tv_library(context, assignment)
             library_title = _safe_feature_component(
                 context.get("special_feature_library_title")
