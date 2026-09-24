@@ -121,6 +121,7 @@ class Config(BaseModel):
         default_factory=lambda: ["gemini-3.5-flash", "gemini-2.5-flash"]
     )
     automatic_processing_enabled: bool = False
+    downstream_processing_enabled: bool = True
     automatic_eject_after_rip: bool = False
     automatic_gemini_ambiguity_fallback: bool = False
     automatic_organization_enabled: bool = False

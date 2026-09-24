@@ -288,6 +288,7 @@ def verify_single_open_batch_outputs(
         if not is_complete_batch_output_size(
             actual_bytes=output_bytes,
             estimated_bytes=job.estimated_bytes,
+            duration_seconds=job.duration_seconds,
         ):
             raise RipError(
                 "A batch MKV is less than half its planned size; all files were "

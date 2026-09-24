@@ -151,17 +151,6 @@ def _failed_batch_cohorts(  # noqa: C901 - linear identity and prefix guards
         ordinal = int(match.group("ordinal"))
         parent_match = re.fullmatch(r"title-(\d{3})", path.parent.name)
         first_title_index = int(parent_match.group(1)) if parent_match else None
-        largest_possible_ordinal = len(ordered) - 1
-        if (
-            first_title_index is not None
-            and first_title_index != ordered[0].title_index
-        ):
-            largest_possible_ordinal = max(
-                largest_possible_ordinal,
-                max(job.title_index for job in ordered) - first_title_index,
-            )
-        if ordinal > largest_possible_ordinal:
-            continue
         key = (path.parent.resolve(), match.group("prefix"))
         if ordinal in grouped.setdefault(key, {}):
             grouped[key].pop(ordinal, None)
@@ -176,10 +165,8 @@ def _failed_batch_cohorts(  # noqa: C901 - linear identity and prefix guards
         ordinal_maps = [
             {job.title_index: ordinal for ordinal, job in enumerate(ordered)}
         ]
-        if (
-            first_title_index is not None
-            and first_title_index != ordered[0].title_index
-            and all(job.title_index >= first_title_index for job in ordered)
+        if first_title_index is not None and all(
+            job.title_index >= first_title_index for job in ordered
         ):
             # Fresh whole-disc acquisition selects every title in index order.
             # A later failed-disc plan may contain only relevant titles, but
@@ -187,35 +174,37 @@ def _failed_batch_cohorts(  # noqa: C901 - linear identity and prefix guards
             # ordinals. The isolated batch directory identifies the first
             # original title, allowing that narrowed plan to recover _t01,
             # _t03, etc. without treating its first relevant title as _t00.
-            ordinal_maps = [
+            ordinal_maps.insert(
+                0,
                 {
                     job.title_index: job.title_index - first_title_index
                     for job in ordered
-                }
-            ]
+                },
+            )
+        best_recovered: dict[int, Path] | None = None
         for ordinal_map in ordinal_maps:
             recovered: dict[int, Path] = {}
             accepted_ratios: list[float] = []
             for job in ordered:
                 path = ordinal_paths.get(ordinal_map[job.title_index])
                 if path is None:
-                    # An inventory-predicted menu/control title is not required
-                    # to recover later exact-ordinal outputs from the same
-                    # failed batch. It remains missing and cannot masquerade as
-                    # an episode, but it no longer hides subsequent content.
                     if is_inventory_planned_tiny_output(job.estimated_bytes):
                         continue
                     break
                 actual_bytes = path.stat().st_size
-                if is_inventory_planned_tiny_output(job.estimated_bytes):
+                is_short_bypass = (
+                    job.duration_seconds is not None and job.duration_seconds < 120
+                )
+                if is_short_bypass or is_inventory_planned_tiny_output(
+                    job.estimated_bytes
+                ):
                     if not is_complete_batch_output_size(
                         actual_bytes=actual_bytes,
                         estimated_bytes=job.estimated_bytes,
+                        duration_seconds=job.duration_seconds,
                     ):
                         break
                     recovered[job.title_index] = path
-                    # Container overhead dominates tiny files, so their ratio
-                    # must not distort the episode-sized cohort baseline.
                     continue
                 ratio = actual_bytes / job.estimated_bytes
                 if not _BATCH_ESTIMATE_RATIO_MIN <= ratio <= _BATCH_ESTIMATE_RATIO_MAX:
@@ -226,9 +215,13 @@ def _failed_batch_cohorts(  # noqa: C901 - linear identity and prefix guards
                         break
                 recovered[job.title_index] = path
                 accepted_ratios.append(ratio)
-            identity = tuple(sorted(recovered.items()))
-            if recovered and identity not in seen_cohorts:
-                cohorts.append(recovered)
+            if best_recovered is None or len(recovered) > len(best_recovered):
+                best_recovered = recovered
+
+        if best_recovered:
+            identity = tuple(sorted(best_recovered.items()))
+            if identity not in seen_cohorts:
+                cohorts.append(best_recovered)
                 seen_cohorts.add(identity)
     return tuple(cohorts)
 

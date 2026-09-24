@@ -45,13 +45,15 @@ class GeminiSeriesResolution:
 
 
 class _SeriesResolutionModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
-    tmdb_id: int | None
+    tmdb_id: int | None = None
     series_name: str = Field(min_length=1, max_length=160)
-    confidence: float = Field(ge=0.0, le=1.0)
-    evidence: list[str] = Field(min_length=1, max_length=3)
-    alternative_series_names: list[str] = Field(max_length=4)
+    confidence: float = Field(default=0.9, ge=0.0, le=1.0)
+    evidence: list[str] = Field(
+        default_factory=lambda: ["Gemini matched series hint"], max_length=3
+    )
+    alternative_series_names: list[str] = Field(default_factory=list, max_length=4)
 
     @field_validator("series_name")
     @classmethod
@@ -221,9 +223,11 @@ class GeminiSeriesResolver:
                     "Gemini", response.status_code, "request was not accepted"
                 )
             try:
-                parsed = _SeriesResolutionModel.model_validate_json(
-                    _output_text(response.payload)
-                )
+                raw_json = _output_text(response.payload).strip()
+                if raw_json.startswith("```"):
+                    raw_json = re.sub(r"^```(?:json)?\s*", "", raw_json)
+                    raw_json = re.sub(r"\s*```$", "", raw_json)
+                parsed = _SeriesResolutionModel.model_validate_json(raw_json)
             except (ValidationError, ValueError) as exc:
                 raise GeminiResponseError(
                     "Gemini returned invalid series resolution"

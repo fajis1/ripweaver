@@ -32,6 +32,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, systemStatus
         switch (systemStatus.status) {
             case 'ready': return 'green';
             case 'loading': return 'blue';
+            case 'idle': return 'blue';
             default: return 'red';
         }
     };
@@ -125,7 +126,8 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, systemStatus
                         <div className={`w-2.5 h-2.5 rounded-full bg-${statusColor}-400 ${systemStatus.status === 'loading' ? 'animate-pulse' : ''} shadow-[0_0_8px_rgba(74,222,128,0.5)]`} />
                         <span className={`text-sm font-bold uppercase tracking-wide text-${statusColor}-400`}>
                             {systemStatus.status === 'ready' ? 'System Ready' :
-                                systemStatus.status === 'loading' ? 'Initializing' : 'Error'}
+                                systemStatus.status === 'loading' ? 'Initializing' :
+                                    systemStatus.status === 'idle' ? 'On Demand' : 'Error'}
                         </span>
                     </div>
                     <p className="text-xs text-[var(--text-muted)] leading-relaxed">
@@ -133,7 +135,9 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onNavigate, systemStatus
                             ? 'ASR engine loaded and ready.'
                             : systemStatus.status === 'loading'
                                 ? 'Loading Whisper ASR model...'
-                                : 'Failed to load resources.'}
+                                : systemStatus.status === 'idle'
+                                    ? 'ASR engine will load when needed.'
+                                    : 'Failed to load resources.'}
                     </p>
                 </div>
             </div>

@@ -11,6 +11,10 @@ from mkv_episode_matcher.core.tv_identification_policy import (
     LOCAL_DIALOGUE_DISC_CORROBORATED_SOURCE,
     LOCAL_DIALOGUE_TWO_WINDOW_SOURCE,
 )
+from mkv_episode_matcher.disc.movie_extras_identity import (
+    accept_descriptive_extra_identities,
+)
+from mkv_episode_matcher.disc.routing import DiscAssessment, TitleEvidence
 from mkv_episode_matcher.media.handbrake import (
     HandBrakeError,
     HandBrakeProfile,
@@ -37,6 +41,156 @@ def _queued_item(tmp_path, payload):
     store = PipelineQueueStore(tmp_path / "queue.sqlite3")
     store.enqueue_verified_rip("media-1", build_artifact("rip", contract))
     return store.claim_next()
+
+
+@pytest.mark.parametrize(
+    ("hint", "evidence", "expected_review"),
+    [
+        ("tv", (), "content_classification_required"),
+        (
+            "tv",
+            (TitleEvidence(0, "database", "supported", "movie"),),
+            "movie_identification_required",
+        ),
+        (
+            "movie",
+            (TitleEvidence(0, "database", "supported", "extra"),),
+            "special_feature_evidence_required",
+        ),
+    ],
+)
+def test_routed_identify_uses_evidence_not_hint(
+    tmp_path, hint, evidence, expected_review
+):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    assessment = store.routing_append(
+        DiscAssessment("0123456789abcdef", (0,), user_hint=hint, evidence=evidence),
+        expected_revision=0,
+    )
+    item = _queued_item(
+        tmp_path,
+        {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "disc_fingerprint": assessment.inventory_fingerprint,
+            "title_index": 0,
+            "media_context": {
+                "series_name": "Synthetic Title",
+                "season": 1,
+                "content_hint": None,
+                "routing_assessment": assessment.to_dict(),
+                "routing_assessment_digest": assessment.digest,
+                "routing_assessment_revision": assessment.revision,
+            },
+        },
+    )
+    with pytest.raises(PipelineReviewRequiredError) as exc:
+        IdentifyStageAdapter(object(), contracts, routing_store=store)(item)
+    assert exc.value.code == expected_review
+
+
+def test_routed_tv_evidence_overrides_movie_hint_and_uses_existing_tv_engine(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    assessment = store.routing_append(
+        DiscAssessment(
+            "0123456789abcdef",
+            (0,),
+            user_hint="movie",
+            evidence=(TitleEvidence(0, "database", "supported", "tv"),),
+        ),
+        expected_revision=0,
+    )
+    item = _queued_item(
+        tmp_path,
+        {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "disc_fingerprint": assessment.inventory_fingerprint,
+            "title_index": 0,
+            "media_context": {
+                "series_name": "Synthetic Show",
+                "season": 1,
+                "content_hint": None,
+                "routing_assessment": assessment.to_dict(),
+                "routing_assessment_digest": assessment.digest,
+                "routing_assessment_revision": assessment.revision,
+            },
+        },
+    )
+    observed = []
+
+    class Engine:
+        def process_path(self, path, **kwargs):
+            del path
+            observed.append(kwargs)
+            return [
+                SimpleNamespace(
+                    confidence=0.9,
+                    episode_info=SimpleNamespace(
+                        series_name="Synthetic Show",
+                        season=1,
+                        episode=2,
+                        title="Second",
+                    ),
+                )
+            ], []
+
+    artifact = IdentifyStageAdapter(Engine(), contracts, routing_store=store)(item)
+    assert observed and observed[0]["dry_run"] is True
+    assert json.loads(artifact.contract_path.read_text())["episode_id"] == "S01E02"
+
+
+def test_assessed_provisional_movie_stops_before_transcode_or_placement(tmp_path):
+    source = tmp_path / "synthetic.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    assessment = store.routing_append(
+        DiscAssessment("0123456789abcdef", (0,), user_hint="movie"),
+        expected_revision=0,
+    )
+    item = _queued_item(
+        tmp_path,
+        {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "disc_fingerprint": assessment.inventory_fingerprint,
+            "title_index": 0,
+            "media_context": {
+                "series_name": "Synthetic Movie",
+                "content_hint": None,
+                "routing_assessment": assessment.to_dict(),
+                "routing_assessment_digest": assessment.digest,
+                "routing_assessment_revision": assessment.revision,
+                "special_feature_library_title": "Synthetic Movie",
+                "special_feature_assignments": [
+                    {
+                        "title_index": 0,
+                        "classification": "matched-feature",
+                        "fallback_name_policy": "none",
+                        "matched_title": "Synthetic Movie",
+                        "media_kind": "movie",
+                        "provisional_match": True,
+                    }
+                ],
+            },
+        },
+    )
+    with pytest.raises(PipelineReviewRequiredError) as exc:
+        IdentifyStageAdapter(object(), contracts, routing_store=store)(item)
+    assert exc.value.code == "provisional_content_identity_review_required"
 
 
 def test_identify_adapter_runs_engine_in_dry_run_and_writes_handoff(tmp_path):
@@ -699,6 +853,83 @@ def test_identify_adapter_allows_provisional_extra_without_release_year(tmp_path
     assert payload["library_relative"] == (
         "Example Release/other/Production Featurette.mkv"
     )
+
+
+def test_identify_adapter_accepts_linked_descriptive_movie_extra(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    routing_store = PipelineQueueStore(tmp_path / "routing.sqlite3")
+    assessment = routing_store.routing_append(
+        DiscAssessment(
+            "0123456789abcdef",
+            (0, 2),
+            evidence=(
+                TitleEvidence(0, "content", "supported", "movie"),
+                TitleEvidence(2, "content", "supported", "extra"),
+            ),
+        ),
+        expected_revision=0,
+    )
+
+    def payload(index, assignment):
+        return {
+            "mode": "verified-rip-contract",
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "disc_fingerprint": assessment.inventory_fingerprint,
+            "title_index": index,
+            "media_context": {
+                "routing_assessment": assessment.to_dict(),
+                "routing_assessment_digest": assessment.digest,
+                "routing_assessment_revision": assessment.revision,
+                "series_name": "Example Movie",
+                "special_feature_assignments": [{"title_index": index, **assignment}],
+            },
+        }
+
+    main = payload(
+        0,
+        {
+            "classification": "matched-feature",
+            "media_kind": "movie",
+            "matched_title": "Example Movie",
+            "provisional_match": False,
+            "identity_verification_status": "exact_verified",
+            "tmdb_movie_id": 123,
+            "identification_method": "movie-opensubtitles",
+        },
+    )
+    main["media_context"]["special_feature_library_year"] = 1988
+    extra = payload(
+        2,
+        {
+            "classification": "matched-feature",
+            "media_kind": "extra",
+            "matched_title": "Making Of",
+            "match_summary": "Bounded evidence links this bonus title.",
+            "gemini_confidence": 0.82,
+            "provisional_match": True,
+            "identity_verification_status": "descriptive_pending",
+            "fallback_name_policy": "none",
+            "jellyfin_folder": "other",
+        },
+    )
+    accepted = accept_descriptive_extra_identities(main, (extra,))[0]
+    item = _queued_item(tmp_path, accepted)
+
+    artifact = IdentifyStageAdapter(
+        SimpleNamespace(), contracts, routing_store=routing_store
+    )(item)
+    identified = json.loads(artifact.contract_path.read_text(encoding="utf-8"))
+
+    assert identified["library_kind"] == "movie"
+    assert identified["library_relative"] == (
+        "Example Movie (1988)/Extras/Making Of.mkv"
+    )
+    assert identified["provisional_match"] is False
+    assert identified["identification_order"] == ["extras"]
 
 
 def test_identify_adapter_holds_ambiguous_special_feature_for_evidence(tmp_path):

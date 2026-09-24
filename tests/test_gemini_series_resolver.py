@@ -42,13 +42,15 @@ def test_series_request_is_path_free_and_bounds_tmdb_ids():
 def test_series_resolver_accepts_only_supplied_tmdb_id():
     response = TransportResponse(
         200,
-        {"output_text": json.dumps({
-            "tmdb_id": 44,
-            "series_name": "Invented",
-            "confidence": 0.9,
-            "evidence": ["Candidate selected."],
-            "alternative_series_names": ["Another Invented Series"],
-        })},
+        {
+            "output_text": json.dumps({
+                "tmdb_id": 44,
+                "series_name": "Invented",
+                "confidence": 0.9,
+                "evidence": ["Candidate selected."],
+                "alternative_series_names": ["Another Invented Series"],
+            })
+        },
     )
     resolver = GeminiSeriesResolver(
         model="gemini-test", transport=FakeTransport(response), max_retries=0
@@ -56,6 +58,8 @@ def test_series_resolver_accepts_only_supplied_tmdb_id():
 
     with pytest.raises(GeminiResponseError, match="unsupplied"):
         resolver.resolve_with_key(
-            "The Flintstones", (_candidate(),),
-            api_key="fake-key", credential="gemini-primary"
+            "The Flintstones",
+            (_candidate(),),
+            api_key="fake-key",
+            credential="gemini-primary",
         )

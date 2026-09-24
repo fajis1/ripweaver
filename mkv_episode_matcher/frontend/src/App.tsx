@@ -120,7 +120,7 @@ function App() {
 
   // Handlers
   const handleFolderSelect = async (path: string) => {
-    if (systemStatus.status !== 'ready') {
+    if (systemStatus.status !== 'ready' && systemStatus.status !== 'idle') {
       alert('Please wait for the system to initialize.');
       return;
     }

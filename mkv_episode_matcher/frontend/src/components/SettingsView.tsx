@@ -33,6 +33,7 @@ interface Config {
     default_handbrake_profile_2160p?: string;
     remember_last_handbrake_profile: boolean;
     automatic_processing_enabled: boolean;
+    downstream_processing_enabled: boolean;
     automatic_eject_after_rip: boolean;
     automatic_gemini_ambiguity_fallback: boolean;
     automatic_organization_enabled: boolean;
@@ -681,7 +682,11 @@ const SettingsView: React.FC = () => {
                     </div>
                     <label className="block rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100">
                         <input type="checkbox" className="mr-3" checked={config.automatic_processing_enabled} onChange={(event) => handleChange('automatic_processing_enabled', event.target.checked)} />
-                        Automatically process inserted discs when the background watcher is installed and attached. This does not authorize overwrite, deletion, replacement, or ejection.
+                        Automatically scan and start approved preparation for inserted discs when the background watcher is installed and attached. Turn this off for manual disc starts.
+                    </label>
+                    <label className="block rounded-xl border border-blue-500/30 bg-blue-500/10 p-4 text-sm text-blue-100">
+                        <input type="checkbox" className="mr-3" checked={config.downstream_processing_enabled} onChange={(event) => handleChange('downstream_processing_enabled', event.target.checked)} />
+                        Continue verified ripped titles through identification. This is independent from automatic disc insertion/ripping and does not authorize transcode, organization, overwrite, deletion, or ejection.
                     </label>
                     <label className="block rounded-xl border border-cyan-500/30 bg-cyan-500/10 p-4 text-sm text-cyan-100">
                         <input type="checkbox" className="mr-3" checked={config.automatic_eject_after_rip} onChange={(event) => handleChange('automatic_eject_after_rip', event.target.checked)} />

@@ -81,9 +81,13 @@ def test_run_ocr_is_sequential_and_reads_generated_srt(tmp_path, monkeypatch):
     output = tmp_path / "diagnostics" / "episode.srt"
 
     def fake_run(command, **kwargs):
-        Path(next(arg.split(":", 1)[1] for arg in command if arg.startswith(
-            "--output-folder:"
-        ))).mkdir(parents=True, exist_ok=True)
+        Path(
+            next(
+                arg.split(":", 1)[1]
+                for arg in command
+                if arg.startswith("--output-folder:")
+            )
+        ).mkdir(parents=True, exist_ok=True)
         output.write_text(
             "1\n00:00:01,000 --> 00:00:02,000\nReadable dialogue.\n",
             encoding="utf-8",

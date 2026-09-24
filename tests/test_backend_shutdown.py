@@ -32,14 +32,26 @@ def test_backend_shutdown_settles_makemkv_after_stopping_drive_events(monkeypatc
     assert events == ["stop-drive-events", "settle-makemkv-children"]
 
 
-def test_held_review_server_suppresses_automatic_downstream_worker(monkeypatch):
-    config = SimpleNamespace(automatic_processing_enabled=True)
+def test_autorip_hold_does_not_suppress_approved_downstream_worker(monkeypatch):
+    config = SimpleNamespace(
+        automatic_processing_enabled=False,
+        downstream_processing_enabled=True,
+    )
 
     monkeypatch.setattr(main, "automatic_rip_startup_held", lambda: True)
-    assert main._automatic_downstream_enabled(config) is False
+    assert main._automatic_downstream_enabled(config) is True
 
     monkeypatch.setattr(main, "automatic_rip_startup_held", lambda: False)
     assert main._automatic_downstream_enabled(config) is True
+
+
+def test_explicit_downstream_disable_suppresses_worker():
+    config = SimpleNamespace(
+        automatic_processing_enabled=True,
+        downstream_processing_enabled=False,
+    )
+
+    assert main._automatic_downstream_enabled(config) is False
 
 
 def test_normal_startup_arms_one_minute_queue_resume(monkeypatch):
@@ -108,13 +120,17 @@ def test_durable_queue_pause_survives_backend_restart(monkeypatch):
     assert scheduled == []
 
 
-def test_held_review_startup_skips_unattended_workers(tmp_path, monkeypatch):
+def test_disabled_downstream_startup_skips_downstream_worker(tmp_path, monkeypatch):
     config = SimpleNamespace(
         automatic_processing_enabled=True,
+        downstream_processing_enabled=False,
         cache_dir=tmp_path / "cache",
     )
     public_store = SimpleNamespace(reconcile_incomplete=lambda: ())
-    pipeline_store = SimpleNamespace(reconcile_incomplete=lambda **_kwargs: ())
+    pipeline_store = SimpleNamespace(
+        reconcile_incomplete=lambda **_kwargs: (),
+        routing_reconcile_interrupted=lambda: 0,
+    )
 
     class ImmediateThread:
         def __init__(self, *, target, daemon, **kwargs):
@@ -124,7 +140,7 @@ def test_held_review_startup_skips_unattended_workers(tmp_path, monkeypatch):
 
         def start(self):
             if self.name == "transcode-sweeper":
-                return # Don't block the test with infinite loop
+                return  # Don't block the test with infinite loop
             self.target()
 
     def unexpected_call(*_args, **_kwargs):

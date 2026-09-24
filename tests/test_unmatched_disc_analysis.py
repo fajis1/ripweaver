@@ -2975,3 +2975,111 @@ def test_all_season_analysis_uses_independent_evidence_not_sequence(  # noqa: C9
     ]
     assert len(sequence_attempts) == 2
     assert {attempt["disposition"] for attempt in sequence_attempts} == {"review"}
+
+
+def test_gemini_confident_no_match_produces_tv_title_no_match(tmp_path, monkeypatch):
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    store = PipelineQueueStore(tmp_path / "queue.sqlite3")
+    fingerprint = "0123456789abcdef"
+
+    media_id = f"disc-04-{fingerprint}-title-000"
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    contract = contracts / f"{media_id}.json"
+    contract.write_text(
+        json.dumps({
+            "mode": "verified-rip-contract",
+            "media_id": media_id,
+            "source_path": str(source),
+            "source_size_bytes": source.stat().st_size,
+            "disc_fingerprint": fingerprint,
+            "title_index": 0,
+            "media_context": {"series_name": "Unmatched", "season": None},
+        }),
+        encoding="utf-8",
+    )
+    store.enqueue_verified_rip(media_id, build_artifact("rip", contract))
+    store.claim_next()
+    store.require_review(media_id, "unmatched_disc_analysis_required")
+
+    catalog = tuple(
+        EpisodeCatalogEntry(
+            f"S01E{episode:02d}", 1, episode, f"Title {episode}", "", 1200
+        )
+        for episode in range(1, 4)
+    )
+
+    monkeypatch.setattr(
+        analysis,
+        "search_tv_show_candidates",
+        lambda _name: (TvShowCandidate(1, "Example", "", None, ""),),
+    )
+    monkeypatch.setattr(
+        analysis, "fetch_aired_episode_catalog", lambda _show_id: catalog
+    )
+    monkeypatch.setattr(
+        analysis, "existing_library_episodes", lambda *_args: frozenset()
+    )
+
+    class FakeDossier:
+        def record_attempt(self, *_args, **_kwargs):
+            pass
+
+        def safe_attempts(self, _media_id):
+            return ()
+
+    monkeypatch.setattr(
+        analysis,
+        "collect_dossier_evidence",
+        lambda items, *_args: (
+            (UnmatchedFileEvidence(media_id, 1200, ("dialogue",)),),
+            FakeDossier(),
+        ),
+    )
+
+    # Simulate NO MATCH in both rank passes
+    def fake_rank(*_args, **_kwargs):
+        print(f"fake_rank called for {_args}")
+        return {media_id: SimpleNamespace(episode_id=None, confidence=0.9)}
+
+    monkeypatch.setattr(analysis, "_rank_gemini_chunks", fake_rank)
+    monkeypatch.setattr(
+        analysis, "match_opensubtitles_seasons", lambda *_args, **_kwargs: ({}, {})
+    )
+    monkeypatch.setattr(
+        analysis,
+        "plan_disc_sequences",
+        lambda *_args, **_kwargs: analysis._ReviewSequencePlan(),
+    )
+    monkeypatch.setattr(
+        analysis, "discover_opensubtitles_season", lambda *_args, **_kwargs: ()
+    )
+
+    config = SimpleNamespace(
+        gemini_model="gemini-test",
+        automatic_processing_enabled=True,
+        min_confidence=0.8,
+    )
+
+    import pytest
+
+    with pytest.raises(
+        analysis.GeminiAnalysisError,
+        match="Gemini did not identify any disc title confidently",
+    ):
+        analysis._execute_unmatched_disc_analysis(
+            store,
+            fingerprint,
+            "Example",
+            config,
+            None,
+            contracts,
+            allow_gemini=True,
+            allow_content_fallback=False,
+            analysis_run_id="test-run",
+        )
+
+    # Weak evidence without tv_title_no_match becomes independent_episode_evidence_required,
+    # but confident no-match becomes tv_title_no_match!
+    assert store.get(media_id).review_code == "tv_title_no_match"

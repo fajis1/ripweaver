@@ -32,18 +32,16 @@ def _resume_inputs(tmp_path):
     )
 
     inventory = json.loads(original_inventory.read_text(encoding="utf-8"))
-    inventory["titles"].append(
-        {
-            "index": 1,
-            "attributes": {
-                "8": "1",
-                "9": "0:05:00",
-                "11": "10000000",
-                "27": "title01.mkv",
-            },
-            "streams": {},
-        }
-    )
+    inventory["titles"].append({
+        "index": 1,
+        "attributes": {
+            "8": "1",
+            "9": "0:05:00",
+            "11": "10000000",
+            "27": "title01.mkv",
+        },
+        "streams": {},
+    })
     original_inventory.write_text(json.dumps(inventory), encoding="utf-8")
     bound = replace(
         bound,

@@ -9,6 +9,39 @@
 > *Note: A full snapshot of all uncommitted files as of 2026-08-23 has been safely saved to the local branch `emergency-backup-20260823`. If you accidentally destroy the working tree, you can recover from that branch.*
 
 
+## 2026-09-02 - Media triage metadata parsing, wrapper folder exclusion, and episode safety
+
+Media triage folder scanning and queue ingestion now accurately resolve television series,
+movie collections, companion extras, and raw rips from arbitrary directory hierarchies without
+defaulting to generic container folder names or false episode numbers:
+
+1. **Ancestor of Season Context (Rule 1):** When a `Season XX` directory exists, the series candidate
+   is derived from the immediate ancestor folder (e.g. `Eureka`, `Beatrix Potter Vol 1`, `Monk`)
+   rather than the top-level staging container.
+2. **Wrapper Folder Exclusion (Rule 2):** Intermediate staging directories (such as
+   `MKV_Matcher_Staging`, `Tobeconverted`, `ReadyToEncode`, `Encoded`, `To Be Placed`, `Staging`,
+   `unmatched`, `temp`, `queue`, `rips`) are systematically ignored when identifying series names.
+3. **Episode Number Safety (Rule 3):** Raw or unmatched disc rips (e.g. `..._t00.mkv`) are never
+   defaulted to `S01E01` or bypassed to `organize`. If a file lacks a confirmed `SxxExx` tag and is
+   not a movie or extra, it is safely routed to `identify` for Whisper audio fingerprinting and
+   subtitle alignment.
+4. **Sibling File Context & TV Movie / Extra Detection:**
+   - Multi-feature discs and box sets (e.g. `PSYCH_THREE MOVIES_t00.mkv`) cleanly resolve their
+     series identity (`Psych`) and content type (`is_movie = True`).
+   - Sibling generic files (`title_t04.mkv`) inherit candidate show identity from non-generic
+     MKV siblings in the same directory.
+   - Sibling size-cohort heuristics distinguish companion bonus material / extras (< 1.2 GB files
+     alongside > 4 GB feature titles) from main episodes/movies, avoiding false episode matches.
+5. **Canonical Series Name Resolution:**
+   Packaging descriptors (`Three Movies`, `Vol 1`, `Disc 1`) are stripped before querying TMDb
+   or Gemini. `GeminiSeriesResolver` was made resilient to markdown code blocks (````json ... ````)
+   and varying model payload schemas.
+6. **Validation:**
+   A full dry run against 278 real staging titles confirmed 0 items attributed to `MKV_Matcher_Staging`,
+   162 raw items safely routed to `identify`, and 116 items routed to `transcode`/`organize`. Unit
+   tests in `tests/test_media_triage.py` cover all rules and pass with 100% test coverage.
+
+
 ## 2026-08-29 - Portable RipWeaver release foundation
 
 The PyInstaller product and output directory are now branded `RipWeaver`.
@@ -4456,14 +4489,90 @@ for review rather than forcing a TV identity.
   media, delete user media, organize a library, or eject a drive.
 ### Media Triage / Loose File Ingestion (2026-09-01)
 
-- We are currently developing the "Media Triage" feature to ingest unstructured, loose media files (e.g. from G:\Videos) directly into the pipeline (identify -> 	ranscode -> organize).
+- We are currently developing the "Media Triage" feature to ingest unstructured, loose media files (e.g. from G:\Videos) directly into the pipeline (identify -> transcode -> organize).
 - **Configuration:** A new media_triage_folder property has been added to EnvironmentSettings and .env.example.
 - **Note on Workspace:** Active agent development for this feature is occurring in the test branch, despite this branch having been merged into main on GitHub. All handovers and UI modifications must take place here.
 - **Next steps:** Build mkv_episode_matcher/backend/routers/triage.py to scan the configured directory, classify files as requiring matching or encoding, and present them to the frontend.
 
+### Automatic Season-First Triage & Non-Disc Recovery (2026-09-04)
+
+- **Fingerprint-Free Source Identity**: `SourceIdentity` and `source_identity()`
+  in `mkv_episode_matcher/backend/identification_dossier.py` support loose/triage
+  items without optical disc context. Items without a physical `disc_fingerprint`
+  are keyed by `media_id`, exact file size, modification timestamp, and ASR
+  model. The system never fabricates or synthesizes a 16-hex disc fingerprint for
+  non-disc media.
+- **Pipeline Adapter Media Matching**: `IdentifyStageAdapter` in
+  `mkv_episode_matcher/pipeline_adapters.py` matches `episode_assignments` on
+  `entry.get("media_id") == item.media_id` when `title_index` is absent, allowing
+  arbitrary non-disc items to advance through the identify stage without ordinal
+  disc title indices.
+- **Season-First Gemini Recovery Workflow**:
+  `execute_unmatched_season_analysis()` in
+  `mkv_episode_matcher/backend/unmatched_disc_analysis.py`:
+  - Resolves canonical series details through TMDb.
+  - Trusts the enclosing season folder context (e.g., `Season 01`) and limits
+    initial candidate evaluation strictly to that season's episode catalogue.
+  - Collects ASR audio excerpts using Faster Whisper.
+  - Calls `GeminiEpisodeRanker` in two passes (`gemini-initial` and
+    `gemini-confirmation`). A match requires agreement between passes, high
+    confidence (>= 0.70 default), and runtime consistency against the catalogue.
+  - **All-Season Fallback**: If within-season analysis fails to find a confident
+    match, it falls back to the full series catalogue as a last resort.
+  - Re-enqueues resolved items into the pipeline with verified rip contracts
+    bearing `GEMINI_TWO_PASS_SOURCE` assignments and identification policy
+    version 4.
+- **Automatic Downstream Recovery**:
+  - `_automatic_season_tv_context()` and `_resolve_automatic_unmatched_season()`
+    in `mkv_episode_matcher/backend/automatic_rip.py` safely isolate non-disc TV
+    items under `_downstream_lock`.
+  - `DownstreamWorker._apply_automatic_triage_analysis()` in
+    `mkv_episode_matcher/backend/downstream_worker.py` periodically discovers
+    non-disc TV items stuck in `review_required: episode_match_review` and
+    triggers automated recovery.
+- **Tests & Verification**:
+  - Comprehensive unit suite in `tests/test_triage_season_analysis.py` covers
+    source identity, adapter assignment resolution, season context extraction,
+    two-pass Gemini matching, all-season fallback, and worker automation (all
+    passing).
+  - Live pipeline verification on `triage-d8166ac22151914f`
+    (`EUREKA 1.3_t07.mkv`) successfully transcribed audio via Faster Whisper,
+    called Gemini, resolved the title to S01E06 ("Dr. Nobel") with 1.0 confidence,
+    identified the contract, and routed it to `organize: library_collision` upon
+    detecting an existing transcode, preserving existing destination files.
 
 ## Future Feature: Advanced Home Video Identification (Media Triage)
 - The current Media Triage scanner excludes files starting with PXL_ (Google Pixel format) as personal home movies.
 - **Future Need:** PXL_ is not the only format for home videos (e.g., iPhones use IMG_, GoPros use GOPR, generic cameras use DSC_ or MVI_, and many have datestamps like YYYYMMDD_HHMMSS).
 - We must develop more robust heuristics (regex patterns, metadata extraction like missing audio tracks or specific encoder tags, or lack of standard media naming) to identify home videos.
 - **Future Pipeline:** These identified home videos need their own separate processing pipeline, potentially using an LLM (Gemini summary naming) for automatic description/tagging, as they cannot be matched against TV/Movie databases.
+
+## Active Test-Worktree Disc Routing Repair (2026-09-16)
+
+The desktop test launcher uses the `ripweaver-test` source worktree, not the
+installed EXE or the separate `mkv-episode-matcher` checkout. Routing changes
+and test results from that other checkout are not present in this build. See
+`docs/DISC_ROUTING_TEST_WORKTREE_PLAN.md` for the current baseline, repair gates,
+and progress log. A narrow synthetic-tested fix now allows fresh preparation
+to continue when no staged MKVs exist; it is not a live rip validation or a
+completed unified-routing implementation.
+The test-worktree compatibility audit is now complete. Its plan records which
+earlier routing ideas are reusable and which old file edits must not be copied
+over this branch's triage and recovery changes. The next phase is a new
+persisted-assessment design integrated with this branch's existing contracts.
+The implementation is broken into M0–M7 gates in that plan. M0–M3 now pass
+synthetic validation in the active test worktree: preparation and identify
+consume a queue-owned routing assessment, with user hints advisory and TV
+scope separated from movie/extras/unknown titles. Automatic alternate-route
+execution is not yet attached; M4–M7 and the separately authorization-gated
+live canary remain outstanding. M4 now has an atomic held-item route claim and
+records terminal TV coordinator service-failure and review outcomes without
+treating an absent series catalogue or provider outage as alternate-content
+evidence. A true title-level no-match remains a distinct policy outcome. The
+worker now has a single-item, opt-in Gemini route handoff with exact claim and
+typed settlement under the shared downstream lock; provisional new movie and
+extra identities stop for review before transcode or placement. Focused
+synthetic and full-suite tests pass, including an 11-title movie-with-extras
+worker matrix. M4 still needs an explicit title-level TV no-match to movie
+alternate and sibling/concurrent worker tests; M5's accepted-role assessment
+revision also remains open. None of this validates a live disc.
