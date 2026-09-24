@@ -325,9 +325,39 @@ class DownstreamWorker:
             if self._stop.is_set() or (callable(paused) and paused()):
                 return False
             items = _current_disc_title_lineages(tuple(store.list_items()), store)
+            contract_root = get_pipeline_contract_root()
             loaded: list[tuple[object, dict, object]] = []
             for item in items:
                 if item.stage != "identify":
+                    identity = _contract_disc_title_identity(item, store)
+                    if identity is None:
+                        continue
+                    latest = store.routing_latest(identity[0])
+                    if latest is None:
+                        continue
+                    for path in sorted(
+                        contract_root.glob(f"{item.media_id}*.verified-rip.json"),
+                        reverse=True,
+                    ):
+                        try:
+                            payload = json.loads(path.read_text(encoding="utf-8"))
+                            context = payload["media_context"]
+                            payload["media_context"] = dict(context)
+                            payload["media_context"].update(
+                                routing_assessment=latest.to_dict(),
+                                routing_assessment_digest=latest.digest,
+                                routing_assessment_revision=latest.revision,
+                            )
+                            verified_movie_identity(payload)
+                        except (
+                            OSError,
+                            ValueError,
+                            TypeError,
+                            MovieExtrasIdentityError,
+                        ):
+                            continue
+                        loaded.append((item, payload, latest))
+                        break
                     continue
                 try:
                     payload = json.loads(
@@ -384,7 +414,6 @@ class DownstreamWorker:
                 accepted = accept_descriptive_extra_identities(
                     main_payload, tuple(payload for _item, payload in valid)
                 )
-                contract_root = get_pipeline_contract_root()
                 contract_root.mkdir(parents=True, exist_ok=True)
                 changed = False
                 for (item, _payload), accepted_payload in zip(

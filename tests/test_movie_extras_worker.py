@@ -152,3 +152,34 @@ def test_invalid_extra_does_not_block_valid_sibling(tmp_path, monkeypatch):
     invalid = store.get("disc-01-title-003")
     assert invalid.state == "review_required"
     assert invalid.review_code == "descriptive_extra_identity_review_required"
+
+
+def test_worker_recovers_exact_main_contract_after_main_advanced(tmp_path, monkeypatch):
+    _database, store = _prepare(tmp_path, monkeypatch)
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    main = store.get("disc-01-title-000")
+    historic = contracts / "disc-01-title-000.exact.verified-rip.json"
+    historic.write_text(
+        main.artifact.contract_path.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    claimed = store.claim_next(allowed_stages=("identify",))
+    assert claimed is not None and claimed.media_id == "disc-01-title-000"
+    identified = tmp_path / "identified.json"
+    identified.write_text(
+        json.dumps({
+            "mode": "verified-identification-contract",
+            "library_relative": "Example Movie/Example Movie.mkv",
+        }),
+        encoding="utf-8",
+    )
+    store.complete_stage(
+        claimed.media_id, "identify", build_artifact("identify", identified)
+    )
+    worker = DownstreamWorker(
+        SimpleNamespace(store=store), allowed_stages=("identify",)
+    )
+
+    assert worker._apply_movie_extra_dependents() is True
+    assert store.get("disc-01-title-002").state == "queued"
+    assert store.get("disc-01-title-003").state == "queued"
