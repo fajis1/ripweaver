@@ -309,7 +309,7 @@ descriptions, pause/stop behavior, and partial extra failure.
 
 ### P6 - UI and review visibility
 
-Status: pending.
+Status: complete (2026-09-23, synthetic validation).
 
 - Show the persisted disc composition and each title's accepted role separately
   from its identity status.
@@ -321,6 +321,13 @@ Status: pending.
 
 Acceptance gate: frontend build and response tests verify the distinction
 between role, exact movie identity, and descriptive extra identity.
+
+Implementation note: path-free pipeline responses now expose identity status
+and method separately from the persisted disc composition and accepted title
+role. Identity-only holds explicitly state that verified staged media does not
+need to be ripped again. The queue renders exact movie verification,
+description-pending, and descriptively accepted extras as distinct states, and
+labels accepted extra descriptions as non-catalogue identities.
 
 ### P7 - Synthetic regression gate
 
@@ -371,6 +378,15 @@ media mutation.
 
 ## Current Progress Log
 
+- 2026-09-23: Completed P6's API and dashboard visibility. Pipeline item
+  responses now separate disc composition, accepted title role, identity
+  verification status, and identification method. The UI explains exact movie
+  verification, labels descriptive extra identities accurately, and states
+  that identity/name review does not require reripping verified staged media.
+  The broader API/queue/worker/adapter matrix passes 216 tests and the frontend
+  production build passes. Frontend lint retains six pre-existing findings
+  outside the P6 additions. No live provider, disc, media, transcode,
+  organization, or eject operation occurred.
 - 2026-09-23: Completed P5's restart-safe worker handoff. Exact main-movie
   contracts now trigger pre-dispatch dependent-extra reconciliation under the
   shared downstream lock. Valid descriptive extras receive separate immutable
@@ -420,6 +436,6 @@ media mutation.
 
 ## Next Step
 
-Begin P6: expose disc composition, accepted role, exact movie identity, and
-descriptive extra identity as distinct UI/review states without implying that a
-held identity requires reripping verified media.
+Begin P7: run the full synthetic regression gate, modified-file checks, and
+frontend production validation; confirm the worktree gained no private or live
+artifacts.

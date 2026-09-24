@@ -2965,6 +2965,9 @@ class PipelineItemResponse(BaseModel):
     user_hint: str | None = None
     assessed_composition: str | None = None
     assessed_role: str | None = None
+    identity_status: str | None = None
+    identity_method: str | None = None
+    identity_review_requires_rerip: bool | None = None
     current_route: str | None = None
     evidence_status: str | None = None
     exhausted_reason: str | None = None
@@ -3797,6 +3800,48 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
     current_route = None
     evidence_status = None
     exhausted_reason = None
+    identity_status = None
+    identity_method = None
+    identity_review_requires_rerip = None
+
+    for identity_payload in (payload, rip_payload):
+        context = identity_payload.get("media_context")
+        if not isinstance(context, dict) or title_index is None:
+            continue
+        assignments = context.get("special_feature_assignments")
+        if not isinstance(assignments, list):
+            continue
+        assignment = next(
+            (
+                candidate
+                for candidate in assignments
+                if isinstance(candidate, dict)
+                and candidate.get("title_index") == title_index
+            ),
+            None,
+        )
+        if assignment is None:
+            continue
+        status = assignment.get("identity_verification_status")
+        method = assignment.get("identification_method")
+        if status in {
+            "exact_verified",
+            "exact_pending",
+            "descriptive_pending",
+            "descriptive_accepted",
+        }:
+            identity_status = status
+        if isinstance(method, str) and method.strip():
+            identity_method = method
+        break
+
+    if item.review_code in {
+        "provisional_content_identity_review_required",
+        "descriptive_extra_identity_review_required",
+        "gemini_descriptive_review_required",
+        "movie_identification_required",
+    }:
+        identity_review_requires_rerip = False
 
     if disc_fingerprint and title_index is not None:
         try:
@@ -3854,6 +3899,9 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
         "user_hint": user_hint,
         "assessed_composition": assessed_composition,
         "assessed_role": assessed_role,
+        "identity_status": identity_status,
+        "identity_method": identity_method,
+        "identity_review_requires_rerip": identity_review_requires_rerip,
         "current_route": current_route,
         "evidence_status": evidence_status,
         "exhausted_reason": exhausted_reason,

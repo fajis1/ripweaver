@@ -384,6 +384,9 @@ interface PipelineQueueItem {
   user_hint: string | null;
   assessed_composition: string | null;
   assessed_role: string | null;
+  identity_status: 'exact_verified' | 'exact_pending' | 'descriptive_pending' | 'descriptive_accepted' | null;
+  identity_method: string | null;
+  identity_review_requires_rerip: boolean | null;
   current_route: string | null;
   evidence_status: string | null;
   exhausted_reason: string | null;
@@ -1750,7 +1753,7 @@ Enter content hint (tv, movie, extras) or leave blank for unknown:`);
       const payload = await responsePayload(response);
       if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : 'Metadata reassessment failed.');
       setReviewNotice(`Reassessment complete for ${group.label}. You may now restart identification for individual titles.`);
-      
+
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Metadata reassessment failed.');
     } finally {
@@ -5324,18 +5327,37 @@ Enter content hint (tv, movie, extras) or leave blank for unknown:`);
                     <div className="font-mono text-sm text-white"><span className="mr-2">{stageIcon[item.state === 'completed' ? 'complete' : item.stage] || '⏸️'}</span>{attentionOnly && item.title_index !== null ? `Title ${item.title_index}` : item.media_id}</div>
                     <div className="text-sm font-semibold text-white">Matched title: {item.display_name || 'Not matched yet'}</div>
                     {item.match_summary && <div className="mt-1 max-w-2xl text-xs text-[var(--text-muted)]">{item.match_summary}</div>}
-                      {(item.user_hint || item.assessed_composition || item.assessed_role || item.evidence_status || item.current_route || item.exhausted_reason) && (
+                      {(item.user_hint || item.assessed_composition || item.assessed_role || item.identity_status || item.evidence_status || item.current_route || item.exhausted_reason) && (
                         <div className="mt-2 text-xs text-indigo-200/80">
                           {item.user_hint && <div className="text-indigo-200/80">User hint: {item.user_hint}</div>}
                           <div className="mt-1 flex flex-wrap gap-2 opacity-80">
                             {item.assessed_composition && <span className="rounded bg-indigo-500/20 px-1.5 py-0.5 border border-indigo-500/30">Composition: {item.assessed_composition.replaceAll('_', ' ')}</span>}
                             {item.assessed_role && <span className="rounded bg-indigo-500/20 px-1.5 py-0.5 border border-indigo-500/30">Role: {item.assessed_role.replaceAll('_', ' ')}</span>}
+                            {item.identity_status === 'exact_verified' && <span className="rounded border border-green-400/40 bg-green-500/20 px-1.5 py-0.5 text-green-100">Identity: exact movie verified</span>}
+                            {item.identity_status === 'descriptive_accepted' && <span className="rounded border border-cyan-400/40 bg-cyan-500/20 px-1.5 py-0.5 text-cyan-100">Identity: accepted description</span>}
+                            {item.identity_status === 'exact_pending' && <span className="rounded border border-amber-400/40 bg-amber-500/20 px-1.5 py-0.5 text-amber-100">Identity: exact movie pending</span>}
+                            {item.identity_status === 'descriptive_pending' && <span className="rounded border border-amber-400/40 bg-amber-500/20 px-1.5 py-0.5 text-amber-100">Identity: description pending</span>}
                             {item.current_route && <span className="rounded bg-indigo-500/20 px-1.5 py-0.5 border border-indigo-500/30">Route: {item.current_route.replaceAll('_', ' ')}</span>}
                             {item.evidence_status && <span className="rounded bg-indigo-500/20 px-1.5 py-0.5 border border-indigo-500/30">Evidence: {item.evidence_status.replaceAll('_', ' ')}</span>}
                             {item.exhausted_reason && <span className="rounded bg-indigo-500/20 px-1.5 py-0.5 border border-indigo-500/30">{item.exhausted_reason === 'exhausted' ? 'Exhausted' : 'Held'}: {item.exhausted_reason.replaceAll('_', ' ')}</span>}
                           </div>
                         </div>
                       )}
+                    {item.identity_status === 'exact_verified' && (
+                      <div className="mt-2 max-w-2xl rounded border border-green-400/30 bg-green-500/10 p-2 text-xs text-green-100">
+                        The main movie identity was verified exactly{item.identity_method ? ` by ${item.identity_method.replaceAll('_', ' ').replaceAll('-', ' ')}` : ''}.
+                      </div>
+                    )}
+                    {item.identity_status === 'descriptive_accepted' && (
+                      <div className="mt-2 max-w-2xl rounded border border-cyan-400/30 bg-cyan-500/10 p-2 text-xs text-cyan-100">
+                        This is an accepted descriptive name for a related extra, not a catalogue-verified official feature title.
+                      </div>
+                    )}
+                    {item.state === 'review_required' && item.identity_review_requires_rerip === false && (
+                      <div className="mt-2 max-w-2xl rounded border border-amber-400/30 bg-amber-500/10 p-2 text-xs text-amber-100">
+                        The staged media is already verified. This hold needs an identity or naming decision, not another rip.
+                      </div>
+                    )}
                     {item.review_code === 'catalogue_candidate_help_available' && item.catalogue_candidate_help && (
                       <div className="mt-2 max-w-2xl rounded border border-amber-400/30 bg-amber-500/10 p-2 text-xs text-amber-100">
                         Community candidate: {item.catalogue_candidate_help.series_name} - S{String(item.catalogue_candidate_help.season).padStart(2, '0')}E{String(item.catalogue_candidate_help.episode).padStart(2, '0')} - {item.catalogue_candidate_help.title}. This has one independent upload and was not applied automatically.
