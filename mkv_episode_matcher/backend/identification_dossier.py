@@ -40,6 +40,7 @@ _BRANCHES = {
     "tv-gemini",
     "tv-play-all",
     "tv-movie",
+    "movie-identity",
     "movie-bonus",
     "tv-bonus",
     "gemini-synthesis",

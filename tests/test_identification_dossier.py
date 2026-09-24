@@ -534,6 +534,24 @@ def test_play_all_attempt_retains_bounded_component_episode_ids(tmp_path):
     assert attempt["summary"]["component_episode_ids"] == ["S01E01", "S01E02"]
 
 
+def test_movie_identity_attempt_is_a_safe_audit_branch(tmp_path):
+    source = tmp_path / "source.mkv"
+    source.write_bytes(b"synthetic")
+    identity = source_identity(_payload(source), source, "small")
+    store = IdentificationDossierStore(tmp_path / "private")
+    store.save_evidence(identity, UnmatchedFileEvidence("media-1", 5400, ("x",)))
+
+    store.record_attempt(
+        ("media-1",),
+        branch="movie-identity",
+        disposition="matched",
+        summary={"candidate_count": 2, "reason": "accepted"},
+    )
+
+    attempt = store.safe_attempts("media-1")[-1]
+    assert attempt["branch"] == "movie-identity"
+
+
 def test_private_gemini_review_cache_reuses_exact_request_digest(tmp_path):
     store = IdentificationDossierStore(tmp_path / "private")
     digest = "a" * 64
