@@ -224,6 +224,7 @@ def test_metadata_only_reassessment_updates_hint(tmp_path):
             fingerprint,
             DiscReassessmentRequest(content_hint="movie", confirm_reassessment=False),
             store,
+            tmp_path / "contracts",
         )
     assert excinfo.value.status_code == 400
 
@@ -231,6 +232,7 @@ def test_metadata_only_reassessment_updates_hint(tmp_path):
         fingerprint,
         DiscReassessmentRequest(content_hint="movie", confirm_reassessment=True),
         store,
+        tmp_path / "contracts",
     )
     assert result["status"] == "reassessed"
 
@@ -291,6 +293,7 @@ def test_metadata_reassessment_imports_saved_provisional_content_roles(tmp_path)
         fingerprint,
         DiscReassessmentRequest(content_hint="movie", confirm_reassessment=True),
         store,
+        tmp_path / "contracts",
     )
 
     assert result["status"] == "reassessed"
@@ -301,3 +304,8 @@ def test_metadata_reassessment_imports_saved_provisional_content_roles(tmp_path)
         (0, "movie"),
         (2, "extra"),
     ]
+    for index in (0, 2):
+        held = store.get(f"disc-01-title-{index:03d}")
+        assert held.state == "review_required"
+        rebound = json.loads(held.artifact.contract_path.read_text(encoding="utf-8"))
+        assert rebound["media_context"]["routing_assessment_digest"] == latest.digest

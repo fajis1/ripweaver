@@ -3377,6 +3377,51 @@ class PipelineQueueStore:
             connection.commit()
         return self.get(media_id)
 
+    def rebind_reviewed_identification_context(
+        self, media_id: str, artifact: PipelineArtifact
+    ) -> QueuedPipelineItem:
+        """Replace one held identify contract without releasing the review hold."""
+
+        _validate_artifact(artifact, "rip")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT state, stage FROM pipeline_items WHERE media_id = ?",
+                (self._check_media_id(media_id),),
+            ).fetchone()
+            if (
+                row is None
+                or row["state"] != "review_required"
+                or row["stage"] != "identify"
+            ):
+                connection.rollback()
+                raise PipelineQueueError(
+                    "Only a review-held identify item can rebind its context"
+                )
+            connection.execute(
+                """
+                UPDATE pipeline_items SET artifact_path = ?, artifact_sha256 = ?,
+                    artifact_count = ?, updated_at = ? WHERE media_id = ?
+                """,
+                (
+                    str(artifact.contract_path.resolve()),
+                    artifact.contract_sha256,
+                    artifact.item_count,
+                    self._now(),
+                    media_id,
+                ),
+            )
+            self._append_event(
+                connection,
+                media_id=media_id,
+                event_type="identification_context_rebound",
+                stage="identify",
+                state="review_required",
+                details={},
+            )
+            connection.commit()
+        return self.get(media_id)
+
     def restart_identification(
         self,
         media_id: str,

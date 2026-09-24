@@ -2642,6 +2642,7 @@ def reassess_disc_metadata(  # noqa: C901
     disc_fingerprint: str,
     request: DiscReassessmentRequest,
     store: Annotated[PipelineQueueStore, Depends(get_pipeline_queue_store)],
+    contract_root: Annotated[Path, Depends(get_pipeline_contract_root)],
 ) -> dict[str, object]:
     """Reassess a known disc without accessing a physical drive."""
     if not request.confirm_reassessment:
@@ -2756,7 +2757,32 @@ def reassess_disc_metadata(  # noqa: C901
                     dict.fromkeys((*new_assessment.evidence, *accepted_content_roles))
                 ),
             )
-        store.routing_save_observation(new_assessment)
+        saved_assessment = store.routing_save_observation(new_assessment)
+        contract_root.mkdir(parents=True, exist_ok=True)
+        for item in items:
+            if item.stage != "identify" or item.state != "review_required":
+                continue
+            payload = _read_pipeline_contract_payload(item)
+            context = payload.get("media_context")
+            if not isinstance(context, dict):
+                continue
+            rebound = dict(payload)
+            rebound["media_context"] = dict(context)
+            rebound["media_context"].update(
+                routing_assessment=saved_assessment.to_dict(),
+                routing_assessment_digest=saved_assessment.digest,
+                routing_assessment_revision=saved_assessment.revision,
+            )
+            contract = (
+                contract_root
+                / f"{item.media_id}.routing-{saved_assessment.revision}-{uuid4().hex[:12]}.verified-rip.json"
+            )
+            with contract.open("x", encoding="utf-8") as handle:
+                json.dump(rebound, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+            store.rebind_reviewed_identification_context(
+                item.media_id, build_artifact("rip", contract)
+            )
 
     return {"status": "reassessed", "disc_fingerprint": disc_fingerprint}
 
