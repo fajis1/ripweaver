@@ -331,7 +331,7 @@ labels accepted extra descriptions as non-catalogue identities.
 
 ### P7 - Synthetic regression gate
 
-Status: pending.
+Status: complete (2026-09-23, synthetic validation).
 
 - Run focused routing, worker, pipeline adapter, and API tests.
 - Run the full synthetic pytest suite.
@@ -342,6 +342,13 @@ Status: pending.
 
 Acceptance gate: all relevant checks pass and the worktree contains no new
 scratch databases, private traces, manifests, media, or ad-hoc repair scripts.
+
+Validation note: all 1,298 synthetic tests pass without coverage collection and
+the frontend TypeScript/Vite production build passes. Focused Ruff and format
+checks for the files changed by this plan pass. Repository-wide Ruff retains 18
+pre-existing findings and the format check still identifies the legacy
+`cli.py`; these were not mechanically rewritten. The worktree audit found no
+new private trace, database, manifest, media, or repair-script path from P7.
 
 ### P8 - Controlled live continuation
 
@@ -378,6 +385,13 @@ media mutation.
 
 ## Current Progress Log
 
+- 2026-09-23: Completed P7's full synthetic regression gate. All 1,298 tests
+  pass, the frontend production build passes, and plan-modified Python files
+  pass focused Ruff and formatting checks. Repository-wide Ruff continues to
+  report 18 known legacy findings plus the pre-existing `cli.py` format delta.
+  The pre-existing scratch paths are unchanged and P7 created no live/private
+  evidence, database, manifest, media, or repair script. No provider, disc,
+  transcode, organization, deletion, or eject operation occurred.
 - 2026-09-23: Completed P6's API and dashboard visibility. Pipeline item
   responses now separate disc composition, accepted title role, identity
   verification status, and identification method. The UI explains exact movie
@@ -436,6 +450,6 @@ media mutation.
 
 ## Next Step
 
-Begin P7: run the full synthetic regression gate, modified-file checks, and
-frontend production validation; confirm the worktree gained no private or live
-artifacts.
+Begin P8 only after separate authorization for the exact Short Circuit 2 saved
+queue mutation and any live provider request. Reuse titles 0 and 2 through 7;
+do not rescan or rerip the disc, and stop before transcode or organization.
