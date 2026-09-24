@@ -352,7 +352,7 @@ new private trace, database, manifest, media, or repair-script path from P7.
 
 ### P8 - Controlled live continuation
 
-Status: pending and requires separate authorization.
+Status: complete (2026-09-23, explicitly authorized controlled validation).
 
 - Reuse the already verified Short Circuit 2 MKVs; do not rerip.
 - Present any live provider operation and exact affected titles before running
@@ -365,6 +365,13 @@ Status: pending and requires separate authorization.
 Acceptance gate: the live queue shows one exactly identified movie and six
 descriptively identified extras, with the four short titles unchanged and no
 media mutation.
+
+Live result: title 0 was verified as `Short Circuit 2 (1988)` through the
+movie/OpenSubtitles route. Titles 2 through 7 received distinct descriptive
+Extras identities. Titles 1 and 8 through 10 retained their existing short-title
+review holds. The downstream queue was paused with all seven accepted targets
+waiting at transcode; no transcode or organization execution was authorized or
+started, and no disc scan, rerip, rename, move, deletion, or eject occurred.
 
 ## Required Regression Matrix
 
@@ -385,6 +392,16 @@ media mutation.
 
 ## Current Progress Log
 
+- 2026-09-23: Completed the explicitly authorized P8 live continuation using
+  only the existing staged Short Circuit 2 MKVs. The live run exposed and fixed
+  three restart/legacy edges: importing provisional content roles into the
+  routing ledger, rebinding held immutable contracts to the current assessment,
+  and allowing the path-free `movie-identity` audit branch. It also added safe
+  recovery of a preserved exact main-movie contract after that item advanced.
+  The final queue contains one exact movie and six descriptively named extras;
+  the four short-title holds are unchanged. The queue is paused before
+  transcode, and no disc, rerip, transcode, organization, rename, move,
+  deletion, or eject operation occurred.
 - 2026-09-23: Completed P7's full synthetic regression gate. All 1,298 tests
   pass, the frontend production build passes, and plan-modified Python files
   pass focused Ruff and formatting checks. Repository-wide Ruff continues to
@@ -450,6 +467,5 @@ media mutation.
 
 ## Next Step
 
-Begin P8 only after separate authorization for the exact Short Circuit 2 saved
-queue mutation and any live provider request. Reuse titles 0 and 2 through 7;
-do not rescan or rerip the disc, and stop before transcode or organization.
+Review the paused seven-item transcode plan separately before granting any
+HandBrake or organization authorization. P8 itself is complete.
