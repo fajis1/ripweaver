@@ -6,6 +6,7 @@ Windows paths with spaces and special characters using os.fspath() instead of st
 
 Also tests FFmpeg path resolution for uv-managed environments.
 """
+
 import os
 import tempfile
 import unittest
@@ -24,7 +25,7 @@ from mkv_episode_matcher.core.utils import (
 class TestGetVideoDurationWindowsPaths(unittest.TestCase):
     """Test get_video_duration with Windows paths containing spaces."""
 
-    @unittest.skipUnless(os.name == 'nt', "Windows-specific test")
+    @unittest.skipUnless(os.name == "nt", "Windows-specific test")
     @patch("mkv_episode_matcher.core.utils.shutil.which", return_value="ffprobe")
     @patch("mkv_episode_matcher.core.utils.subprocess.run")
     def test_issue_81_exact_path(self, mock_run, mock_which):
@@ -35,11 +36,7 @@ class TestGetVideoDurationWindowsPaths(unittest.TestCase):
         This test verifies the fix using os.fspath().
         """
         # Arrange: Mock ffprobe success
-        mock_run.return_value = Mock(
-            returncode=0,
-            stdout="1234.56\n",
-            stderr=""
-        )
+        mock_run.return_value = Mock(returncode=0, stdout="1234.56\n", stderr="")
 
         # Act: Call with path containing spaces (exact path from issue)
         test_path = Path(r"C:\Friends\Season 1\05.mkv")
@@ -54,10 +51,10 @@ class TestGetVideoDurationWindowsPaths(unittest.TestCase):
         # The path should be in the command arguments
         self.assertTrue(
             any(r"C:\Friends\Season 1\05.mkv" in str(arg) for arg in call_args),
-            f"Path not found in command: {call_args}"
+            f"Path not found in command: {call_args}",
         )
 
-    @unittest.skipUnless(os.name == 'nt', "Windows-specific test")
+    @unittest.skipUnless(os.name == "nt", "Windows-specific test")
     @patch("mkv_episode_matcher.core.utils.shutil.which", return_value="ffprobe")
     @patch("mkv_episode_matcher.core.utils.subprocess.run")
     def test_multiple_spaces_in_path(self, mock_run, mock_which):
@@ -71,7 +68,7 @@ class TestGetVideoDurationWindowsPaths(unittest.TestCase):
         self.assertEqual(duration, 1800.0)
         mock_run.assert_called_once()
 
-    @unittest.skipUnless(os.name == 'nt', "Windows-specific test")
+    @unittest.skipUnless(os.name == "nt", "Windows-specific test")
     @patch("mkv_episode_matcher.core.utils.shutil.which", return_value="ffprobe")
     @patch("mkv_episode_matcher.core.utils.subprocess.run")
     def test_special_characters_in_path(self, mock_run, mock_which):
@@ -84,7 +81,7 @@ class TestGetVideoDurationWindowsPaths(unittest.TestCase):
 
         self.assertEqual(duration, 2400.0)
 
-    @unittest.skipUnless(os.name == 'nt', "Windows-specific test")
+    @unittest.skipUnless(os.name == "nt", "Windows-specific test")
     @patch("mkv_episode_matcher.core.utils.shutil.which", return_value="ffprobe")
     @patch("mkv_episode_matcher.core.utils.subprocess.run")
     def test_long_path_with_spaces(self, mock_run, mock_which):
@@ -104,19 +101,19 @@ class TestGetVideoDurationWindowsPaths(unittest.TestCase):
 class TestExtractAudioChunkWindowsPaths(unittest.TestCase):
     """Test extract_audio_chunk with Windows paths containing spaces."""
 
-    @unittest.skipUnless(os.name == 'nt', "Windows-specific test")
+    @unittest.skipUnless(os.name == "nt", "Windows-specific test")
     @patch("mkv_episode_matcher.core.utils.shutil.which", return_value="ffmpeg")
     @patch("mkv_episode_matcher.core.utils.subprocess.run")
     def test_input_path_with_spaces(self, mock_run, mock_which):
         """Test extract_audio_chunk with input path containing spaces."""
         # Create a temporary output file
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             output_path = Path(tmp.name)
 
         try:
             # Mock successful FFmpeg execution and create output file
             def create_output(*args, **kwargs):
-                output_path.write_bytes(b'\x00' * 2048)  # Create file >1KB
+                output_path.write_bytes(b"\x00" * 2048)  # Create file >1KB
                 return Mock(returncode=0, stdout="", stderr="")
 
             mock_run.side_effect = create_output
@@ -135,13 +132,13 @@ class TestExtractAudioChunkWindowsPaths(unittest.TestCase):
             call_args = mock_run.call_args[0][0]
             self.assertTrue(
                 any(r"Friends\Season 1" in str(arg) for arg in call_args),
-                f"Input path not found in command: {call_args}"
+                f"Input path not found in command: {call_args}",
             )
         finally:
             if output_path.exists():
                 output_path.unlink()
 
-    @unittest.skipUnless(os.name == 'nt', "Windows-specific test")
+    @unittest.skipUnless(os.name == "nt", "Windows-specific test")
     @patch("mkv_episode_matcher.core.utils.shutil.which", return_value="ffmpeg")
     @patch("mkv_episode_matcher.core.utils.subprocess.run")
     def test_output_path_with_spaces(self, mock_run, mock_which):
@@ -155,7 +152,7 @@ class TestExtractAudioChunkWindowsPaths(unittest.TestCase):
 
             # Mock and create output
             def create_output(*args, **kwargs):
-                output_path.write_bytes(b'\x00' * 2048)
+                output_path.write_bytes(b"\x00" * 2048)
                 return Mock(returncode=0, stdout="", stderr="")
 
             mock_run.side_effect = create_output
@@ -224,7 +221,7 @@ class TestFFmpegPathResolution(unittest.TestCase):
         self.assertEqual(result, "/usr/bin/ffprobe")
         mock_which.assert_called_once_with("ffprobe")
 
-    @unittest.skipUnless(os.name == 'nt', "Windows-specific test")
+    @unittest.skipUnless(os.name == "nt", "Windows-specific test")
     @patch("mkv_episode_matcher.core.utils.shutil.which")
     def test_ffmpeg_windows_path(self, mock_which):
         """Test FFmpeg resolution on Windows with typical install path."""
@@ -320,12 +317,13 @@ class TestFFmpegIntegrationWithFunctions(unittest.TestCase):
         """Test that extract_audio_chunk uses the resolved ffmpeg path."""
         _find_executable.cache_clear()
 
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             output_path = Path(tmp.name)
 
         try:
+
             def create_output(*args, **kwargs):
-                output_path.write_bytes(b'\x00' * 2048)
+                output_path.write_bytes(b"\x00" * 2048)
                 return Mock(returncode=0, stdout="", stderr="")
 
             mock_run.side_effect = create_output

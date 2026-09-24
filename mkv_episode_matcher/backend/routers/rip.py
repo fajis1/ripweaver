@@ -133,6 +133,7 @@ from mkv_episode_matcher.disc.ripweaver_catalogue import (
     RipWeaverCatalogueError,
     RipWeaverCatalogueSupportRequiredError,
 )
+from mkv_episode_matcher.disc.routing_preparation import build_preparation_assessment
 from mkv_episode_matcher.disc.special_feature_binder import (
     SpecialFeatureBindError,
     load_bound_special_feature_manifest,
@@ -147,7 +148,6 @@ from mkv_episode_matcher.disc.thediscdb import (
     TheDiscDbError,
     TheDiscDbResolution,
     disc_root_from_device_name,
-    inferred_content_hint,
     lookup_disc_metadata,
     read_disc_filesystem_identity,
     unique_assignment_season,
@@ -156,6 +156,7 @@ from mkv_episode_matcher.disc.title_selector import (
     load_title_plan,
     select_pipeline_titles,
     select_recovery_titles,
+    select_rippable_titles,
 )
 from mkv_episode_matcher.media.ffprobe_runner import FFprobeError, resolve_ffprobe_path
 from mkv_episode_matcher.media.handbrake import HandBrakeProfile
@@ -1709,7 +1710,9 @@ def _auto_admit_staged_disc_if_complete(  # noqa: C901 - auto-admit verification
         except (FFprobeError, OSError):
             valid = False
         if not valid:
-            return None
+            raise RipError(
+                f"Auto-admit failed: ffprobe failed for {candidate.basename}"
+            )
         verified_jobs.append(job)
         verified_candidates.append(candidate)
         results.append(
@@ -1724,7 +1727,9 @@ def _auto_admit_staged_disc_if_complete(  # noqa: C901 - auto-admit verification
             )
         )
     if len(verified_jobs) != len(needed_title_indexes):
-        return None
+        raise RipError(
+            f"Auto-admit failed: len(verified_jobs) {len(verified_jobs)} != {len(needed_title_indexes)}"
+        )
     contract_root.mkdir(parents=True, exist_ok=True)
     enqueue_verified_rip_results(
         pipeline_store,
@@ -1972,13 +1977,10 @@ def prepare_drive_pipeline(  # noqa: C901
             disc_resolution.episode_assignments if trusted_discdb_match else ()
         )
         use_special_features = request.content_hint in {"extras", "mixed"} or (
-            request.content_hint is None and not discdb_episode_assignments
+            not discdb_episode_assignments
         )
-        effective_content_hint = (
-            "tv"
-            if explicit_tv_context and request.content_hint is None
-            else request.content_hint
-        )
+        # A user selection is a search hint, never a title-selection rule.
+        effective_content_hint = "tv" if explicit_tv_context else None
         planned_titles = select_pipeline_titles(
             episode_plan,
             effective_content_hint,
@@ -2082,19 +2084,82 @@ def prepare_drive_pipeline(  # noqa: C901
                     for job in diagnostic.jobs
                 )
         disc_fingerprint = inventory_fingerprint_from_report(report_path)
+        routing_assessment = pipeline_store.routing_save_observation(
+            build_preparation_assessment(
+                fingerprint=disc_fingerprint,
+                title_indexes=tuple(sorted(title.index for title in inventory.titles)),
+                user_hint=request.content_hint,
+                title_classifications={
+                    item.title.index: item.classification
+                    for item in episode_plan.decisions
+                },
+                explicit_tv_context=explicit_tv_context is not None,
+                episode_assignment_indexes=tuple(
+                    int(item["title_index"]) for item in discdb_episode_assignments
+                ),
+                feature_assignment_indexes=tuple(
+                    int(item["title_index"])
+                    for item in assignments
+                    if item.get("classification") == "matched-feature"
+                ),
+                database_status=disc_resolution.status,
+            )
+        )
+        failed_title_indexes = _failed_rip_title_indexes(
+            public_store,
+            disc_fingerprint,
+        )
+        legacy_recovery_title_indexes = tuple(
+            sorted(
+                {
+                    decision.title.index
+                    for decision in select_recovery_titles(
+                        episode_plan, effective_content_hint
+                    )
+                }
+                | {
+                    int(item["title_index"])
+                    for item in assignments
+                    if item.get("classification") == "matched-feature"
+                }
+            )
+        )
+        # A user hint is carried only by the assessment. It must not select
+        # the acquisition set, skip another type, or establish a TV anchor.
+        tv_title_indexes = tuple(
+            item.title_index
+            for item in routing_assessment.title_roles()
+            if item.role == "tv"
+        )
+        relevant_title_indexes = tuple(
+            decision.title.index
+            for decision in select_rippable_titles(episode_plan)
+            if decision.title.duration_seconds is not None
+            and decision.title.duration_seconds >= DEFAULT_SHORT_TITLE_REVIEW_SECONDS
+        )
+        selected_title_indexes = tv_title_indexes
+        recovery_title_indexes = (
+            legacy_recovery_title_indexes
+            if failed_title_indexes
+            else tuple(sorted(set(relevant_title_indexes) | set(tv_title_indexes)))
+        )
+        downstream_skip_title_indexes = ()
         # Acquisition may expand to every zero-minimum MakeMKV title below,
         # but disc-aware episode reasoning must retain the classifier-derived
         # relevant scope calculated above.
         pipeline_store.remember_disc_matching_scope(
             disc_fingerprint, tuple(sorted(set(selected_title_indexes)))
         )
-        pipeline_store.remember_disc_recovery_scope(
-            disc_fingerprint, tuple(sorted(set(recovery_title_indexes)))
-        )
-        failed_title_indexes = _failed_rip_title_indexes(
-            public_store,
-            disc_fingerprint,
-        )
+        # A recovery scope is meaningful only after a failed acquisition. A
+        # fresh preparation may have classifier-relevant titles, but persisting
+        # those as recovery work makes the next dashboard render label the new
+        # plan as a missing-title rerip before any rip has failed.
+        if failed_title_indexes:
+            pipeline_store.remember_disc_recovery_scope(
+                disc_fingerprint, tuple(sorted(set(recovery_title_indexes)))
+            )
+        else:
+            pipeline_store.clear_disc_recovery_scope(disc_fingerprint)
         # Normal fresh acquisition mirrors MakeMKV's per-drive GUI mode:
         # authorize every title in the zero-minimum inventory so the executor
         # can keep one ``mkv ... all`` process open for this disc.  A known
@@ -2181,22 +2246,7 @@ def prepare_drive_pipeline(  # noqa: C901
                 else None
             ),
             tmdb_id=(disc_resolution.tmdb_id if trusted_discdb_match else None),
-            content_hint=request.content_hint
-            or (
-                inferred_content_hint(disc_resolution.media_type)
-                if trusted_discdb_match
-                else None
-            )
-            or (
-                "tv"
-                if explicit_tv_context
-                else (
-                    "extras"
-                    if catalog_id is not None
-                    or not any(item.selected for item in episode_plan.decisions)
-                    else None
-                )
-            ),
+            content_hint=None,
             handbrake_profile_id=request.handbrake_profile_id,
             staging_attempt=f"attempt-{uuid4().hex[:12]}",
             selected_title_indexes=selected_title_indexes,
@@ -2220,6 +2270,9 @@ def prepare_drive_pipeline(  # noqa: C901
                 if request.library_policy == "missing-only"
                 else "preserve"
             ),
+            routing_assessment=routing_assessment.to_dict(),
+            routing_assessment_digest=routing_assessment.digest,
+            routing_assessment_revision=routing_assessment.revision,
         )
         preview, context = _build_prepared_preview(
             report_path,
@@ -2584,6 +2637,156 @@ def preview_forget_drive_disc_media(
     }
 
 
+@router.post("/pipeline/discs/{disc_fingerprint}/reassess")
+def reassess_disc_metadata(  # noqa: C901
+    disc_fingerprint: str,
+    request: DiscReassessmentRequest,
+    store: Annotated[PipelineQueueStore, Depends(get_pipeline_queue_store)],
+    contract_root: Annotated[Path, Depends(get_pipeline_contract_root)],
+) -> dict[str, object]:
+    """Reassess a known disc without accessing a physical drive."""
+    if not request.confirm_reassessment:
+        raise HTTPException(
+            status_code=400, detail="Reassessment confirmation is required"
+        )
+
+    from mkv_episode_matcher.backend.automatic_rip import _downstream_lock
+    from mkv_episode_matcher.disc.routing_preparation import (
+        build_preparation_assessment,
+    )
+
+    with _downstream_lock:
+        latest = store.routing_latest(disc_fingerprint)
+        if not latest:
+            raise HTTPException(
+                status_code=404, detail="No existing disc assessment found"
+            )
+
+        items = [
+            item
+            for item in store.list_items()
+            if _pipeline_item_saved_disc_fingerprint(item) == disc_fingerprint
+        ]
+        if not items:
+            raise HTTPException(
+                status_code=400, detail="No pipeline items found for this disc"
+            )
+
+        if any(
+            item.state in {"running", "queued", "pause_requested", "canceling"}
+            for item in items
+        ):
+            raise HTTPException(
+                status_code=400, detail="Disc has actively processing pipeline items"
+            )
+        if all(item.state in {"completed", "dismissed"} for item in items):
+            raise HTTPException(
+                status_code=400,
+                detail="All pipeline items for this disc are already completed or dismissed",
+            )
+
+        title_classifications = {}
+        explicit_tv_context = False
+        episode_assignments = []
+        feature_assignments = []
+        database_status = None
+
+        for e in latest.evidence:
+            if e.source == "label":
+                explicit_tv_context = True
+                if e.role == "tv":
+                    title_classifications[e.title_index] = "episode"
+                elif e.role == "extra":
+                    title_classifications[e.title_index] = "extra"
+            elif e.source == "database":
+                if e.status == "supported":
+                    if e.role == "tv":
+                        episode_assignments.append(e.title_index)
+                    elif e.role == "extra":
+                        feature_assignments.append(e.title_index)
+                else:
+                    database_status = e.status
+
+        new_assessment = build_preparation_assessment(
+            fingerprint=disc_fingerprint,
+            title_indexes=latest.title_indexes,
+            user_hint=request.content_hint,
+            title_classifications=title_classifications,
+            explicit_tv_context=explicit_tv_context,
+            episode_assignment_indexes=tuple(episode_assignments),
+            feature_assignment_indexes=tuple(feature_assignments),
+            database_status=database_status,
+        )
+        from mkv_episode_matcher.disc.routing import TitleEvidence
+
+        accepted_content_roles = []
+        for item in items:
+            payload = _read_pipeline_contract_payload(item)
+            title_index = payload.get("title_index")
+            context = payload.get("media_context")
+            if not isinstance(title_index, int) or not isinstance(context, dict):
+                continue
+            assignments = context.get("special_feature_assignments")
+            if not isinstance(assignments, list):
+                continue
+            assignment = next(
+                (
+                    candidate
+                    for candidate in assignments
+                    if isinstance(candidate, dict)
+                    and candidate.get("title_index") == title_index
+                    and candidate.get("classification") == "matched-feature"
+                    and candidate.get("media_kind") in {"movie", "extra"}
+                    and type(candidate.get("provisional_match")) is bool
+                ),
+                None,
+            )
+            if assignment is not None:
+                accepted_content_roles.append(
+                    TitleEvidence(
+                        title_index,
+                        "content",
+                        "supported",
+                        assignment["media_kind"],
+                    )
+                )
+        if accepted_content_roles:
+            new_assessment = replace(
+                new_assessment,
+                evidence=tuple(
+                    dict.fromkeys((*new_assessment.evidence, *accepted_content_roles))
+                ),
+            )
+        saved_assessment = store.routing_save_observation(new_assessment)
+        contract_root.mkdir(parents=True, exist_ok=True)
+        for item in items:
+            if item.stage != "identify" or item.state != "review_required":
+                continue
+            payload = _read_pipeline_contract_payload(item)
+            context = payload.get("media_context")
+            if not isinstance(context, dict):
+                continue
+            rebound = dict(payload)
+            rebound["media_context"] = dict(context)
+            rebound["media_context"].update(
+                routing_assessment=saved_assessment.to_dict(),
+                routing_assessment_digest=saved_assessment.digest,
+                routing_assessment_revision=saved_assessment.revision,
+            )
+            contract = (
+                contract_root
+                / f"{item.media_id}.routing-{saved_assessment.revision}-{uuid4().hex[:12]}.verified-rip.json"
+            )
+            with contract.open("x", encoding="utf-8") as handle:
+                json.dump(rebound, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+            store.rebind_reviewed_identification_context(
+                item.media_id, build_artifact("rip", contract)
+            )
+
+    return {"status": "reassessed", "disc_fingerprint": disc_fingerprint}
+
+
 @router.post("/drives/{drive_index}/forget-disc-identity")
 def forget_drive_disc_identity(
     drive_index: int,
@@ -2825,6 +3028,15 @@ class PipelineItemResponse(BaseModel):
     series_name: str | None = None
     display_name: str | None = None
     match_summary: str | None = None
+    user_hint: str | None = None
+    assessed_composition: str | None = None
+    assessed_role: str | None = None
+    identity_status: str | None = None
+    identity_method: str | None = None
+    identity_review_requires_rerip: bool | None = None
+    current_route: str | None = None
+    evidence_status: str | None = None
+    exhausted_reason: str | None = None
     location_label: str
     location_relative: str | None = None
     location_root_key: str | None = None
@@ -2876,6 +3088,7 @@ class PipelineQueueResponse(BaseModel):
     startup_resume_in_seconds: int | None = None
     downstream_worker_limit: int
     automatic_processing_enabled: bool
+    downstream_processing_enabled: bool
     automatic_organization_enabled: bool
     items: list[PipelineItemResponse]
     title_dispositions: list[DiscTitleDispositionResponse] = Field(default_factory=list)
@@ -2900,6 +3113,11 @@ class CancelQueuedPipelineItemsRequest(BaseModel):
 class DeleteQueuedPipelineMediaRequest(BaseModel):
     confirm_delete: bool = False
     remember_future_skip: bool = False
+
+
+class DiscReassessmentRequest(BaseModel):
+    content_hint: Literal["tv", "movie", "extras"] | None = None
+    confirm_reassessment: bool = False
 
 
 class ShortTitleDispositionRequest(BaseModel):
@@ -3642,6 +3860,93 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
             and source.stat().st_size == source_size
         )
     series_name = _pipeline_item_series_name(item, payload)
+    user_hint = None
+    assessed_composition = None
+    assessed_role = None
+    current_route = None
+    evidence_status = None
+    exhausted_reason = None
+    identity_status = None
+    identity_method = None
+    identity_review_requires_rerip = None
+
+    for identity_payload in (payload, rip_payload):
+        context = identity_payload.get("media_context")
+        if not isinstance(context, dict) or title_index is None:
+            continue
+        assignments = context.get("special_feature_assignments")
+        if not isinstance(assignments, list):
+            continue
+        assignment = next(
+            (
+                candidate
+                for candidate in assignments
+                if isinstance(candidate, dict)
+                and candidate.get("title_index") == title_index
+            ),
+            None,
+        )
+        if assignment is None:
+            continue
+        status = assignment.get("identity_verification_status")
+        method = assignment.get("identification_method")
+        if status in {
+            "exact_verified",
+            "exact_pending",
+            "descriptive_pending",
+            "descriptive_accepted",
+        }:
+            identity_status = status
+        if isinstance(method, str) and method.strip():
+            identity_method = method
+        break
+
+    if item.review_code in {
+        "provisional_content_identity_review_required",
+        "descriptive_extra_identity_review_required",
+        "gemini_descriptive_review_required",
+        "movie_identification_required",
+    }:
+        identity_review_requires_rerip = False
+
+    if disc_fingerprint and title_index is not None:
+        try:
+            from mkv_episode_matcher.disc.routing_controller import next_route
+
+            # We already imported get_pipeline_queue_store globally
+            store_instance = get_pipeline_queue_store()
+            assessment = store_instance.routing_latest(disc_fingerprint)
+            if assessment:
+                user_hint = assessment.user_hint
+                assessed_composition = assessment.composition
+                evidence = next(
+                    (e for e in assessment.evidence if e.title_index == title_index),
+                    None,
+                )
+                if evidence:
+                    assessed_role = evidence.role
+                    evidence_status = evidence.status
+                roles = assessment.title_roles()
+                role_info = next(
+                    (r for r in roles if r.title_index == title_index), None
+                )
+                if role_info and not assessed_role:
+                    assessed_role = role_info.role
+                attempts = store_instance.routing_attempts(
+                    disc_fingerprint, title_index
+                )
+                if attempts:
+                    current_route = attempts[-1].route
+                    outcome = attempts[-1].outcome
+                    if outcome in ("review", "service_failed", "interrupted"):
+                        exhausted_reason = outcome
+                    elif outcome == "no_match" and not next_route(
+                        assessment, title_index=title_index, attempts=attempts
+                    ):
+                        exhausted_reason = "exhausted"
+        except Exception:
+            pass
+
     response = {
         "media_id": item.media_id,
         "artifact_sha256": item.artifact.contract_sha256,
@@ -3657,6 +3962,15 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
         "series_name": series_name,
         "display_name": _pipeline_item_display_name(item, payload),
         "match_summary": _pipeline_item_match_summary(item, payload),
+        "user_hint": user_hint,
+        "assessed_composition": assessed_composition,
+        "assessed_role": assessed_role,
+        "identity_status": identity_status,
+        "identity_method": identity_method,
+        "identity_review_requires_rerip": identity_review_requires_rerip,
+        "current_route": current_route,
+        "evidence_status": evidence_status,
+        "exhausted_reason": exhausted_reason,
         "catalogue_candidate_help": _pipeline_catalogue_candidate_help(item, payload),
         "location_label": location_label,
         "location_relative": location_relative,
@@ -5031,6 +5345,9 @@ def get_pipeline_items(
         "startup_resume_in_seconds": startup_queue_resume_seconds(),
         "downstream_worker_limit": 1,
         "automatic_processing_enabled": config.automatic_processing_enabled,
+        "downstream_processing_enabled": getattr(
+            config, "downstream_processing_enabled", True
+        ),
         "automatic_organization_enabled": config.automatic_organization_enabled,
         "title_dispositions": [
             disposition
@@ -5489,66 +5806,74 @@ def analyze_unmatched_disc(  # noqa: C901 - guarded asynchronous disc workflow
     # Falling back to contract context made the dashboard's editable canonical
     # name misleading and could repeat the exact failed lookup.
     series_name = requested_series_name
-    for media_id in selected:
-        store.choose_review_path(media_id, "all_season_analysis_running")
 
     def run() -> None:
-        try:
-            config = get_config_manager().load()
-            execute_unmatched_disc_analysis(
-                store,
-                request.disc_fingerprint,
-                series_name,
-                config,
-                get_engine().asr,
-                contract_root,
-                season=request.season,
-                episode_range=episode_range,
-                allow_gemini=request.confirm_external_fallback,
-                # An ordinary disc pass may route true leftovers to bonus
-                # analysis. An explicit scene-guided episode review must stay
-                # within the episode candidates the user asked Gemini to assess.
-                allow_content_fallback=not reviewer_scene_descriptions,
-                reviewer_scene_descriptions=reviewer_scene_descriptions,
-            )
-        except Exception as exc:
-            if isinstance(exc, GeminiAnalysisError):
-                logger.error(
-                    "All-season Gemini analysis failed safely: {}", exc.diagnostic
+        from mkv_episode_matcher.backend.automatic_rip import _downstream_lock
+
+        with _downstream_lock:
+            try:
+                for media_id in selected:
+                    store.choose_review_path(media_id, "all_season_analysis_running")
+            except PipelineQueueError:
+                return
+            try:
+                config = get_config_manager().load()
+                execute_unmatched_disc_analysis(
+                    store,
+                    request.disc_fingerprint,
+                    series_name,
+                    config,
+                    get_engine().asr,
+                    contract_root,
+                    season=request.season,
+                    episode_range=episode_range,
+                    allow_gemini=request.confirm_external_fallback,
+                    # An ordinary disc pass may route true leftovers to bonus
+                    # analysis. An explicit scene-guided episode review must stay
+                    # within the episode candidates the user asked Gemini to assess.
+                    allow_content_fallback=not reviewer_scene_descriptions,
+                    reviewer_scene_descriptions=reviewer_scene_descriptions,
                 )
-                code = exc.review_code
-            else:
-                diagnostic = (
-                    str(exc)
-                    if isinstance(exc, PipelineQueueError) and str(exc)
-                    else type(exc).__name__
-                )
-                logger.error("All-season disc analysis failed safely: {}", diagnostic)
-                code = {
-                    "No TV series matched the reviewed series name": (
-                        "all_season_series_not_found"
-                    ),
-                    "TMDb returned no aired episodes for the resolved TV series": (
-                        "all_season_catalog_unavailable"
-                    ),
-                    "Episode catalogue is unavailable for the reviewed scope": (
-                        "all_season_catalog_unavailable"
-                    ),
-                    "Audio evidence collection failed before episode matching": (
-                        "all_season_evidence_failed"
-                    ),
-                }.get(
-                    str(exc),
-                    "independent_episode_evidence_required"
-                    if str(exc) == "Independent episode evidence requires review"
-                    else "all_season_analysis_failed",
-                )
-            for media_id in selected:
-                try:
-                    if store.get(media_id).state == "review_required":
-                        store.choose_review_path(media_id, code)
-                except PipelineQueueError:
-                    pass
+            except Exception as exc:
+                if isinstance(exc, GeminiAnalysisError):
+                    logger.error(
+                        "All-season Gemini analysis failed safely: {}", exc.diagnostic
+                    )
+                    code = exc.review_code
+                else:
+                    diagnostic = (
+                        str(exc)
+                        if isinstance(exc, PipelineQueueError) and str(exc)
+                        else type(exc).__name__
+                    )
+                    logger.error(
+                        "All-season disc analysis failed safely: {}", diagnostic
+                    )
+                    code = {
+                        "No TV series matched the reviewed series name": (
+                            "all_season_series_not_found"
+                        ),
+                        "TMDb returned no aired episodes for the resolved TV series": (
+                            "all_season_catalog_unavailable"
+                        ),
+                        "Episode catalogue is unavailable for the reviewed scope": (
+                            "all_season_catalog_unavailable"
+                        ),
+                        "Audio evidence collection failed before episode matching": (
+                            "all_season_evidence_failed"
+                        ),
+                    }.get(
+                        str(exc),
+                        "independent_episode_evidence_required"
+                        if str(exc) == "Independent episode evidence requires review"
+                        else "all_season_analysis_failed",
+                    )
+                for media_id in selected:
+                    try:
+                        if store.get(media_id).state == "review_required":
+                            store.choose_review_path(media_id, code)
+                    except PipelineQueueError:
+                        pass
 
     threading.Thread(target=run, name="all-season-disc-analysis", daemon=True).start()
     return {
@@ -7736,49 +8061,53 @@ def execute_pipeline_gemini_fallback(  # noqa: C901
             detail="Selected Gemini item is no longer awaiting a retry; refresh the queue",
         )
     selected = tuple(item.media_id for item in selected_items)
-    try:
-        for media_id in selected:
-            store.choose_review_path(media_id, "gemini_analysis_running")
-    except PipelineQueueError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail="Gemini-held queue state changed; refresh and retry the review",
-        ) from exc
 
     def run() -> None:
-        try:
-            applied = set(
-                execute_gemini_fallback(
-                    store,
-                    selected,
-                    get_config_manager().load(),
-                    get_engine().asr,
-                    contract_root,
+        from mkv_episode_matcher.backend.automatic_rip import _downstream_lock
+
+        with _downstream_lock:
+            try:
+                for media_id in selected:
+                    store.choose_review_path(media_id, "gemini_analysis_running")
+            except PipelineQueueError:
+                return
+            try:
+                applied = set(
+                    execute_gemini_fallback(
+                        store,
+                        selected,
+                        get_config_manager().load(),
+                        get_engine().asr,
+                        contract_root,
+                    )
                 )
-            )
-            for media_id in set(selected) - applied:
-                store.choose_review_path(media_id, "gemini_descriptive_review_required")
-        except Exception as exc:
-            logger.error("Gemini fallback batch failed safely: {}", type(exc).__name__)
-            safe_code = "gemini_provider_failed"
-            if isinstance(exc, PipelineQueueError):
-                safe_code = {
-                    "Local audio evidence was insufficient for Gemini": (
-                        "gemini_audio_evidence_insufficient"
-                    ),
-                    "Reviewed special-feature catalogue is unavailable": (
-                        "gemini_catalog_unavailable"
-                    ),
-                    "Special-feature catalogue ID is unavailable": (
-                        "gemini_catalog_unavailable"
-                    ),
-                }.get(str(exc), "gemini_analysis_failed")
-            for media_id in selected:
-                try:
-                    if store.get(media_id).state == "review_required":
-                        store.choose_review_path(media_id, safe_code)
-                except PipelineQueueError:
-                    pass
+                for media_id in set(selected) - applied:
+                    store.choose_review_path(
+                        media_id, "gemini_descriptive_review_required"
+                    )
+            except Exception as exc:
+                logger.error(
+                    "Gemini fallback batch failed safely: {}", type(exc).__name__
+                )
+                safe_code = "gemini_provider_failed"
+                if isinstance(exc, PipelineQueueError):
+                    safe_code = {
+                        "Local audio evidence was insufficient for Gemini": (
+                            "gemini_audio_evidence_insufficient"
+                        ),
+                        "Reviewed special-feature catalogue is unavailable": (
+                            "gemini_catalog_unavailable"
+                        ),
+                        "Special-feature catalogue ID is unavailable": (
+                            "gemini_catalog_unavailable"
+                        ),
+                    }.get(str(exc), "gemini_analysis_failed")
+                for media_id in selected:
+                    try:
+                        if store.get(media_id).state == "review_required":
+                            store.choose_review_path(media_id, safe_code)
+                    except PipelineQueueError:
+                        pass
 
     threading.Thread(
         target=run,

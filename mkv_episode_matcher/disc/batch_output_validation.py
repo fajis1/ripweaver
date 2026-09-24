@@ -18,6 +18,7 @@ def is_complete_batch_output_size(
     *,
     actual_bytes: int,
     estimated_bytes: int | None,
+    duration_seconds: int | None = None,
 ) -> bool:
     """Accept a small nonzero output only when the inventory also predicted one."""
 
@@ -30,6 +31,11 @@ def is_complete_batch_output_size(
         and not is_inventory_planned_tiny_output(estimated_bytes)
     ):
         return False
+
+    # Bypass strict 50% ratio check for titles under 2 minutes
+    if duration_seconds is not None and duration_seconds < 120:
+        return True
+
     if estimated_bytes is not None and estimated_bytes > 0:
         return actual_bytes * 2 >= estimated_bytes
     return True

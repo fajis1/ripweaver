@@ -13,11 +13,8 @@ from unittest.mock import Mock, patch
 import pytest
 import requests
 
-from mkv_episode_matcher.core.config_manager import ConfigManager
-from mkv_episode_matcher.core.models import Config
 from mkv_episode_matcher.core.providers.subtitles import (
     OpenSubtitlesProvider,
-    SubtitleFile,
 )
 from mkv_episode_matcher.tmdb_client import fetch_show_details
 
@@ -137,13 +134,20 @@ class TestFetchShowDetails:
 class TestOpenSubtitlesProviderWithTmdbId:
     """Test the OpenSubtitlesProvider with tmdb_id parameter."""
 
-    @patch("mkv_episode_matcher.core.providers.subtitles.OpenSubtitlesProvider._authenticate")
+    @patch(
+        "mkv_episode_matcher.core.providers.subtitles.OpenSubtitlesProvider._authenticate"
+    )
     @patch("mkv_episode_matcher.core.providers.subtitles.get_config_manager")
     @patch("mkv_episode_matcher.tmdb_client.requests.get")
     @patch("mkv_episode_matcher.tmdb_client.get_config_manager")
     @patch("opensubtitlescom.OpenSubtitles")
     def test_opensubtitles_provider_with_tmdb_id(
-        self, mock_client_class, mock_tmdb_config_mgr, mock_tmdb_get, mock_subtitles_config_mgr, mock_auth
+        self,
+        mock_client_class,
+        mock_tmdb_config_mgr,
+        mock_tmdb_get,
+        mock_subtitles_config_mgr,
+        mock_auth,
     ):
         """Test that OpenSubtitlesProvider uses tmdb_id to lookup correct show name."""
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -178,10 +182,12 @@ class TestOpenSubtitlesProviderWithTmdbId:
 
             # Create provider (it loads config from get_config_manager)
             provider = OpenSubtitlesProvider()
-            provider.client = mock_client  # Set the client directly after initialization
+            provider.client = (
+                mock_client  # Set the client directly after initialization
+            )
 
             # Call get_subtitles with tmdb_id
-            result = provider.get_subtitles(
+            provider.get_subtitles(
                 show_name="Law & Order SVU",  # Wrong name
                 season=1,
                 tmdb_id=549,  # Correct ID for Law & Order
@@ -200,10 +206,14 @@ class TestOpenSubtitlesProviderWithTmdbId:
             assert search_kwargs["season_number"] == 1
             assert search_kwargs["type"] == "episode"
 
-    @patch("mkv_episode_matcher.core.providers.subtitles.OpenSubtitlesProvider._authenticate")
+    @patch(
+        "mkv_episode_matcher.core.providers.subtitles.OpenSubtitlesProvider._authenticate"
+    )
     @patch("mkv_episode_matcher.core.providers.subtitles.get_config_manager")
     @patch("opensubtitlescom.OpenSubtitles")
-    def test_opensubtitles_without_tmdb_id(self, mock_client_class, mock_config_mgr, mock_auth):
+    def test_opensubtitles_without_tmdb_id(
+        self, mock_client_class, mock_config_mgr, mock_auth
+    ):
         """Test backward compatibility - provider works without tmdb_id."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             # Mock config
@@ -227,10 +237,12 @@ class TestOpenSubtitlesProviderWithTmdbId:
 
             # Create provider (it loads config from get_config_manager)
             provider = OpenSubtitlesProvider()
-            provider.client = mock_client  # Set the client directly after initialization
+            provider.client = (
+                mock_client  # Set the client directly after initialization
+            )
 
             # Call get_subtitles WITHOUT tmdb_id
-            result = provider.get_subtitles(
+            provider.get_subtitles(
                 show_name="Test Show",
                 season=1,
                 # No tmdb_id parameter
@@ -242,13 +254,20 @@ class TestOpenSubtitlesProviderWithTmdbId:
             query = search_args[1]["query"]
             assert "Test Show" in query
 
-    @patch("mkv_episode_matcher.core.providers.subtitles.OpenSubtitlesProvider._authenticate")
+    @patch(
+        "mkv_episode_matcher.core.providers.subtitles.OpenSubtitlesProvider._authenticate"
+    )
     @patch("mkv_episode_matcher.core.providers.subtitles.get_config_manager")
     @patch("mkv_episode_matcher.tmdb_client.requests.get")
     @patch("mkv_episode_matcher.tmdb_client.get_config_manager")
     @patch("opensubtitlescom.OpenSubtitles")
     def test_law_and_order_vs_svu_confusion(
-        self, mock_client_class, mock_tmdb_config_mgr, mock_tmdb_get, mock_subtitles_config_mgr, mock_auth
+        self,
+        mock_client_class,
+        mock_tmdb_config_mgr,
+        mock_tmdb_get,
+        mock_subtitles_config_mgr,
+        mock_auth,
     ):
         """
         CRITICAL TEST for issue #75: Law & Order vs Law & Order: SVU confusion.
@@ -290,11 +309,13 @@ class TestOpenSubtitlesProviderWithTmdbId:
 
             # Create provider (it loads config from get_config_manager)
             provider = OpenSubtitlesProvider()
-            provider.client = mock_client  # Set the client directly after initialization
+            provider.client = (
+                mock_client  # Set the client directly after initialization
+            )
 
             # Simulate the issue: auto-detection returned "Law & Order SVU"
             # but user provides tmdb_id=549 for the correct show
-            result = provider.get_subtitles(
+            provider.get_subtitles(
                 show_name="Law & Order SVU",  # WRONG name (auto-detected, sanitized for path)
                 season=1,
                 tmdb_id=549,  # CORRECT ID for "Law & Order"
@@ -310,23 +331,30 @@ class TestOpenSubtitlesProviderWithTmdbId:
             # This ensures we get "Law & Order" results, NOT "Law & Order: SVU"
             mock_client.search.assert_called()
             search_kwargs = mock_client.search.call_args[1]
-            assert (
-                search_kwargs["parent_tmdb_id"] == 549
-            ), f"Expected parent_tmdb_id=549, got {search_kwargs.get('parent_tmdb_id')}"
-            assert (
-                search_kwargs["season_number"] == 1
-            ), f"Expected season_number=1, got {search_kwargs.get('season_number')}"
-            assert (
-                search_kwargs["type"] == "episode"
-            ), f"Expected type='episode', got {search_kwargs.get('type')}"
+            assert search_kwargs["parent_tmdb_id"] == 549, (
+                f"Expected parent_tmdb_id=549, got {search_kwargs.get('parent_tmdb_id')}"
+            )
+            assert search_kwargs["season_number"] == 1, (
+                f"Expected season_number=1, got {search_kwargs.get('season_number')}"
+            )
+            assert search_kwargs["type"] == "episode", (
+                f"Expected type='episode', got {search_kwargs.get('type')}"
+            )
 
-    @patch("mkv_episode_matcher.core.providers.subtitles.OpenSubtitlesProvider._authenticate")
+    @patch(
+        "mkv_episode_matcher.core.providers.subtitles.OpenSubtitlesProvider._authenticate"
+    )
     @patch("mkv_episode_matcher.core.providers.subtitles.get_config_manager")
     @patch("mkv_episode_matcher.tmdb_client.requests.get")
     @patch("mkv_episode_matcher.tmdb_client.get_config_manager")
     @patch("opensubtitlescom.OpenSubtitles")
     def test_tmdb_lookup_fails_fallback_to_original_name(
-        self, mock_client_class, mock_tmdb_config_mgr, mock_tmdb_get, mock_subtitles_config_mgr, mock_auth
+        self,
+        mock_client_class,
+        mock_tmdb_config_mgr,
+        mock_tmdb_get,
+        mock_subtitles_config_mgr,
+        mock_auth,
     ):
         """Test that if TMDB lookup fails, original show name is used as fallback."""
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -355,12 +383,12 @@ class TestOpenSubtitlesProviderWithTmdbId:
 
             # Create provider (it loads config from get_config_manager)
             provider = OpenSubtitlesProvider()
-            provider.client = mock_client  # Set the client directly after initialization
+            provider.client = (
+                mock_client  # Set the client directly after initialization
+            )
 
             # Call with tmdb_id but expect fallback
-            result = provider.get_subtitles(
-                show_name="Test Show", season=1, tmdb_id=549
-            )
+            provider.get_subtitles(show_name="Test Show", season=1, tmdb_id=549)
 
             # Verify search still used TMDB ID even though lookup failed
             # The TMDB ID is more reliable than the show name

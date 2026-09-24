@@ -21,7 +21,10 @@ from mkv_episode_matcher.backend.dependencies import (
     start_windows_drive_events,
     stop_windows_drive_events,
 )
-from mkv_episode_matcher.backend.downstream_worker import DownstreamWorker
+from mkv_episode_matcher.backend.downstream_worker import (
+    DownstreamWorker,
+    downstream_processing_enabled,
+)
 from mkv_episode_matcher.backend.routers import (
     acquisition,
     catalogue,
@@ -86,11 +89,9 @@ def _authorization_required(_item):
 
 
 def _automatic_downstream_enabled(config) -> bool:
-    """Keep exact-plan review sessions free of unattended media work."""
+    """Allow approved queue work independently from unattended disc acquisition."""
 
-    return bool(
-        config.automatic_processing_enabled and not automatic_rip_startup_held()
-    )
+    return downstream_processing_enabled(config)
 
 
 def _start_automatic_transcode_sweeper() -> threading.Thread:
@@ -284,6 +285,23 @@ if static_dir.exists():
         return FileResponse(static_dir / "index.html")
 
 
+def _reconcile_downstream_at_startup(pipeline_store) -> None:
+    """Hold interrupted route claims before the downstream worker can resume."""
+
+    reconciled_pipeline = pipeline_store.reconcile_incomplete()
+    reconciled_routes = pipeline_store.routing_reconcile_interrupted()
+    if reconciled_pipeline:
+        logger.warning(
+            "Requeued {} interrupted downstream item(s) at their current stage",
+            len(reconciled_pipeline),
+        )
+    if reconciled_routes:
+        logger.warning(
+            "Held {} interrupted title route claim(s) for review",
+            reconciled_routes,
+        )
+
+
 @app.on_event("startup")
 async def startup_event():
     global _catalogue_contribution_worker
@@ -320,12 +338,7 @@ async def startup_event():
     # Interrupted running items return to their stage queue. Normal startup
     # then applies a one-minute safety grace period before processing resumes.
     pipeline_store = get_pipeline_queue_store()
-    reconciled_pipeline = pipeline_store.reconcile_incomplete()
-    if reconciled_pipeline:
-        logger.warning(
-            "Requeued {} interrupted downstream item(s) at their current stage",
-            len(reconciled_pipeline),
-        )
+    _reconcile_downstream_at_startup(pipeline_store)
     _arm_startup_queue_resume(config, pipeline_store)
     if start_windows_drive_events():
         logger.info("Windows optical-drive event watcher attached")
@@ -387,6 +400,7 @@ async def startup_event():
                             config.automatic_organization_enabled
                         ),
                         disc_match_history=pipeline_queue_store,
+                        routing_store=pipeline_queue_store,
                     ),
                     "transcode": _authorization_required,
                     "organize": (

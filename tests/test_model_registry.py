@@ -2,19 +2,18 @@
 Tests for the ASR model registry.
 """
 
-import pytest
 from pathlib import Path
 from unittest.mock import patch
 
 from mkv_episode_matcher.core.model_registry import (
-    get_model_info,
-    list_recommended_models,
+    DEFAULT_MODEL,
+    RECOMMENDED_MODELS,
     get_default_model,
     get_leaderboard_url,
-    is_model_downloaded,
+    get_model_info,
     get_models_for_hardware,
-    RECOMMENDED_MODELS,
-    DEFAULT_MODEL,
+    is_model_downloaded,
+    list_recommended_models,
 )
 
 
@@ -102,6 +101,6 @@ class TestModelRegistryIntegration:
         """Verify all quality values are valid."""
         valid_qualities = {"basic", "good", "better", "best"}
         for model_name, model_info in RECOMMENDED_MODELS.items():
-            assert (
-                model_info["quality"] in valid_qualities
-            ), f"Model {model_name} has invalid quality"
+            assert model_info["quality"] in valid_qualities, (
+                f"Model {model_name} has invalid quality"
+            )

@@ -27,9 +27,7 @@ def reset_recovery_handler():
     set_credential_recovery_handler(None)
 
 
-def test_store_credential_writes_dotenv_without_status_exposure(
-    tmp_path, monkeypatch
-):
+def test_store_credential_writes_dotenv_without_status_exposure(tmp_path, monkeypatch):
     dotenv_path = tmp_path / ".env"
     monkeypatch.delenv("TMDB_API_KEY", raising=False)
 
@@ -74,8 +72,7 @@ def test_migrate_json_credentials_moves_values_and_sanitizes_source(
     config_path = tmp_path / "config.json"
     dotenv_path = tmp_path / ".env"
     config_path.write_text(
-        '{"Config": {"tmdb_api_key": "fake-legacy-key", '
-        '"show_dir": "safe-path"}}',
+        '{"Config": {"tmdb_api_key": "fake-legacy-key", "show_dir": "safe-path"}}',
         encoding="utf-8",
     )
     monkeypatch.delenv("TMDB_API_KEY", raising=False)
@@ -96,8 +93,7 @@ def test_migrate_json_credentials_moves_values_and_sanitizes_source(
 
 def test_provider_management_links_are_https():
     assert all(
-        spec.management_url.startswith("https://")
-        for spec in CREDENTIAL_SPECS.values()
+        spec.management_url.startswith("https://") for spec in CREDENTIAL_SPECS.values()
     )
 
 
@@ -180,14 +176,10 @@ def test_tmdb_rejected_key_recovers_once_without_key_in_url(
 
 @patch("mkv_episode_matcher.tmdb_client.get_config_manager")
 @patch("mkv_episode_matcher.tmdb_client.requests.get")
-def test_tmdb_rate_limit_does_not_request_new_key(
-    mock_get, mock_config_manager
-):
+def test_tmdb_rate_limit_does_not_request_new_key(mock_get, mock_config_manager):
     from mkv_episode_matcher.tmdb_client import _tmdb_get_json
 
-    mock_config_manager.return_value.load.return_value = Mock(
-        tmdb_api_key="fake-key"
-    )
+    mock_config_manager.return_value.load.return_value = Mock(tmdb_api_key="fake-key")
     mock_get.return_value = Mock(status_code=429)
     recoveries = []
     set_credential_recovery_handler(
@@ -205,9 +197,7 @@ def test_tmdb_rate_limit_does_not_request_new_key(
 def test_tmdb_network_error_is_redacted(mock_get, mock_config_manager):
     from mkv_episode_matcher.tmdb_client import _tmdb_get_json
 
-    mock_config_manager.return_value.load.return_value = Mock(
-        tmdb_api_key="fake-key"
-    )
+    mock_config_manager.return_value.load.return_value = Mock(tmdb_api_key="fake-key")
     mock_get.side_effect = requests.ConnectionError(
         "private request and credential detail"
     )
@@ -271,9 +261,7 @@ def test_opensubtitles_missing_key_recovers_after_replacement(
 
     assert provider.client is mock_opensubtitles.return_value
     assert recoveries == ["opensubtitles-api"]
-    mock_opensubtitles.assert_called_once_with(
-        "test-agent", "replacement-fake-key"
-    )
+    mock_opensubtitles.assert_called_once_with("test-agent", "replacement-fake-key")
 
 
 @patch("mkv_episode_matcher.core.providers.subtitles.OpenSubtitles")

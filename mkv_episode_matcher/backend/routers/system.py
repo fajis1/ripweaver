@@ -66,7 +66,15 @@ def _find_portable_executable(
 ) -> str | None:
     """Find one exact portable executable in bounded download-folder roots."""
 
-    queue = [(root, 0) for root in roots if root.is_dir()]
+    queue: list[tuple[Path, int]] = []
+    for root in roots:
+        try:
+            if root.is_dir():
+                queue.append((root, 0))
+        except OSError:
+            # A disconnected or malformed Windows volume must not make the
+            # read-only health check fail.
+            continue
     visited: set[Path] = set()
     inspected = 0
     while queue and inspected < max_dirs:
@@ -107,14 +115,31 @@ def _portable_download_roots() -> tuple[Path, ...]:
 
 
 @router.get("/tools/discover")
-def discover_tools():
+def discover_tools(*, config=None):
     """Locate supported executables without invoking external programs."""
 
     program_files = Path("C:/Program Files")
     program_files_x86 = Path("C:/Program Files (x86)")
+    configured = {}
+    if config is not None:
+        for field in (
+            "makemkv_path",
+            "handbrake_path",
+            "ffmpeg_path",
+            "ffprobe_path",
+            "tesseract_path",
+        ):
+            candidate = getattr(config, field, None)
+            try:
+                if isinstance(candidate, Path) and candidate.is_file():
+                    configured[field] = str(candidate.resolve())
+            except OSError:
+                continue
+    portable_roots = () if config is not None else _portable_download_roots()
     return {
         "tools": {
-            "makemkv_path": _find_executable(
+            "makemkv_path": configured.get("makemkv_path")
+            or _find_executable(
                 ("makemkvcon64.exe", "makemkvcon.exe"),
                 (
                     program_files_x86 / "MakeMKV" / "makemkvcon64.exe",
@@ -125,19 +150,19 @@ def discover_tools():
                 "DiscImageCreator.exe",
                 "DiscImageCreator",
             ))
-            or _find_portable_executable(
-                "DiscImageCreator.exe", _portable_download_roots()
-            ),
-            "handbrake_path": _find_executable(
+            or _find_portable_executable("DiscImageCreator.exe", portable_roots),
+            "handbrake_path": configured.get("handbrake_path")
+            or _find_executable(
                 ("HandBrakeCLI.exe", "HandBrakeCLI"),
                 (program_files / "HandBrake" / "HandBrakeCLI.exe",),
             )
-            or _find_portable_executable(
-                "HandBrakeCLI.exe", _portable_download_roots()
-            ),
-            "ffmpeg_path": _find_executable(("ffmpeg.exe", "ffmpeg")),
-            "ffprobe_path": _find_executable(("ffprobe.exe", "ffprobe")),
-            "tesseract_path": _find_executable(
+            or _find_portable_executable("HandBrakeCLI.exe", portable_roots),
+            "ffmpeg_path": configured.get("ffmpeg_path")
+            or _find_executable(("ffmpeg.exe", "ffmpeg")),
+            "ffprobe_path": configured.get("ffprobe_path")
+            or _find_executable(("ffprobe.exe", "ffprobe")),
+            "tesseract_path": configured.get("tesseract_path")
+            or _find_executable(
                 ("tesseract.exe", "tesseract"),
                 (program_files / "Tesseract-OCR" / "tesseract.exe",),
             ),
@@ -347,7 +372,7 @@ def get_system_health():
     from mkv_episode_matcher.core.credentials import credential_is_configured
 
     config = get_config_manager().load()
-    discovered = discover_tools()["tools"]
+    discovered = discover_tools(config=config)["tools"]
     return build_system_health(
         config,
         discovered=discovered,
@@ -373,7 +398,7 @@ def export_support_bundle() -> Response:
     try:
         system_health = build_system_health(
             config,
-            discovered=discover_tools()["tools"],
+            discovered=discover_tools(config=config)["tools"],
             credential_is_configured=credential_is_configured,
         )
     except Exception as error:

@@ -7,6 +7,7 @@ Covers:
   `CUDA_VISIBLE_DEVICES` handling.
 - Backend `get_engine()` reads config via `ConfigManager.load()`, not `manager.config`.
 """
+
 import json
 import tempfile
 from pathlib import Path
@@ -75,14 +76,18 @@ class TestGetDefaultDevice:
     def test_returns_cuda_when_device_count_positive(self):
         from mkv_episode_matcher import asr_models
 
-        with patch.object(asr_models.ctranslate2, "get_cuda_device_count", return_value=1):
+        with patch.object(
+            asr_models.ctranslate2, "get_cuda_device_count", return_value=1
+        ):
             model = asr_models.FasterWhisperModel(model_name="small", device=None)
             assert model.device == "cuda"
 
     def test_returns_cpu_when_device_count_zero(self):
         from mkv_episode_matcher import asr_models
 
-        with patch.object(asr_models.ctranslate2, "get_cuda_device_count", return_value=0):
+        with patch.object(
+            asr_models.ctranslate2, "get_cuda_device_count", return_value=0
+        ):
             model = asr_models.FasterWhisperModel(model_name="small", device=None)
             assert model.device == "cpu"
 
@@ -97,13 +102,17 @@ class TestGetDefaultDevice:
             model = asr_models.FasterWhisperModel(model_name="small", device=None)
             assert model.device == "cpu"
 
-    def test_cuda_visible_devices_empty_string_yields_cpu_via_ctranslate2(self, monkeypatch):
+    def test_cuda_visible_devices_empty_string_yields_cpu_via_ctranslate2(
+        self, monkeypatch
+    ):
         """ctranslate2 already returns 0 devices when CUDA_VISIBLE_DEVICES="";
         exercising that path ensures we don't re-introduce the env-var check."""
         from mkv_episode_matcher import asr_models
 
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
-        with patch.object(asr_models.ctranslate2, "get_cuda_device_count", return_value=0):
+        with patch.object(
+            asr_models.ctranslate2, "get_cuda_device_count", return_value=0
+        ):
             model = asr_models.FasterWhisperModel(model_name="small", device=None)
             assert model.device == "cpu"
 
@@ -112,7 +121,9 @@ class TestGetDefaultDevice:
         from mkv_episode_matcher import asr_models
 
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
-        with patch.object(asr_models.ctranslate2, "get_cuda_device_count", return_value=1):
+        with patch.object(
+            asr_models.ctranslate2, "get_cuda_device_count", return_value=1
+        ):
             model = asr_models.FasterWhisperModel(model_name="small", device=None)
             assert model.device == "cuda"
 
@@ -132,8 +143,10 @@ class TestBackendDependenciesConfigLoad:
             fake_manager = Mock()
             fake_manager.load.return_value = config
 
-            with patch.object(deps, "get_config_manager", return_value=fake_manager), \
-                 patch.object(deps, "MatchEngineV2") as mock_engine_cls:
+            with (
+                patch.object(deps, "get_config_manager", return_value=fake_manager),
+                patch.object(deps, "MatchEngineV2") as mock_engine_cls,
+            ):
                 mock_engine_cls.return_value = Mock()
                 deps.get_engine()
 

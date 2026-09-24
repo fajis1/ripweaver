@@ -799,7 +799,7 @@ def test_dismiss_items_is_atomic_when_selection_contains_active_work(tmp_path):
         store.enqueue_verified_rip(media_id, _artifact(tmp_path, media_id, "rip"))
     store.claim_next()
     store.require_review("held", "unmatched_disc_analysis_required")
-    store.claim_next() # Claims "running" and sets state to "running"
+    store.claim_next()  # Claims "running" and sets state to "running"
 
     with pytest.raises(PipelineQueueError, match="Only failed, queued, or review-held"):
         store.dismiss_items(("held", "running"))

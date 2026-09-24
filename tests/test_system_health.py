@@ -1,5 +1,6 @@
 import json
 
+import mkv_episode_matcher.backend.routers.system as system_router
 from mkv_episode_matcher.backend.system_health import build_system_health
 from mkv_episode_matcher.core.models import Config
 
@@ -96,3 +97,31 @@ def test_health_distinguishes_detected_from_saved_and_invalid(tmp_path):
     assert items["opensubtitles_api"]["status"] == "optional"
     assert items["opensubtitles_api"]["required"] is False
     assert result["ready_for"]["episode_identification"] is True
+
+
+def test_configured_tools_skip_portable_drive_discovery(tmp_path, monkeypatch):
+    tools = _touch_tools(tmp_path)
+    config = Config(**tools)
+
+    def fail_if_called():
+        raise AssertionError("portable discovery is unnecessary for configured tools")
+
+    monkeypatch.setattr(system_router, "_portable_download_roots", fail_if_called)
+
+    discovered = system_router.discover_tools(config=config)["tools"]
+
+    assert discovered["makemkv_path"] == str(tools["makemkv_path"].resolve())
+    assert discovered["handbrake_path"] == str(tools["handbrake_path"].resolve())
+    assert discovered["ffmpeg_path"] == str(tools["ffmpeg_path"].resolve())
+    assert discovered["ffprobe_path"] == str(tools["ffprobe_path"].resolve())
+
+
+def test_inaccessible_portable_root_is_ignored(monkeypatch):
+    class BrokenRoot:
+        def is_dir(self):
+            raise OSError("volume unavailable")
+
+    assert (
+        system_router._find_portable_executable("HandBrakeCLI.exe", (BrokenRoot(),))
+        is None
+    )

@@ -1,5 +1,4 @@
 # Spark Handoff: Edge-Case Audit
-
 This document is the starting point for a follow-up Spark session. Read
 `AGENTS.md` and the newest section of `docs/PROJECT_STATUS.md` first.
 
@@ -118,3 +117,53 @@ recomputation. Do not use the generic stage retry for
 `placeholder_identification_required`; use the dedicated restart-identification
 action so the old identified contract cannot be submitted to HandBrake again.
 The complete post-fix repository suite passes 675 tests.
+
+## Triage & Loose-File Season Recovery Handoff (2026-09-04 / 2026-09-05)
+
+### Active Workspace & Branch
+- **Worktree**: `ripweaver-test` (test worktree)
+- **Branch**: `codex/windows-drive-provisional-fallback` (tracks `origin/codex/windows-drive-provisional-fallback`)
+- **Safety Checkpoint**: `origin/wip/test` commit `f3f4adf5a22c` (pushed via `scripts/checkpoint_worktree.ps1 -Channel test -Push`).
+- **Working Tree State**: Uncommitted working tree changes exist in:
+  - `mkv_episode_matcher/backend/automatic_rip.py`
+  - `mkv_episode_matcher/backend/downstream_worker.py`
+  - `mkv_episode_matcher/backend/identification_dossier.py`
+  - `mkv_episode_matcher/backend/unmatched_disc_analysis.py`
+  - `mkv_episode_matcher/pipeline_adapters.py`
+  - `tests/test_triage_season_analysis.py` (untracked test file)
+  - `docs/PROJECT_STATUS.md`
+  - `docs/SPARK_HANDOFF.md`
+
+### Completed Architecture & Changes
+1. **Zero Synthetic Disc Fingerprints**:
+   - In `mkv_episode_matcher/backend/identification_dossier.py`, `SourceIdentity` and `source_identity()` support items where `disc_fingerprint is None`. It validates and digests `media_id`, file size, mtime, and ASR model without fabricating fake 16-hex fingerprints.
+   - `collect_dossier_evidence` preserves `media_id` in evidence copies so non-disc items load from and save to private cache properly.
+2. **Adapter Media-ID Matching**:
+   - In `mkv_episode_matcher/pipeline_adapters.py`, `IdentifyStageAdapter` resolves `episode_assignments` via `entry.get("media_id") == item.media_id` when `title_index` is `None`.
+3. **Season-First Recovery Workflow**:
+   - In `mkv_episode_matcher/backend/unmatched_disc_analysis.py`, `execute_unmatched_season_analysis()`:
+     - Scopes candidate episodes to the enclosing season folder first.
+     - Collects Faster Whisper transcripts and evaluates candidates using two-pass Gemini ranking (`gemini-initial` and `gemini-confirmation`).
+     - Requires agreement, minimum confidence threshold, and runtime consistency.
+     - **All-Season Fallback**: If within-season ranking fails, falls back to the full series catalogue as a last resort.
+     - Re-enqueues resolved items with `GEMINI_TWO_PASS_SOURCE` contracts into the `identify` stage.
+4. **Automated Downstream Worker**:
+   - In `mkv_episode_matcher/backend/downstream_worker.py`, `DownstreamWorker._apply_automatic_triage_analysis()` periodically identifies stuck non-disc items in `review_required: episode_match_review` and triggers recovery via `_resolve_automatic_unmatched_season()` in `mkv_episode_matcher/backend/automatic_rip.py`.
+
+### Live Verification
+- Successfully recovered stuck triage item `triage-d8166ac22151914f` (`EUREKA 1.3_t07.mkv`):
+  - Faster Whisper transcribed 12 audio windows.
+  - Gemini evaluated Season 1 candidates and matched S01E06 ("Dr. Nobel") with 1.0 confidence.
+  - Identification completed; the existing transcode in staging was detected, safely pausing at `organize: review_required: library_collision` without overwriting.
+
+### Executable & Running Server Status
+- **Compiled Executable (`RipWeaver.exe` / installer)**: **Not updated**. The binaries in `dist/` and `$LOCALAPPDATA\Programs\RipWeaver\` date from August 29, 2026.
+- **Live Service (Port 8001)**: Running from Python virtualenv (`uv run mkv-match serve`), PID 29512 was started before these file edits were made.
+
+### Guidance for Subsequent Agents
+1. **To enable automatic triage worker for remaining items**:
+   Restart the backend service (`uv run mkv-match serve --no-browser`) so `DownstreamWorker` reloads the new code with `_apply_automatic_triage_analysis()`. This will automatically process remaining Season 1 items (`EUREKA 1.2_t02.mkv`, `EUREKA 1.2_t03.mkv`, `EUREKA 1_t01.mkv`).
+2. **To commit & push feature changes**:
+   Request user confirmation before creating commits on `codex/windows-drive-provisional-fallback`. Always maintain safety checkpoints on `origin/wip/test`.
+3. **To build updated `.exe`**:
+   Build the frontend (`npm run build` in `mkv_episode_matcher/frontend`), run `uv run pyinstaller mkv_match.spec --clean`, and compile the installer with NSIS if an installer update is requested.

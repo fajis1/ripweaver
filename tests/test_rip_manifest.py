@@ -10,6 +10,7 @@ from mkv_episode_matcher.disc.rip_manifest import (
     build_rip_manifest,
     load_media_contexts,
     load_rip_manifest,
+    media_context_from_dict,
     write_rip_manifest,
 )
 from mkv_episode_matcher.disc.ripper import RipError
@@ -74,6 +75,18 @@ def _make_batch_names(payload):
         index = title["index"]
         title["attributes"]["27"] = f"Feature_t{index:02d}.mkv"
     return payload
+
+
+def test_media_context_ignores_legacy_derived_routing_composition():
+    context = media_context_from_dict({
+        "disc_id": "disc-01",
+        "series_name": "Short Circuit 2",
+        "content_hint": "movie",
+        "routing_composition": "movies_with_extras",
+    })
+
+    assert context.content_hint == "movie"
+    assert not hasattr(context, "routing_composition")
 
 
 def test_manifest_rips_plausible_titles_before_classification(tmp_path):
