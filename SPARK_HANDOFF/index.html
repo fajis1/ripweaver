@@ -727,6 +727,78 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#triage-loose-file-season-recovery-handoff-2026-09-04-2026-09-05" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Triage &amp; Loose-File Season Recovery Handoff (2026-09-04 / 2026-09-05)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Triage &amp; Loose-File Season Recovery Handoff (2026-09-04 / 2026-09-05)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#active-workspace-branch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Active Workspace &amp; Branch
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#completed-architecture-changes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Completed Architecture &amp; Changes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#live-verification" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Live Verification
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#executable-running-server-status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Executable &amp; Running Server Status
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#guidance-for-subsequent-agents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Guidance for Subsequent Agents
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -849,6 +921,62 @@ recomputation. Do not use the generic stage retry for
 <code>placeholder_identification_required</code>; use the dedicated restart-identification
 action so the old identified contract cannot be submitted to HandBrake again.
 The complete post-fix repository suite passes 675 tests.</p>
+<h2 id="triage-loose-file-season-recovery-handoff-2026-09-04-2026-09-05">Triage &amp; Loose-File Season Recovery Handoff (2026-09-04 / 2026-09-05)</h2>
+<h3 id="active-workspace-branch">Active Workspace &amp; Branch</h3>
+<ul>
+<li><strong>Worktree</strong>: <code>ripweaver-test</code> (test worktree)</li>
+<li><strong>Branch</strong>: <code>codex/windows-drive-provisional-fallback</code> (tracks <code>origin/codex/windows-drive-provisional-fallback</code>)</li>
+<li><strong>Safety Checkpoint</strong>: <code>origin/wip/test</code> commit <code>f3f4adf5a22c</code> (pushed via <code>scripts/checkpoint_worktree.ps1 -Channel test -Push</code>).</li>
+<li><strong>Working Tree State</strong>: Uncommitted working tree changes exist in:</li>
+<li><code>mkv_episode_matcher/backend/automatic_rip.py</code></li>
+<li><code>mkv_episode_matcher/backend/downstream_worker.py</code></li>
+<li><code>mkv_episode_matcher/backend/identification_dossier.py</code></li>
+<li><code>mkv_episode_matcher/backend/unmatched_disc_analysis.py</code></li>
+<li><code>mkv_episode_matcher/pipeline_adapters.py</code></li>
+<li><code>tests/test_triage_season_analysis.py</code> (untracked test file)</li>
+<li><code>docs/PROJECT_STATUS.md</code></li>
+<li><code>docs/SPARK_HANDOFF.md</code></li>
+</ul>
+<h3 id="completed-architecture-changes">Completed Architecture &amp; Changes</h3>
+<ol>
+<li><strong>Zero Synthetic Disc Fingerprints</strong>:</li>
+<li>In <code>mkv_episode_matcher/backend/identification_dossier.py</code>, <code>SourceIdentity</code> and <code>source_identity()</code> support items where <code>disc_fingerprint is None</code>. It validates and digests <code>media_id</code>, file size, mtime, and ASR model without fabricating fake 16-hex fingerprints.</li>
+<li><code>collect_dossier_evidence</code> preserves <code>media_id</code> in evidence copies so non-disc items load from and save to private cache properly.</li>
+<li><strong>Adapter Media-ID Matching</strong>:</li>
+<li>In <code>mkv_episode_matcher/pipeline_adapters.py</code>, <code>IdentifyStageAdapter</code> resolves <code>episode_assignments</code> via <code>entry.get("media_id") == item.media_id</code> when <code>title_index</code> is <code>None</code>.</li>
+<li><strong>Season-First Recovery Workflow</strong>:</li>
+<li>In <code>mkv_episode_matcher/backend/unmatched_disc_analysis.py</code>, <code>execute_unmatched_season_analysis()</code>:<ul>
+<li>Scopes candidate episodes to the enclosing season folder first.</li>
+<li>Collects Faster Whisper transcripts and evaluates candidates using two-pass Gemini ranking (<code>gemini-initial</code> and <code>gemini-confirmation</code>).</li>
+<li>Requires agreement, minimum confidence threshold, and runtime consistency.</li>
+<li><strong>All-Season Fallback</strong>: If within-season ranking fails, falls back to the full series catalogue as a last resort.</li>
+<li>Re-enqueues resolved items with <code>GEMINI_TWO_PASS_SOURCE</code> contracts into the <code>identify</code> stage.</li>
+</ul>
+</li>
+<li><strong>Automated Downstream Worker</strong>:</li>
+<li>In <code>mkv_episode_matcher/backend/downstream_worker.py</code>, <code>DownstreamWorker._apply_automatic_triage_analysis()</code> periodically identifies stuck non-disc items in <code>review_required: episode_match_review</code> and triggers recovery via <code>_resolve_automatic_unmatched_season()</code> in <code>mkv_episode_matcher/backend/automatic_rip.py</code>.</li>
+</ol>
+<h3 id="live-verification">Live Verification</h3>
+<ul>
+<li>Successfully recovered stuck triage item <code>triage-d8166ac22151914f</code> (<code>EUREKA 1.3_t07.mkv</code>):</li>
+<li>Faster Whisper transcribed 12 audio windows.</li>
+<li>Gemini evaluated Season 1 candidates and matched S01E06 ("Dr. Nobel") with 1.0 confidence.</li>
+<li>Identification completed; the existing transcode in staging was detected, safely pausing at <code>organize: review_required: library_collision</code> without overwriting.</li>
+</ul>
+<h3 id="executable-running-server-status">Executable &amp; Running Server Status</h3>
+<ul>
+<li><strong>Compiled Executable (<code>RipWeaver.exe</code> / installer)</strong>: <strong>Not updated</strong>. The binaries in <code>dist/</code> and <code>$LOCALAPPDATA\Programs\RipWeaver\</code> date from August 29, 2026.</li>
+<li><strong>Live Service (Port 8001)</strong>: Running from Python virtualenv (<code>uv run mkv-match serve</code>), PID 29512 was started before these file edits were made.</li>
+</ul>
+<h3 id="guidance-for-subsequent-agents">Guidance for Subsequent Agents</h3>
+<ol>
+<li><strong>To enable automatic triage worker for remaining items</strong>:
+   Restart the backend service (<code>uv run mkv-match serve --no-browser</code>) so <code>DownstreamWorker</code> reloads the new code with <code>_apply_automatic_triage_analysis()</code>. This will automatically process remaining Season 1 items (<code>EUREKA 1.2_t02.mkv</code>, <code>EUREKA 1.2_t03.mkv</code>, <code>EUREKA 1_t01.mkv</code>).</li>
+<li><strong>To commit &amp; push feature changes</strong>:
+   Request user confirmation before creating commits on <code>codex/windows-drive-provisional-fallback</code>. Always maintain safety checkpoints on <code>origin/wip/test</code>.</li>
+<li><strong>To build updated <code>.exe</code></strong>:
+   Build the frontend (<code>npm run build</code> in <code>mkv_episode_matcher/frontend</code>), run <code>uv run pyinstaller mkv_match.spec --clean</code>, and compile the installer with NSIS if an installer update is requested.</li>
+</ol>
 
 
 

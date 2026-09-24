@@ -1,0 +1,1449 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Automatically match and rename your MKV TV episodes">
+      
+      
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.1">
+    
+    
+      
+        <title>Disc routing repair — active test worktree - MKV Episode Matcher</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#disc-routing-repair-active-test-worktree" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="MKV Episode Matcher" class="md-header__button md-logo" aria-label="MKV Episode Matcher" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            MKV Episode Matcher
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Disc routing repair — active test worktree
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/Jsakkos/mkv-episode-matcher" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    Jsakkos/mkv-episode-matcher
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../installation/" class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../api/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  API Reference
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../cli/" class="md-tabs__link">
+          
+  
+  
+  Advanced Usage
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="MKV Episode Matcher" class="md-nav__button md-logo" aria-label="MKV Episode Matcher" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    MKV Episode Matcher
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/Jsakkos/mkv-episode-matcher" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    Jsakkos/mkv-episode-matcher
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Advanced Usage
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Advanced Usage
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Command Line Interface
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tips/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tips and Tricks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#status-2026-09-17" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Status (2026-09-17)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#current-agent-handoff-2026-09-17-m6-complete-m7-pending" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Current agent handoff (2026-09-17, M6 complete, M7 pending)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#findings-verified-in-this-worktree" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Findings verified in this worktree
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#earlier-checkout-compatibility-verdict" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Earlier-checkout compatibility verdict
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#proposed-decision-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Proposed decision contract
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#implementation-milestones-and-acceptance-gates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Implementation milestones and acceptance gates
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Implementation milestones and acceptance gates">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#m0-test-worktree-baseline-complete" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        M0 — Test-worktree baseline (complete)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#m1-fresh-preparation-prerequisite-complete-synthetic-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        M1 — Fresh preparation prerequisite (complete, synthetic only)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#m2-assessment-model-queue-persistence-and-migration-complete-synthetic-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        M2 — Assessment model, queue persistence, and migration (complete, synthetic only)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#m3-preparation-and-immutable-contract-handoff-complete-synthetic-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        M3 — Preparation and immutable-contract handoff (complete, synthetic only)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#m4-bounded-alternate-route-policy-and-real-outcomes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        M4 — Bounded alternate-route policy and real outcomes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#m5-worker-gemini-and-existing-tvtriage-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        M5 — Worker, Gemini, and existing-TV/triage integration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#m6-visibility-legacy-review-and-broad-synthetic-verification" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        M6 — Visibility, legacy review, and broad synthetic verification
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#m7-separately-authorized-live-canary-not-yet-approved" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        M7 — Separately authorized live canary (not yet approved)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#progress-log" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Progress log
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="disc-routing-repair-active-test-worktree">Disc routing repair — active test worktree</h1>
+<blockquote>
+<p>STOP: This plan applies only to the <code>ripweaver-test</code> source worktree launched by
+the desktop test shortcut. The installed EXE and the separate
+<code>mkv-episode-matcher</code> checkout are not this running test build. Confirm the
+resolved repository root and branch before editing or reporting a result.</p>
+</blockquote>
+<h2 id="status-2026-09-17">Status (2026-09-17)</h2>
+<blockquote>
+<p><strong>September 22 continuation:</strong> The live Short Circuit 2 trail now continues in
+<code>docs/MOVIE_EXTRAS_IDENTITY_PLAN.md</code>. Read the two September 22 progress entries
+at the end of this file for the observed queue-control repair and live matching
+outcome, then follow that newer plan. M0-M6 and the original M7 canary describe
+how this point was reached; they are not the current implementation backlog.
+The remaining problem is the coupling between an accepted movie/extra role and
+an exact final identity, not another disc scan or rerip.</p>
+</blockquote>
+<p>Milestones M0-M6: <strong>complete in synthetic validation; M7 pending</strong>. Preparation
+and identify now consume the queue-owned routing assessment, and the automatic
+alternate-route worker is successfully routing failures, but no fresh Short Circuit 2 live rip has
+been validated. Existing uncommitted test-worktree changes belong to the user
+and must be preserved. The earlier routing plan in another checkout remains a
+design/reference only; its completion and test claims do not apply here.</p>
+<h2 id="current-agent-handoff-2026-09-17-m6-complete-m7-pending">Current agent handoff (2026-09-17, M6 complete, M7 pending)</h2>
+<ul>
+<li><strong>Source and recovery:</strong> work only in the <code>ripweaver-test</code> worktree on
+  <code>codex/windows-drive-provisional-fallback</code>. The last approved <code>wip/test</code>
+  recovery checkpoint before this resumed turn was <code>2a8ceab36ece</code>; the latest
+  pushed recovery state is always <code>origin/wip/test</code> (resolve its hash when
+  resuming). The checkout intentionally remains
+  dirty and contains older user/agent work. Do not switch to the installed EXE
+  or the separate <code>mkv-episode-matcher</code> checkout, reset the tree, or remove
+  <code>.coverage</code>, staging files, or unrelated changes.</li>
+<li><strong>Completed:</strong> M0–M3 passed synthetic gates. M4 has a saved-data route policy,
+  revision-bound atomic claims with optional exact held-item review-code check,
+  typed Gemini reports, terminal TV coordinator settlement, and startup
+  interruption reconciliation. The latest full pytest run and modified-file
+  Ruff checks passed. No physical disc, media, or live provider was accessed.</li>
+<li><strong>Current agent handoff (2026-09-17, M6 complete, M7 pending):</strong></li>
+<li><strong>Source and recovery:</strong> work only in the <code>ripweaver-test</code> worktree on <code>Codex/windows-drive-provisional-fallback</code>.</li>
+<li><strong>M4 Completion:</strong> A <em>true</em> TV title-level no-match followed by a viable movie search is now successfully produced by the TV coordinator and correctly survives the automatic rip boundary to trigger the movie alternate route. The full end-to-end handoff has been proven with a combined coordinator -&gt; automatic handler -&gt; routing-worker synthetic test (<code>test_m5_end_to_end_tv_no_match_to_movie_route</code>). All Ruff checks and synthetic tests pass perfectly.</li>
+<li>
+<p><strong>M5 Completion (2026-09-17):</strong></p>
+<ul>
+<li>Accepted Gemini content roles are successfully appended as a new durable assessment revision within the worker.</li>
+<li>Sibling-revision races have true end-to-end coverage. The settle/append race was resolved by appending the evidence in a bounded (10 retries) retry loop. The update is now fully idempotent: if a sibling appends the exact same role, the loop breaks immediately and avoids a duplicate-evidence <code>ValueError</code>. A local <code>settled</code> flag ensures a matched route is never erroneously resettled as <code>review</code> in the outer exception handler. The synthetic tests explicitly test this sibling revision occurring between those operations.</li>
+<li>The manual Gemini endpoint (<code>execute_pipeline_gemini_fallback</code>) and Unmatched Disc Analysis are now serialized globally. The queue transition (<code>choose_review_path</code>) was moved <strong>inside</strong> the thread and under the <code>_downstream_lock</code>. This prevents any queue state race where a worker thread might claim an item before the manual thread actually acquires the lock. The HTTP routes check the state early for responsive UX, and the background thread re-checks the transition safely. Synthetic concurrency API tests exist for this logic.</li>
+<li>A descriptive <code>tv_episode</code> suggestion correctly falls through to <code>review</code>, and <code>all_season_series_not_found</code> explicitly settles as <code>review</code> via the TV coordinator mapping (<code>_TV_TERMINAL_REVIEW_OUTCOMES</code>), preventing unintended negative TV identities.</li>
+<li>Worker ruff import-order errors have been fixed. The full synthetic test suite (1263 tests) and ruff lints pass!</li>
+<li><strong>Update (Later on 2026-09-17):</strong> Discovered and fixed race conditions in the manual endpoints queue transition test (    est_manual_endpoints_queue_transition_lock) and     est_gemini_retry_starts_only_the_exact_requested_item. The mock thread behaviors were corrected to allow deterministic queue transition assertions without executing unmocked functions (like loading the ASR model) or escaping the monkeypatch context. The full suite passes reliably.</li>
+</ul>
+</li>
+<li>
+<p><strong>Live boundary:</strong> M7 remains separately unapproved. Do not start RipWeaver,
+  read the Short Circuit 2 disc/MKVs, call Gemini, rip, transcode, eject, or
+  alter library media during these synthetic gates.</p>
+</li>
+</ul>
+<h2 id="findings-verified-in-this-worktree">Findings verified in this worktree</h2>
+<ul>
+<li>The active branch has no <code>disc/routing.py</code>, <code>disc/routing_store.py</code>, or
+  <code>disc/routing_controller.py</code>, and no associated routing tests. The small
+  <code>backend/identification_router.py</code> orders nominal branches from a hint, but
+  no production caller was found for it.</li>
+<li>Preparation in <code>backend/routers/rip.py</code> passes <code>effective_content_hint</code> into
+  title selection; explicit TV label context can set that value to <code>tv</code>. A
+  separately chosen <code>content_hint</code> is stored in <code>MediaContext</code>, and downstream
+  TV analysis skips contexts marked <code>movie</code>, <code>extras</code>, or <code>mixed</code>. Thus a hint
+  still affects execution scope and eligibility, not merely search priority.</li>
+<li><code>disc/title_selector.py</code> uses an episode-only selection for <code>tv</code>, bonus-only
+  selection for <code>extras</code>, and their union otherwise. Fresh whole-inventory
+  acquisition is a separate later step. These layers must be tested together
+  before changing title selection.</li>
+<li>On a fresh disc with no staged candidates, <code>_auto_admit_staged_disc_if_complete</code>
+  previously raised <code>NO CANDIDATES FOUND</code> instead of declining auto-admission.
+  That prevented ordinary preparation and included a private output path in
+  the error. A no-staging regression test now covers the repaired behavior.</li>
+<li><code>pipeline_adapters.py</code> still chooses the first identify strategy from
+  <code>content_hint</code>; a movie/extras-first route immediately enters review unless
+  a separate reviewed assignment exists. This is not a unified fallback.</li>
+<li>The configuration schema has separate automatic processing, auto-eject, and
+  automatic Gemini fallback flags. This audit has not read <code>.env</code> or printed
+  the owner's local configuration values. The branch also contains unfinished
+  triage/recovery edits; routing work must not overwrite them.</li>
+<li>The verified-rip contract carries <code>media_context</code>, fingerprint, title index,
+  and expected title indexes. There is no assessment revision or digest in that
+  contract today. The queue separately persists fingerprint-bound matching and
+  recovery scopes, dispositions, and per-item review states.</li>
+<li>The current worker runs disc-level TV analysis and the newer automatic
+  non-disc triage recovery under its downstream lock. Its extras fallback only
+  changes a review code; it does not execute movie/extra classification. The
+  existing Gemini fallback can classify descriptive movie/extras evidence when
+  invoked, but its tuple of handled IDs is not a durable per-route outcome.</li>
+</ul>
+<h2 id="earlier-checkout-compatibility-verdict">Earlier-checkout compatibility verdict</h2>
+<table>
+<thead>
+<tr>
+<th>Earlier work</th>
+<th>Verdict for this test branch</th>
+<th>Reason / required adaptation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Path-free fingerprint-bound assessment, explicit unknown/conflicts, hint separate from evidence, digest/revision checks (R1/R2/R6)</td>
+<td><strong>Keep the design; adapt implementation</strong></td>
+<td>No equivalent persisted assessment exists here. Reuse the invariants and tests, but bind to this branch's actual <code>MediaContext</code>, queue contract, and exact matching/recovery scopes. Do not let runtime or hint become TV evidence.</td>
+</tr>
+<tr>
+<td>Separate acquisition and downstream title scope</td>
+<td><strong>Already present; preserve</strong></td>
+<td>Fresh preparation acquires the full zero-minimum inventory; the queue stores classifier-derived matching/recovery scope. Rework downstream scope for mixed discs without changing MakeMKV acquisition or failed-disc recovery rules.</td>
+</tr>
+<tr>
+<td>Old checkout's preparation/worker/adapter file edits</td>
+<td><strong>Do not copy</strong></td>
+<td>These files have extensive uncommitted triage/season-recovery work here. The old worker's post-item path omits this branch's automatic triage call. Merge behavior deliberately with targeted tests.</td>
+</tr>
+<tr>
+<td>Durable route claims and per-route outcomes (R3/R5)</td>
+<td><strong>Needed, but redesign integration</strong></td>
+<td>The current queue has review states but no revision-bound route attempt record. Old claim/attempt logic is useful as a starting point; outcome classification must come from actual provider/identity results, not a handled-ID tuple. Restart and stale-claim behavior need end-to-end tests.</td>
+</tr>
+<tr>
+<td>Bounded Gemini/movie/extras work (R4)</td>
+<td><strong>Needed, but preserve worker discipline</strong></td>
+<td>Current extras automation only changes a review code. Any new work must share pause/stop and ASR serialization, avoid detached tasks, and retain the triage and TV paths already operating in this branch.</td>
+</tr>
+<tr>
+<td>Dashboard and legacy repair UI</td>
+<td><strong>Defer until backend contracts are stable</strong></td>
+<td>The old routing dashboard is not deployed here. Read <code>FRONTEND_RECOVERY_GUIDE.md</code> before any frontend edits and preserve existing recovery UI.</td>
+</tr>
+<tr>
+<td>Old synthetic test results and live claims</td>
+<td><strong>Do not carry over</strong></td>
+<td>They ran against another checkout. Repeat relevant tests here; a new exact-input live canary is still separate authorization.</td>
+</tr>
+</tbody>
+</table>
+<p>The older six repair themes remain relevant as acceptance questions, not as
+completed work or files ready to transplant. In particular, Short Circuit 2
+needs a movie-with-extras assessment that can retain short extras for review
+without sending them into TV episode matching. A user TV/movie/extras choice
+may order investigation but must not force a content role or skip other routes.</p>
+<h2 id="proposed-decision-contract">Proposed decision contract</h2>
+<p>One fingerprint-bound assessment represents the <strong>whole disc composition</strong> and
+each inventory title's <strong>provisional role</strong> (<code>tv</code>, <code>movie</code>, <code>extra</code>, <code>unknown</code>,
+or <code>conflicting</code>). It stores the complete sorted title-index set, original user
+hint, path-free evidence source/status, monotonic revision, schema version, and
+digest. It is a routing proposal, never a verified episode/movie identity or
+permission to read, rip, contact Gemini, transcode, eject, or organize media.</p>
+<p>Use the existing <code>PipelineQueueStore</code> database as the authoritative routing
+control plane, with append-only assessment revisions and per-title route
+attempts. A separate routing database would make the assessment, queue item,
+and route claim non-atomic. Reuse the earlier checkout's <em>validation ideas</em>,
+not its files or separate-store integration. Any change to queue schema must
+have a migration test against an older database and preserve existing records.</p>
+<p>Evidence hierarchy is explicit: independently validated content identity or
+trusted title-specific database match outranks structural label/inventory
+clues; user hints only order searches. A runtime cluster is not TV evidence.
+Unavailable provider results add no type evidence. Equal-strength conflicting
+claims stay conflicting and require a bounded classifier or review. Assessment
+revision changes must compare evidence content, not just revision numbers;
+stale writers are rejected. Successful sibling assignments may add evidence
+but cannot silently rename or reroute completed titles.</p>
+<p>Acquisition and identification stay separate: fresh zero-minimum whole-disc
+MakeMKV selection remains unchanged, as do failed-disc recovery ordinals and
+durable skips. The assessment determines only which preserved titles can enter
+TV episode matching versus movie/extras classification or review. Unknown
+substantial titles must not disappear because they are outside the TV cohort;
+tiny/menu titles remain preserved and reviewable under existing policy, never
+automatically treated as episodes or deleted.</p>
+<h2 id="implementation-milestones-and-acceptance-gates">Implementation milestones and acceptance gates</h2>
+<h3 id="m0-test-worktree-baseline-complete">M0 — Test-worktree baseline (complete)</h3>
+<ul>
+<li>[x] Verify launcher/worktree, dirty branch, configuration <strong>schema</strong>, current
+  preparation, contract, worker, Gemini, TV, and triage boundaries.</li>
+<li>[x] Record keep/adapt/do-not-copy verdict above. Do not read <code>.env</code> or copy
+  the other checkout's claimed completion state.</li>
+</ul>
+<h3 id="m1-fresh-preparation-prerequisite-complete-synthetic-only">M1 — Fresh preparation prerequisite (complete, synthetic only)</h3>
+<ul>
+<li>[x] Empty or incomplete staged candidates decline auto-admission without
+  path-bearing errors. Retain complete-staging recovery.</li>
+<li>[x] Focused preparation tests, full pytest suite, and modified-Python Ruff
+  checks passed in this worktree. No live scan was performed for this gate.</li>
+</ul>
+<h3 id="m2-assessment-model-queue-persistence-and-migration-complete-synthetic-only">M2 — Assessment model, queue persistence, and migration (complete, synthetic only)</h3>
+<ul>
+<li>[x] Specify strict path-free schema, source reliability, role/composition
+  derivation, digests, bounds, and duplicate/conflict validation.</li>
+<li>[x] Add queue-owned assessment revisions and route-attempt tables with
+  transactional compare-and-swap, idempotent retries, and exact-fingerprint
+  forget cleanup; leave existing scopes and dispositions intact.</li>
+<li>[x] Define a safe migration for pre-routing queue databases and read-only
+  legacy contracts. Never infer an old item's content role from its hint alone.</li>
+<li>[x] Test TV, movie-with-extras, mixed disc, unknown, conflicting metadata,
+  changed inventory, concurrent writes, revision &gt;2, restart, and forgetting.
+  Gate: no provider, media, or physical-disc access is needed.</li>
+</ul>
+<h3 id="m3-preparation-and-immutable-contract-handoff-complete-synthetic-only">M3 — Preparation and immutable-contract handoff (complete, synthetic only)</h3>
+<ul>
+<li>[x] Feed inventory, explicit label structure, and trusted title-specific
+  database outcomes into one assessment builder. Record unavailable/ambiguous
+  lookups as such; do not turn a movie hint or dominant runtime into TV fact.</li>
+<li>[x] Persist the assessment during preparation, then carry exact revision and
+  digest through <code>MediaContext</code> into each verified-rip contract. Validate the
+  contract's fingerprint, title index, digest, schema, and saved revision when
+  identify/worker reads it. Old contracts remain on explicit compatibility
+  review paths, not an implicit unknown-to-TV default.</li>
+<li>[x] Derive downstream per-title scope from that assessment without changing
+  fresh whole-disc acquisition or failed-disc recovery. Keep extras out of TV
+  anchors/range/coherence counts; preserve relevant unknown content for an
+  alternate route. Verify both contradictory hint directions.</li>
+<li>[x] Synthetic preparation-to-contract-to-restart-to-identify tests must use
+  saved inventories and fake lookups, including an 11-title movie-plus-extras
+  shape. Gate: no title is silently discarded or promoted to TV by hint.</li>
+</ul>
+<h3 id="m4-bounded-alternate-route-policy-and-real-outcomes">M4 — Bounded alternate-route policy and real outcomes</h3>
+<ul>
+<li>[x] Route per title using assessed evidence, with hints changing <strong>priority
+  only</strong>. Record <code>matched</code>, <code>no_match</code>, <code>review</code>, <code>service_failed</code>, and
+  <code>interrupted</code> distinctly. Provider failure holds; it is not evidence to
+  switch type. A genuine no-match may advance to a different eligible route.</li>
+<li>[x] Claim at most one route per title/evidence revision atomically with queue
+  state. Settle each claim from an actual result; reconcile interrupted claims
+  on restart and prevent same-evidence retry loops. Bound attempts/exhaustion.</li>
+<li>[x] Gemini receives only permitted, bounded evidence and prior safe attempt
+  summaries. Its classification proposal cannot bypass the existing TV
+  independent-window, residual, range, and whole-disc coherence gates, or
+  automatically place a provisional movie/extras identity into the library.</li>
+<li>[x] Test a failed TV catalogue followed by a viable movie search, a true TV
+  no-match, Gemini no-match, visual review, provider outage, conflicting
+  metadata, multiple movies, and a movie with extras. Distinguish an absent
+  catalogue from an unavailable service.</li>
+</ul>
+<h3 id="m5-worker-gemini-and-existing-tvtriage-integration">M5 — Worker, Gemini, and existing-TV/triage integration</h3>
+<ul>
+<li>[x] Replace the review-code-only extras fallback with bounded, tracked work
+  on the current downstream worker. Preserve pause/stop, its shared ASR lock,
+  serialized identify stage, and no detached per-item thread.</li>
+<li>[x] Keep <code>_apply_automatic_triage_analysis()</code> and disc-level TV analysis in
+  both idle and post-item paths. Preserve triage originals and the established
+  TV evidence/coherence rules. Integrate Gemini accepted content roles into
+  the same durable assessment <strong>after</strong> actual result validation.</li>
+<li>[x] End-to-end fake-provider/queue tests cover matched, no-match, review,
+  service failure, pause, shutdown, concurrent claim, restart, and sibling
+  evidence revisions. Gate: existing TV and triage suites still pass.</li>
+</ul>
+<h3 id="m6-visibility-legacy-review-and-broad-synthetic-verification">M6 — Visibility, legacy review, and broad synthetic verification</h3>
+<ul>
+<li>[x] Display the user's hint separately from assessed composition, per-title
+  role, current route, evidence status, and exhausted/held reason. Do not show
+  a model guess as verified identity. Read <code>FRONTEND_RECOVERY_GUIDE.md</code> fully
+  before frontend source or build edits.</li>
+<li>[x] Offer a metadata-only reassessment for eligible legacy unresolved discs;
+  keep live retries, provider/media reads, and final placement behind existing
+  authorization. Do not silently alter completed assignments.</li>
+<li>[x] Run focused tests first, then full pytest with coverage disabled, Ruff
+  on modified modules, frontend checks if touched, and a synthetic matrix for
+  ordinary TV, TV+extras, movie+extras, double feature, mixed TV/movie, wrong
+  hints, unknown labels, ties, provider outage, restart, and recovery.</li>
+</ul>
+<h3 id="m7-separately-authorized-live-canary-not-yet-approved">M7 — Separately authorized live canary (not yet approved)</h3>
+<ul>
+<li>[ ] Before requesting a live Short Circuit 2 test, present the exact disc
+  identity/fingerprint, drive, title set, plan digest, output/run roots, tool
+  paths, timeout, provider/media operations, and whether eject/auto-processing
+  is enabled. Confirm no competing MakeMKV child and obtain <strong>separate exact
+  authorization</strong> for each media-changing or provider operation required.</li>
+<li>[ ] Capture path-redacted preparation, assessment revisions, route attempts,
+  and per-title outcomes. Success means the feature film and extras are
+  considered without TV episode misrouting; no relevant title disappears,
+  rerips are not requested without evidence, and existing TV behavior remains
+  intact. A synthetic pass or this plan alone does not authorize the canary.</li>
+</ul>
+<p>After each completed milestone, update this status/progress log, run its gate,
+preview then push the approved <code>wip/test</code> checkpoint. Never mark a milestone
+complete solely because another checkout passed tests.</p>
+<h2 id="progress-log">Progress log</h2>
+<ul>
+<li>2026-09-19: Diagnosed the sidebar's "Failed to load resources" report in the
+  active test build. <code>/system/status</code> returned the valid <code>idle</code> state while
+  automatic processing was held, and <code>/system/health</code> returned 200/ready.
+  The sidebar now describes idle ASR as available on demand, and a manual
+  library scan may initialize it. Rebuilt the frontend; TypeScript/Vite and
+  modified-file ESLint pass. Repository-wide ESLint still reports six existing
+  findings in MediaTriageView and RipPipelineView. No disc or media operation
+  occurred; M7 remains pending.</li>
+<li>2026-09-19: Fixed the system-health tool discovery failure caused by an
+  unavailable <code>F:\\downloads</code> probe. Health/support checks now pass configured
+  executable paths directly and do not scan portable download roots when those
+  paths are supplied; disconnected roots are also skipped safely. Added two
+  regression tests. Focused system-health tests (5) and Ruff checks pass. No
+  disc or media operation occurred.</li>
+<li>2026-09-18: Diagnosed the live test-worktree "Media context structure is
+  invalid" failure. Existing private execution bindings contained the legacy
+  derived <code>routing_composition</code> field, which is not part of <code>MediaContext</code> and
+  caused restart decoding to fail. The parser now ignores that derived field;
+  new serialization never writes it. Added manifest and private-binding
+  regression tests (23 focused tests pass; no disc or provider access). M7
+  remains pending and no live retry is authorized.</li>
+<li>2026-09-18: With explicit user authorization, cleared only the exact
+  Short Circuit 2 fingerprint <code>6f9afc599cf192c8</code> from orchestration,
+  private-binding, routing, recovery-scope, and queue metadata. Two inactive
+  jobs and two private bindings were removed; no staged MKVs were found or
+  deleted, and unrelated records were preserved. Verification shows no jobs,
+  scopes, routing revision, or route attempts remain for the fingerprint.
+  M7 still requires a fresh read-only inventory and separate exact rip
+  authorization.</li>
+<li>2026-09-19: Diagnosed the repeated "rerip 7 missing titles" card after the
+  metadata forget. The test launcher and live process both use <code>ripweaver-test</code>.
+  The fresh preparation created an 11-title awaiting-review job, while the
+  frontend incorrectly treated any awaiting-review inventory with missing
+  classifier-relevant titles as failed-rip recovery. Guarded that recovery
+  presentation on an actual failed job or persisted recovery scope. Rebuilt
+  the frontend; M7 physical ripping remains pending.</li>
+<li>2026-09-19: Diagnosed the subsequent false "11 previously seen titles are
+  missing from inventory" card. The live 11-title awaiting-review preview was
+  complete, but the UI compared it with an empty identification matching scope
+  and treated that scope as physical inventory. The drive card now compares
+  acquisition titles with the current preview; the frontend build passes.
+  This was a presentation bug, not a failed MakeMKV inventory. No rip started.</li>
+<li>2026-09-19: Removed the remaining fresh-plan warning that listed every
+  title as "not safely present" before acquisition. That status is now shown
+  only for an actual recovery/rerip plan; a new awaiting-review plan correctly
+  proceeds to exact review and authorization. Frontend build passes.</li>
+<li>2026-09-19: At the owner's request, reverted the frontend-only suppression
+  of the missing-title and recovery messages. Both diagnostic UI elements are
+  visible again. The live backend still has two 11-title <code>awaiting_review</code>
+  plans and no recorded execute failure; the next investigation must capture
+  the exact API/UI error when the owner clicks the control that fails. Do not
+  infer a physical-disc failure or delete further metadata from these labels.</li>
+<li>2026-09-19: Compared the live API with the screenshot. The current-drive
+  preview contains titles 0–10, has no collision and no required review, while
+  the identification matching scope is empty. The dashboard had incorrectly
+  used that matching scope as the physical inventory and called all 11 titles
+  absent. Corrected the comparison to use the current acquisition preview;
+  kept both diagnostic panels, and labeled unacquired titles as awaiting their
+  first rip. A fresh awaiting-review plan no longer creates a false rerip
+  action. Frontend build and fake-runner rip API composition tests pass. M7
+  physical execution has not begun; the owner must still confirm the exact
+  current plan through the normal queued-job execute control.</li>
+<li>2026-09-19: Corrected manual-start workflow in the test frontend. With
+  automatic processing disabled, the drive's manual action now inventories
+  the disc and, when the plan is clean, authorizes and queues the exact plan
+  before scrolling to the final physical-rip confirmation. The confirmation
+  shows drive, title indexes, estimated size, and plan digest. Plans with
+  collisions or required review still open the review. This does not perform
+  a physical rip until the owner confirms the displayed exact plan. Frontend
+  TypeScript and production build pass; live execution remains M7 pending.</li>
+<li>2026-09-19: Refined that manual flow following owner feedback: the drive
+  button now opens the detected title list with checkboxes and estimated
+  sizes before queueing. <code>Rip checked titles</code> creates an exact subset plan
+  when needed, queues only a clean reviewed selection, and opens the final
+  physical-rip confirmation. The previous automatic queue-after-inventory
+  behavior was removed. Frontend TypeScript and production build pass; no
+  physical rip or media mutation was performed.</li>
+<li>2026-09-16: Confirmed the desktop test launcher targets <code>ripweaver-test</code> and
+  that the other checkout's routing modules are absent here. Added a prominent
+  location warning to this worktree's <code>AGENTS.md</code>. Began read-only audit of the
+  test configuration schema and existing preparation/worker behavior. No media
+  operation or local application configuration change was performed.</li>
+<li>2026-09-16: Reproduced the empty-staging failure with a new synthetic test,
+  changed auto-admission to decline absent/incomplete candidates, and ran
+  <code>tests/test_rip_drive_prepare.py</code> successfully (33 tests). No physical disc,
+  provider, or media access occurred. Phase 0 audit continues; Phase 2 above is
+  a narrow prerequisite, not proof that routing or the live pipeline works.</li>
+<li>2026-09-16: The full repository pytest suite passed with coverage disabled;
+  Ruff passed for the modified Python files. The approved <code>wip/test</code> checkpoint
+  was previewed and pushed after the initial milestone. Existing unrelated
+  working-tree changes remain in place. Next: complete the test-branch routing
+  and configuration-schema comparison before porting any unified assessment.</li>
+<li>2026-09-16: Completed the test-branch comparison and recorded the
+  keep/adapt/do-not-copy verdict above. No other-checkout code was ported.
+  M2 (persisted assessment design for this branch) is next. No live disc,
+  provider, or media operation occurred during this comparison.</li>
+<li>2026-09-16: Expanded the repair plan into M0–M7 with queue-owned assessment
+  persistence, precise route-outcome/restart gates, explicit TV/triage
+  preservation, synthetic acceptance tests, and a separate live-canary approval
+  boundary. Planning/documentation only; M2–M7 remain unimplemented.</li>
+<li>2026-09-16: Started M2 in the active test worktree. Added the saved-data-only
+  assessment model and 18 passing synthetic tests for hints, evidence priority,
+  unknown/conflicting roles, digest round-trip, and malformed inputs. No queue
+  persistence or production consumer is connected yet; M2 remains in progress.</li>
+<li>2026-09-16: Completed M2's queue-owned foundation. Added append-only routing
+  revisions, bounded per-revision route claims/outcomes, interruption marking,
+  exact-fingerprint forget cleanup, and a strict optional contract reader for
+  legacy compatibility. Concurrent/stale writes, migration, restart,
+  idempotency, conflict, movie+extras, mixed-disc, and provider-failure cases
+  pass in synthetic tests. The full repository pytest suite and modified-file
+  Ruff checks pass. No production preparation, identification, Gemini, or
+  worker path consumes this foundation yet; that is M3–M5 work. No live disc,
+  media, or provider access occurred.</li>
+<li>2026-09-16: Started M3 in the active test worktree. Current work is the
+  preparation-to-immutable-contract handoff and title-scope separation. No
+  live disc or provider access is authorized by this milestone.</li>
+<li>2026-09-16: Completed M3 synthetic handoff. Preparation now saves one
+  assessment and embeds its exact digest/revision in verified-rip contracts;
+  identify validates the binding and saved revision. The user's selection is
+  stored only as an advisory assessment hint. Unknown/movie/extra roles no
+  longer fall through to TV matching, while trusted TV evidence still uses the
+  existing TV engine. Fresh acquisition remains whole-inventory; TV scope is
+  role-filtered and failed-disc rerip work stays bounded by the exact failed
+  acquisition scope. Synthetic tests cover contradictory hints and
+  preparation-to-contract-to-restart-to-identify. Focused tests, full pytest,
+  modified-file Ruff and formatting checks passed. No live disc/media/provider
+  access occurred. M4 alternate-route execution is not yet wired.</li>
+<li>2026-09-16: Started M4 with a saved-data route controller and atomic
+  queue-owned <code>claim_next</code> reservation. Synthetic tests cover contradictory
+  hints, no-match progression, provider-failure/review holds, concurrent
+  claims, and restart persistence. Provider outcome wiring is still in progress.</li>
+<li>2026-09-16: M4 route policy and typed Gemini result reporting now pass
+  synthetic tests. A movie assessment no longer enters the legacy TV-related
+  Gemini branch merely because its label looks like a series; validated TV
+  fallback matches retain their TV role. Added per-title tests for absent
+  catalogue versus service outage, multiple movies, extras, and conflicting
+  metadata. Full pytest and modified-file Ruff pass. M4 is <strong>not complete</strong>:
+  the downstream worker still does not claim and settle those actual outcomes
+  transactionally, and the automatic fallback remains review-code-only.
+  No live provider, media, or disc operation occurred.</li>
+<li>2026-09-16: Continued M4 in the same test worktree. A held identify item can
+  now be claimed atomically with its exact queue review code, and the worker
+  records terminal TV coordinator outcomes against the bound assessment.
+  <code>all_season_series_not_found</code> remains review because an absent series
+  catalogue is not title-level non-TV evidence; catalogue/evidence or analysis
+  failures hold as service failures, while coherence/independent evidence
+  holds remain review. Pending TV codes are not settled early. Synthetic tests
+  verify paused queues, no-match policy progression, outage hold,
+  repeated worker calls, and queue-state mismatch. Gemini classification
+  outcomes and alternate-route execution are still not connected to the
+  worker, so M4 remains in progress. No live operation occurred.</li>
+<li>2026-09-16: Audited the meaning of provider results before using them as
+  route evidence. A Gemini descriptive <code>tv_episode</code> proposal without an
+  independently validated TV assignment is now review, not a negative
+  movie/classification result. Only an explicit null episode choice within a
+  bounded reviewed catalogue is typed as a catalogue no-match. This prevents
+  a provisional type guess from automatically advancing to another route.</li>
+<li>2026-09-16: Connected startup to durable route-claim reconciliation. A
+  crashed <code>running</code> claim becomes <code>interrupted</code> and is not silently retried;
+  the startup log reports counts only. Focused synthetic restart tests pass.
+  This still does not authorize provider or media work and does not complete
+  M4's Gemini-to-worker result settlement.</li>
+<li>2026-09-16: Resumed M4 after writing the current-agent handoff above. The
+  existing worker now runs a single assessment-bound Gemini fallback on its
+  own thread under <code>_downstream_lock</code>, with both automatic flags required, an
+  exact held-item route claim, typed outcome settlement, and no detached
+  per-item task. Synthetic real-queue/fake-provider tests cover matched,
+  no-match, visual/review hold, provider outage, pause/stop, unapplied match,
+  and failure after a revised contract is attached. Assessed provisional
+  movie identities are held before identify can produce a transcode contract.
+  Focused tests pass; full-suite and broader M4 matrix are next. No live
+  disc, media, or provider was accessed.</li>
+<li>2026-09-16: Completed this turn's broader synthetic check. The full pytest
+  suite passed with coverage disabled; focused TV/triage/routing/Gemini tests
+  and modified-file Ruff passed. Added an 11-title movie-plus-extras worker
+  matrix with a contradictory TV hint; all titles retained a reviewable route.
+  Gemini results are accepted as <code>matched</code> only when a revised contract has a
+  non-provisional assignment of the claimed role. Provisional identities and
+  post-apply failures hold for review before transcode or placement. M4 still
+  needs the explicit TV no-match alternate and sibling/concurrent integration
+  gate described in the handoff above. No live operation occurred.</li>
+<li>2026-09-16: Completed M4's explicit TV no-match alternate route integration.
+  Synthetic real-queue/fake-provider tests confirm that a TV route that ends in
+  a confident, whole-series explicit TV no-match is settled and the item transitions
+  to the alternate movie route. Weak evidence, unavailable catalogues, and provider
+  failures do not trigger the alternate route and are correctly held for review or
+  service-failed. Confirmed pause/stop interrupts the fallback, and that concurrent
+  claims or a concurrently advanced database revision safely reject the retry attempt.
+  The full pytest suite and modified-file Ruff passed. M4 acceptance gate has passed.
+  No live operation occurred. Next: M5.</li>
+<li>2026-09-17: Fixed the M4 Ruff formatting and test-quality gaps. Corrected the TV coordinator test to properly assert the genuine  v_title_no_match state transition. Removed leftover ad-hoc test scripts. The full pytest suite and modified-file Ruff checks now genuinely pass. Checkpoint pushed. Ready for M5. No live disc, media, or provider operations occurred.</li>
+<li>2026-09-17: Completed M6's visibility and user fallback requirements.
+  Extended <code>PipelineItemResponse</code> to export <code>user_hint</code>, <code>assessed_composition</code>,
+  <code>assessed_role</code>, <code>current_route</code>, <code>evidence_status</code>, and <code>exhausted_reason</code>.
+  Updated <code>RipPipelineView</code> to display these cleanly without misrepresenting
+  model guesses as verified identity. Implemented <code>/pipeline/discs/{fingerprint}/reassess</code>
+  for metadata-only legacy disc reassessment that safely appends a revision without
+  re-reading physical media or altering completed assignments.
+  Frontend compilation, Ruff checks, and pytest suite passed cleanly. No live
+  operations occurred. Next: Hand-off/Completion.</li>
+<li>2026-09-22: Live Short Circuit 2 follow-up exposed a post-rip control
+  coupling: disabling unattended disc processing also prevented the
+  identification worker from starting, leaving seven verified substantial
+  titles queued while four short titles correctly entered review. Split the
+  controls by adding a default-enabled <code>downstream_processing_enabled</code>
+  preference. <code>automatic_processing_enabled</code> now remains the inserted-disc /
+  autorip and automatic-transcode control; the new preference starts and
+  governs identification and routing for already verified items independently.
+  The CLI <code>--hold-automatic-rips</code> lifetime hold no longer suppresses approved
+  downstream identification. Settings and queue status expose the distinction.
+  Focused backend tests, modified-file Ruff, and the frontend production build
+  pass. No disc, provider, transcode, organization, deletion, or eject operation
+  was performed by this repair.</li>
+<li>2026-09-22: Added <code>docs/MOVIE_EXTRAS_IDENTITY_PLAN.md</code> for the next repair.
+  It separates verified content roles from exact identities: the main movie
+  requires a canonical provider-verified identity, while related extras may use
+  stable evidence-derived descriptive names. The plan preserves the TV path,
+  adds queue-fairness and restart gates, and requires synthetic validation
+  before a separately authorized continuation of the existing live MKVs.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/Jsakkos/mkv-episode-matcher" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "navigation.top", "search.suggest", "search.highlight", "content.tabs.link", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
