@@ -2716,6 +2716,46 @@ def reassess_disc_metadata(  # noqa: C901
             feature_assignment_indexes=tuple(feature_assignments),
             database_status=database_status,
         )
+        from mkv_episode_matcher.disc.routing import TitleEvidence
+
+        accepted_content_roles = []
+        for item in items:
+            payload = _read_pipeline_contract_payload(item)
+            title_index = payload.get("title_index")
+            context = payload.get("media_context")
+            if not isinstance(title_index, int) or not isinstance(context, dict):
+                continue
+            assignments = context.get("special_feature_assignments")
+            if not isinstance(assignments, list):
+                continue
+            assignment = next(
+                (
+                    candidate
+                    for candidate in assignments
+                    if isinstance(candidate, dict)
+                    and candidate.get("title_index") == title_index
+                    and candidate.get("classification") == "matched-feature"
+                    and candidate.get("media_kind") in {"movie", "extra"}
+                    and type(candidate.get("provisional_match")) is bool
+                ),
+                None,
+            )
+            if assignment is not None:
+                accepted_content_roles.append(
+                    TitleEvidence(
+                        title_index,
+                        "content",
+                        "supported",
+                        assignment["media_kind"],
+                    )
+                )
+        if accepted_content_roles:
+            new_assessment = replace(
+                new_assessment,
+                evidence=tuple(
+                    dict.fromkeys((*new_assessment.evidence, *accepted_content_roles))
+                ),
+            )
         store.routing_save_observation(new_assessment)
 
     return {"status": "reassessed", "disc_fingerprint": disc_fingerprint}

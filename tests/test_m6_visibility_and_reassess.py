@@ -240,3 +240,64 @@ def test_metadata_only_reassessment_updates_hint(tmp_path):
     assert len(latest.evidence) == 1
     assert latest.evidence[0].source == "database"
     assert latest.evidence[0].role == "tv"
+
+
+def test_metadata_reassessment_imports_saved_provisional_content_roles(tmp_path):
+    store = PipelineQueueStore(tmp_path / "pipeline.sqlite3")
+    fingerprint = "0123456789abcdef"
+    initial = store.routing_append(
+        DiscAssessment(fingerprint, title_indexes=(0, 2)), expected_revision=0
+    )
+    for index, role in ((0, "movie"), (2, "extra")):
+        path = tmp_path / f"title-{index}.json"
+        path.write_text(
+            json.dumps({
+                "mode": "verified-rip-contract",
+                "disc_fingerprint": fingerprint,
+                "title_index": index,
+                "media_context": {
+                    "routing_assessment": initial.to_dict(),
+                    "routing_assessment_digest": initial.digest,
+                    "routing_assessment_revision": initial.revision,
+                    "special_feature_assignments": [
+                        {
+                            "title_index": index,
+                            "classification": "matched-feature",
+                            "media_kind": role,
+                            "provisional_match": True,
+                        }
+                    ],
+                },
+            }),
+            encoding="utf-8",
+        )
+        store.enqueue_verified_rip(
+            f"disc-01-title-{index:03d}",
+            PipelineArtifact(
+                stage="rip",
+                contract_path=path,
+                contract_sha256=_file_sha256(path),
+                item_count=1,
+            ),
+            review_code="provisional_content_identity_review_required",
+        )
+
+    from mkv_episode_matcher.backend.routers.rip import (
+        DiscReassessmentRequest,
+        reassess_disc_metadata,
+    )
+
+    result = reassess_disc_metadata(
+        fingerprint,
+        DiscReassessmentRequest(content_hint="movie", confirm_reassessment=True),
+        store,
+    )
+
+    assert result["status"] == "reassessed"
+    latest = store.routing_latest(fingerprint)
+    assert latest is not None
+    assert latest.composition == "movie_with_extras"
+    assert [(item.title_index, item.role) for item in latest.title_roles()] == [
+        (0, "movie"),
+        (2, "extra"),
+    ]
