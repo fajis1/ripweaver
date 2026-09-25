@@ -5,5 +5,5 @@ from importlib.metadata import PackageNotFoundError, version
 try:
     __version__ = version("mkv-episode-matcher")
 except PackageNotFoundError:
-    # package is not installed, use hardcoded version
-    __version__ = "1.2.0"
+    # An unpackaged source tree has no trustworthy release identity.
+    __version__ = "0+unknown"
