@@ -43,9 +43,10 @@ def test_worker_settles_one_actual_gemini_route_result(tmp_path, monkeypatch):
         "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
         lambda: SimpleNamespace(
             load=lambda: SimpleNamespace(
-                automatic_processing_enabled=True,
-                automatic_gemini_ambiguity_fallback=True,
-            )
+                    automatic_processing_enabled=True,
+                    automatic_gemini_ambiguity_fallback=True,
+                    automatic_ai_extra_titles=True,
+                )
         ),
     )
     monkeypatch.setattr(
@@ -155,6 +156,7 @@ def test_worker_distinguishes_gemini_route_results(
             load=lambda: SimpleNamespace(
                 automatic_processing_enabled=True,
                 automatic_gemini_ambiguity_fallback=True,
+                automatic_ai_extra_titles=True,
             )
         ),
     )
@@ -379,6 +381,7 @@ def test_eleven_title_movie_with_extras_keeps_every_title_in_routing(
             load=lambda: SimpleNamespace(
                 automatic_processing_enabled=True,
                 automatic_gemini_ambiguity_fallback=True,
+                automatic_ai_extra_titles=True,
             )
         ),
     )

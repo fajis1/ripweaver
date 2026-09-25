@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 interface Config {
     cache_dir: string;
@@ -36,6 +36,7 @@ interface Config {
     downstream_processing_enabled: boolean;
     automatic_eject_after_rip: boolean;
     automatic_gemini_ambiguity_fallback: boolean;
+    automatic_ai_extra_titles: boolean;
     automatic_organization_enabled: boolean;
     thediscdb_lookup_enabled: boolean;
     ripweaver_catalogue_enabled: boolean;
@@ -170,7 +171,11 @@ const GEMINI_MODEL_OPTIONS = [
     { value: 'gemma-4-31b-it', label: 'Gemma 4 31B IT (Free tier / open weights)' },
 ];
 
-const SettingsView: React.FC = () => {
+interface SettingsViewProps {
+    onDirtyChange?: (dirty: boolean) => void;
+}
+
+const SettingsView: React.FC<SettingsViewProps> = ({ onDirtyChange }) => {
     const [config, setConfig] = useState<Config | null>(null);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
@@ -188,6 +193,7 @@ const SettingsView: React.FC = () => {
     const [catalogueStatusError, setCatalogueStatusError] = useState<string | null>(null);
     const [connectingCatalogue, setConnectingCatalogue] = useState(false);
     const [pendingCredentialTarget, setPendingCredentialTarget] = useState<string | null>(null);
+    const savedConfig = useRef('');
     const [profileDraft, setProfileDraft] = useState({
         profile_id: '', display_name: '', encoder: 'vce_h265', encoder_preset: 'quality', quality: 24, quality_480p: 26, quality_720p: 25, quality_1080p: 24, quality_2160p: 22,
         selective_decomb: true, content_kind: 'unknown', nlmeans_preset: '', nlmeans_tune: 'none',
@@ -201,6 +207,25 @@ const SettingsView: React.FC = () => {
             if (payload?.profiles) setProfiles(payload.profiles);
         }).catch(() => undefined);
     }, []);
+
+    const dirty = config !== null && savedConfig.current !== '' && JSON.stringify(config) !== savedConfig.current;
+
+    useEffect(() => {
+        onDirtyChange?.(dirty);
+    }, [dirty, onDirtyChange]);
+
+    useEffect(() => {
+        const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+            if (!dirty) return;
+            event.preventDefault();
+            event.returnValue = '';
+        };
+        window.addEventListener('beforeunload', warnBeforeUnload);
+        return () => {
+            window.removeEventListener('beforeunload', warnBeforeUnload);
+            onDirtyChange?.(false);
+        };
+    }, [dirty, onDirtyChange]);
 
     useEffect(() => {
         if (!pendingCredentialTarget) return;
@@ -332,6 +357,8 @@ const SettingsView: React.FC = () => {
             const res = await fetch('/system/config');
             if (!res.ok) throw new Error('Failed to load config');
             const data = await res.json();
+            if (typeof data.automatic_ai_extra_titles !== 'boolean') data.automatic_ai_extra_titles = false;
+            savedConfig.current = JSON.stringify(data);
             setConfig(data);
         } catch (err) {
             console.error(err);
@@ -416,6 +443,8 @@ const SettingsView: React.FC = () => {
             });
             const data = await res.json();
             if (data.status === 'success') {
+                if (typeof data.config.automatic_ai_extra_titles !== 'boolean') data.config.automatic_ai_extra_titles = false;
+                savedConfig.current = JSON.stringify(data.config);
                 setConfig(data.config);
                 setMessage({ text: 'Settings saved successfully', type: 'success' });
                 void fetchCatalogueStatus();
@@ -695,6 +724,11 @@ const SettingsView: React.FC = () => {
                     <label className="block rounded-xl border border-indigo-500/30 bg-indigo-500/10 p-4 text-sm text-indigo-100">
                         <input type="checkbox" className="mr-3" checked={config.automatic_gemini_ambiguity_fallback} onChange={(event) => handleChange('automatic_gemini_ambiguity_fallback', event.target.checked)} />
                         Use Gemini as the final fallback for unresolved bonus features after local catalogue, subtitle, OCR, and transcription evidence is exhausted. Each external use remains visible; no MKV, local path, credential, or full transcript is sent.
+                    </label>
+                    <label className="block rounded-xl border border-fuchsia-500/30 bg-fuchsia-500/10 p-4 text-sm text-fuchsia-100">
+                        <input type="checkbox" className="mr-3" checked={config.automatic_ai_extra_titles} onChange={(event) => handleChange('automatic_ai_extra_titles', event.target.checked)} />
+                        <span className="font-semibold">Allow AI-generated descriptive titles for extras</span>
+                        <span className="mt-1 block text-xs text-fuchsia-100/80">When enabled, Gemini may use the bounded extras evidence to propose a concise filename. Turn this off to keep unidentified extras in manual naming review. Existing accepted names are unchanged.</span>
                     </label>
                     <label className="block rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-100">
                         <input type="checkbox" className="mr-3" checked={config.thediscdb_lookup_enabled} onChange={(event) => handleChange('thediscdb_lookup_enabled', event.target.checked)} />

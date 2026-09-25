@@ -60,6 +60,17 @@ function App() {
   const [activityLog, setActivityLog] = useState<{ time: string, message: string, type: 'info' | 'success' | 'warning' }[]>([]);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [libraryMode, setLibraryMode] = useState<'standard' | 'repair'>('standard');
+  const [settingsDirty, setSettingsDirty] = useState(false);
+
+  const navigate = (view: string) => {
+    if (
+      currentView === 'settings'
+      && view !== 'settings'
+      && settingsDirty
+      && !window.confirm('You have unsaved Settings changes. Leave without saving them?')
+    ) return;
+    setCurrentView(view);
+  };
 
   // Check if onboarding is needed
   useEffect(() => {
@@ -337,7 +348,7 @@ function App() {
     }
 
     if (currentView === 'settings') {
-      return <SettingsView />;
+      return <SettingsView onDirtyChange={setSettingsDirty} />;
     }
 
     if (currentView === 'setup-health') {
@@ -697,7 +708,7 @@ function App() {
         />
       )}
       {!showOnboarding && <ExpiredSourceCleanupModal />}
-      <Layout currentView={currentView} onNavigate={setCurrentView} systemStatus={systemStatus}>
+      <Layout currentView={currentView} onNavigate={navigate} systemStatus={systemStatus}>
         {renderContent()}
       </Layout>
     </>

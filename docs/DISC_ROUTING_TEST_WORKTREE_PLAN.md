@@ -469,3 +469,13 @@ complete solely because another checkout passed tests.
   stable evidence-derived descriptive names. The plan preserves the TV path,
   adds queue-fairness and restart gates, and requires synthetic validation
   before a separately authorized continuation of the existing live MKVs.
+- 2026-09-25: Added a default-off `automatic_ai_extra_titles` preference.
+  The existing Gemini ambiguity fallback no longer implies permission to create
+  or automatically accept descriptive extras filenames. With this preference
+  disabled, the extra route remains in manual naming review; enabling it permits
+  the bounded Gemini descriptive-evidence path. Settings now also track the
+  last server-saved configuration and warn before in-app navigation, reload, or
+  window close would discard edits. Focused downstream/config tests, modified-file
+  Ruff, and the frontend production build pass. The repository-wide frontend
+  lint still reports six unrelated pre-existing findings in `MediaTriageView`
+  and `RipPipelineView`.

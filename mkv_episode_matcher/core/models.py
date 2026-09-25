@@ -124,6 +124,13 @@ class Config(BaseModel):
     downstream_processing_enabled: bool = True
     automatic_eject_after_rip: bool = False
     automatic_gemini_ambiguity_fallback: bool = False
+    automatic_ai_extra_titles: bool = Field(
+        default=False,
+        description=(
+            "Allow Gemini to propose descriptive titles for unidentified extras; "
+            "otherwise require manual feature naming"
+        ),
+    )
     automatic_organization_enabled: bool = False
     thediscdb_lookup_enabled: bool = False
     ripweaver_catalogue_enabled: bool = False
