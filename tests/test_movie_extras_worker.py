@@ -92,7 +92,10 @@ def _prepare(tmp_path, monkeypatch, *, invalid_extra: int | None = None):
     monkeypatch.setattr(
         "mkv_episode_matcher.backend.downstream_worker.get_config_manager",
         lambda: SimpleNamespace(
-            load=lambda: SimpleNamespace(downstream_processing_enabled=True)
+            load=lambda: SimpleNamespace(
+                downstream_processing_enabled=True,
+                automatic_ai_extra_titles=True,
+            )
         ),
     )
     monkeypatch.setattr(

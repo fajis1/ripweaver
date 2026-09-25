@@ -272,7 +272,10 @@ class DownstreamWorker:
     def _apply_automatic_fallback(self, item) -> None:
         if (
             item.review_code == "special_feature_evidence_required"
-            and get_config_manager().load().automatic_gemini_ambiguity_fallback
+            and (
+                config := get_config_manager().load()
+            ).automatic_gemini_ambiguity_fallback
+            and getattr(config, "automatic_ai_extra_titles", False)
         ):
             # This records the opted-in fallback path only. Evidence
             # preparation and every external provider call remain separate
@@ -304,6 +307,7 @@ class DownstreamWorker:
         paused = getattr(store, "is_paused", None)
         if (
             not downstream_processing_enabled(config)
+            or not getattr(config, "automatic_ai_extra_titles", False)
             or self._stop.is_set()
             or (callable(paused) and paused())
         ):
@@ -561,6 +565,10 @@ class DownstreamWorker:
             )
             route = next_route(assessment, title_index=title_index, attempts=attempts)
             if route not in {"classify", "movie", "extra"}:
+                continue
+            if route == "extra" and not getattr(
+                config, "automatic_ai_extra_titles", False
+            ):
                 continue
             with _downstream_lock:
                 if self._stop.is_set() or store.is_paused():
