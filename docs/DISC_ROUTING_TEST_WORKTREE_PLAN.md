@@ -479,3 +479,8 @@ complete solely because another checkout passed tests.
   Ruff, and the frontend production build pass. The repository-wide frontend
   lint still reports six unrelated pre-existing findings in `MediaTriageView`
   and `RipPipelineView`.
+- 2026-09-25: Corrected the user-facing version source. Removed the legacy
+  `setup.cfg` pin at `1.3.6`; setuptools-scm now derives package, GUI, CLI,
+  support-bundle, portable-build, and Windows-installer versions from Git tags.
+  Untagged builds identify themselves as development builds, and unpackaged
+  source falls back to `0+unknown` instead of impersonating an old release.
