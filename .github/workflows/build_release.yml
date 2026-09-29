@@ -39,6 +39,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       # Free up disk space on Linux runners
       - name: Free Disk Space (Linux)
@@ -225,6 +228,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Verify reviewed frontend bundle
         shell: bash
