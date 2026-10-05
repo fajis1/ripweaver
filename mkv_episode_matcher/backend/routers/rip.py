@@ -3048,6 +3048,7 @@ class PipelineItemResponse(BaseModel):
     staged_source_available: bool = False
     pipeline_media_available: bool = False
     provisional_match: bool = False
+    provisional_name: str | None = None
     gemini_confidence: float | None = None
     gemini_series_proposal: dict[str, object] | None = None
     retained_source_ttl_days: int = 30
@@ -3257,7 +3258,7 @@ class RenameProvisionalItemRequest(BaseModel):
 
 class ManualEpisodeIdentificationRequest(BaseModel):
     new_name: str = Field(min_length=1, max_length=160)
-    content_type: str = Field(default="episode", pattern=r"^(episode|bonus)$")
+    content_type: str = Field(default="episode", pattern=r"^(episode|bonus|movie)$")
     evidence_source: str = Field(
         default="manual_playback",
         pattern=r"^(manual_playback|catalogue_candidate|provider_candidate)$",
@@ -3368,27 +3369,38 @@ def _pipeline_item_display_name(
         return None
     series_name = context.get("series_name")
     assignments = context.get("episode_assignments")
-    if not isinstance(series_name, str) or not isinstance(assignments, list):
-        return None
-    for assignment in assignments:
-        if (
-            not isinstance(assignment, dict)
-            or assignment.get("title_index") != title_index
-        ):
-            continue
-        season = assignment.get("season")
-        episode = assignment.get("episode")
-        title = assignment.get("title")
-        if (
-            isinstance(season, int)
-            and isinstance(episode, int)
-            and isinstance(title, str)
-            and title.strip()
-        ):
-            return (
-                f"{' '.join(series_name.split())} - "
-                f"S{season:02d}E{episode:02d} - {' '.join(title.split())}"
-            )
+    if isinstance(series_name, str) and isinstance(assignments, list):
+        for assignment in assignments:
+            if (
+                not isinstance(assignment, dict)
+                or assignment.get("title_index") != title_index
+            ):
+                continue
+            season = assignment.get("season")
+            episode = assignment.get("episode")
+            title = assignment.get("title")
+            if (
+                isinstance(season, int)
+                and isinstance(episode, int)
+                and isinstance(title, str)
+                and title.strip()
+            ):
+                return (
+                    f"{' '.join(series_name.split())} - "
+                    f"S{season:02d}E{episode:02d} - {' '.join(title.split())}"
+                )
+
+    special_assignments = context.get("special_feature_assignments")
+    if isinstance(special_assignments, list):
+        for assignment in special_assignments:
+            if (
+                not isinstance(assignment, dict)
+                or assignment.get("title_index") != title_index
+            ):
+                continue
+            matched_title = assignment.get("matched_title")
+            if isinstance(matched_title, str) and matched_title.strip():
+                return " ".join(matched_title.split())
     return None
 
 
@@ -3836,6 +3848,28 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
                 payload["original_source_path"]
             ).is_file()
         provisional_match = bool(payload.get("provisional_match"))
+        provisional_name = None
+        for context_payload in (payload, rip_payload):
+            ctx = context_payload.get("media_context")
+            if isinstance(ctx, dict):
+                assignments = ctx.get("special_feature_assignments")
+                if isinstance(assignments, list):
+                    for assignment in assignments:
+                        if (
+                            isinstance(assignment, dict)
+                            and assignment.get("title_index") == title_index
+                        ):
+                            if not provisional_match and assignment.get("provisional_match"):
+                                provisional_match = True
+                            if gemini_confidence is None:
+                                conf = assignment.get("gemini_confidence")
+                                if isinstance(conf, (int, float)) and not isinstance(conf, bool):
+                                    gemini_confidence = float(conf)
+                            if provisional_name is None:
+                                matched_title = assignment.get("matched_title")
+                                if isinstance(matched_title, str) and matched_title.strip():
+                                    provisional_name = " ".join(matched_title.split())
+                            break
         pipeline_media_available = (
             item.stage == "organize" and item.state == "completed"
         ) or _payload_has_verified_media_file(payload)
@@ -3983,6 +4017,7 @@ def _pipeline_item_response(  # noqa: C901 - bounded contract/status composition
         "staged_source_available": staged_source_available,
         "pipeline_media_available": pipeline_media_available,
         "provisional_match": provisional_match,
+        "provisional_name": provisional_name,
         "gemini_confidence": gemini_confidence,
         "gemini_series_proposal": gemini_series_proposal,
         "retained_source_ttl_days": getattr(config, "retained_source_ttl_days", 30),
@@ -6133,21 +6168,6 @@ def apply_manual_episode_identification(  # noqa: C901 - guarded review boundary
             status_code=400,
             detail="Enter a filename without an extension; .mkv is added automatically",
         )
-    match = None
-    if request.content_type == "episode":
-        match = re.fullmatch(
-            r"(.+?)\s+-\s+S(\d{1,2})E(\d{1,3})\s+-\s+(.+)",
-            cleaned,
-            flags=re.IGNORECASE,
-        )
-        if match is None:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Use: Series Name - S03E02 - Episode Title "
-                    "(without the .mkv extension)"
-                ),
-            )
     try:
         item = store.get(media_id)
         if (
@@ -6167,6 +6187,9 @@ def apply_manual_episode_identification(  # noqa: C901 - guarded review boundary
                 "special_feature_manual_assignment_required",
                 "gemini_descriptive_review_required",
                 "catalogue_candidate_help_available",
+                "provisional_content_identity_review_required",
+                "descriptive_extra_identity_review_required",
+                "movie_identification_required",
             }
         ):
             raise PipelineQueueError(
@@ -6177,11 +6200,35 @@ def apply_manual_episode_identification(  # noqa: C901 - guarded review boundary
         title_index = payload.get("title_index")
         if not isinstance(title_index, int) or isinstance(title_index, bool):
             raise PipelineQueueError("Verified rip title identity is unavailable")
+
+        match = None
+        effective_content_type = request.content_type
+        if effective_content_type == "episode":
+            match = re.fullmatch(
+                r"(.+?)\s+-\s+S(\d{1,2})E(\d{1,3})\s+-\s+(.+)",
+                cleaned,
+                flags=re.IGNORECASE,
+            )
+            if match is None:
+                if item.review_code in {
+                    "provisional_content_identity_review_required",
+                    "descriptive_extra_identity_review_required",
+                    "movie_identification_required",
+                }:
+                    effective_content_type = "movie"
+                else:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Use: Series Name - S03E02 - Episode Title "
+                            "(without the .mkv extension)"
+                        ),
+                    )
         if request.evidence_source == "catalogue_candidate":
             candidate = _pipeline_catalogue_candidate_help(item)
             if (
                 item.review_code != "catalogue_candidate_help_available"
-                or request.content_type != "episode"
+                or effective_content_type != "episode"
                 or candidate is None
             ):
                 raise PipelineQueueError(
@@ -6219,7 +6266,7 @@ def apply_manual_episode_identification(  # noqa: C901 - guarded review boundary
             }
             if (
                 item.review_code != "gemini_descriptive_review_required"
-                or request.content_type != "episode"
+                or effective_content_type != "episode"
                 or cleaned.casefold() not in {name.casefold() for name in displayed}
             ):
                 raise PipelineQueueError(
@@ -6227,27 +6274,96 @@ def apply_manual_episode_identification(  # noqa: C901 - guarded review boundary
                 )
         revised = dict(payload)
         context = dict(revised.get("media_context", {}))
-        if request.content_type == "bonus":
-            series_name = str(context.get("series_name") or "").strip()
+        if effective_content_type == "movie":
+            assignments = list(context.get("special_feature_assignments") or [])
+            assignment = next(
+                (
+                    entry
+                    for entry in assignments
+                    if isinstance(entry, dict)
+                    and entry.get("title_index") == title_index
+                ),
+                None,
+            )
+            if assignment is None:
+                assignment = {"title_index": title_index}
+                assignments.append(assignment)
+
+            year_match = re.search(r"\((\d{4})\)", cleaned)
+            if year_match:
+                movie_year = int(year_match.group(1))
+                clean_title = re.sub(r"\s*\(\d{4}\).*", "", cleaned).strip()
+            else:
+                movie_year = context.get("special_feature_library_year")
+                clean_title = re.sub(
+                    r"\s+-\s+(?:pt|part|cd|disc)\s*\d+$", "", cleaned, flags=re.IGNORECASE
+                ).strip()
+
+            assignment.update(
+                title_index=title_index,
+                classification="matched-feature",
+                fallback_name_policy="none",
+                media_kind="movie",
+                library_kind="movie",
+                jellyfin_folder="other",
+                matched_title=cleaned,
+                user_reviewed_name=True,
+                provisional_match=False,
+                identity_verification_status="exact_verified",
+            )
+            context.update(
+                episode_assignments=[],
+                special_feature_library_title=clean_title or cleaned,
+                special_feature_library_year=movie_year,
+                special_feature_assignments=assignments,
+                episode_assignment_source="manual-movie-review",
+                identification_policy_version=2,
+            )
+        elif effective_content_type == "bonus":
+            series_name = str(
+                context.get("special_feature_library_title")
+                or context.get("series_name")
+                or ""
+            ).strip()
             if not series_name or series_name.casefold() in {"unmatched", "unknown"}:
                 raise PipelineQueueError(
-                    "Canonical TV series context is required for a bonus title"
+                    "Canonical series or movie context is required for a bonus title"
                 )
+            library_kind = (
+                "movie"
+                if context.get("special_feature_library_title")
+                and not context.get("series_name")
+                else "tv"
+            )
+            assignments = list(context.get("special_feature_assignments") or [])
+            assignment = next(
+                (
+                    entry
+                    for entry in assignments
+                    if isinstance(entry, dict)
+                    and entry.get("title_index") == title_index
+                ),
+                None,
+            )
+            if assignment is None:
+                assignment = {"title_index": title_index}
+                assignments.append(assignment)
+            assignment.update(
+                title_index=title_index,
+                classification="matched-feature",
+                fallback_name_policy="none",
+                media_kind="extra",
+                library_kind=library_kind,
+                jellyfin_folder="Extras",
+                matched_title=cleaned,
+                user_reviewed_name=True,
+                provisional_match=False,
+                identity_verification_status="exact_verified",
+            )
             context.update(
                 episode_assignments=[],
                 special_feature_library_title=series_name,
-                special_feature_assignments=[
-                    {
-                        "title_index": title_index,
-                        "classification": "matched-feature",
-                        "fallback_name_policy": "none",
-                        "media_kind": "extra",
-                        "library_kind": "tv",
-                        "jellyfin_folder": "Extras",
-                        "matched_title": cleaned,
-                        "user_reviewed_name": True,
-                    }
-                ],
+                special_feature_assignments=assignments,
                 episode_assignment_source="manual-bonus-review",
                 identification_policy_version=2,
             )

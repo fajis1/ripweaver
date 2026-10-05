@@ -410,6 +410,7 @@ interface PipelineQueueItem {
   staged_source_available: boolean;
   pipeline_media_available: boolean;
   provisional_match: boolean;
+  provisional_name?: string | null;
   gemini_confidence: number | null;
   gemini_series_proposal: {
     series_name: string;
@@ -2178,10 +2179,14 @@ Enter content hint (tv, movie, extras) or leave blank for unknown:`);
   ) => {
     const newName = (reviewedName || renameDrafts[item.media_id] || '').trim();
     const isBonus = evidenceSource === 'catalogue_candidate' ? false : Boolean(bonusReviewModes[item.media_id]);
+    const isMovie = item.assessed_composition === 'movie' || item.assessed_role === 'movie' || item.review_code === 'provisional_content_identity_review_required' || item.review_code === 'descriptive_extra_identity_review_required' || item.review_code === 'movie_identification_required';
+    const contentType = isBonus ? 'bonus' : isMovie ? 'movie' : 'episode';
     if (!newName) return;
     const destinationSummary = isBonus
-      ? `the canonical series Extras folder as "${newName}.mkv"`
-      : `the reviewed episode identity "${newName}.mkv"`;
+      ? `the Extras folder as "${newName}.mkv"`
+      : isMovie
+        ? `the movie library as "${newName}.mkv"`
+        : `the reviewed episode identity "${newName}.mkv"`;
     const provenanceNotice = evidenceSource === 'catalogue_candidate'
       ? ' This remains server-assisted evidence, so it cannot vote toward catalogue consensus or earn a contribution credit.'
       : evidenceSource === 'provider_candidate'
@@ -2194,7 +2199,7 @@ Enter content hint (tv, movie, extras) or leave blank for unknown:`);
       const response = await fetch(`/rip/pipeline/items/${encodeURIComponent(item.media_id)}/manual-episode-identification`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ new_name: newName, content_type: isBonus ? 'bonus' : 'episode', evidence_source: evidenceSource, confirm_identification: true }),
+        body: JSON.stringify({ new_name: newName, content_type: contentType, evidence_source: evidenceSource, confirm_identification: true }),
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : 'Manual episode identification could not be saved.');
@@ -2205,8 +2210,10 @@ Enter content hint (tv, movie, extras) or leave blank for unknown:`);
       setReviewNotice(evidenceSource === 'catalogue_candidate'
         ? 'Accepted the single-upload community candidate as server-assisted evidence. It will continue locally but cannot reinforce its own catalogue vote.'
         : isBonus
-          ? 'Saved the reviewed TV bonus identity. It will use the canonical series Extras folder in the media library.'
-          : 'Saved the reviewed episode identity and returned the staged rip to the automatic pipeline. The .mkv extension is preserved.');
+          ? 'Saved the reviewed bonus identity. It will use the Extras folder in the media library.'
+          : isMovie
+            ? `Saved reviewed movie title "${newName}". It will proceed to transcoding and organization.`
+            : 'Saved the reviewed episode identity and returned the staged rip to the automatic pipeline. The .mkv extension is preserved.');
     } catch (requestError) {
       const message = requestError instanceof Error ? requestError.message : 'Manual episode identification could not be saved.';
       setError(message);
@@ -4441,7 +4448,7 @@ Enter content hint (tv, movie, extras) or leave blank for unknown:`);
                         : 'rip complete · downstream processing continues'
                       : queuedWithoutExecutor
                         ? drivePreparing
-                          ? 'queued · retrying drive check'
+                          ? 'queued · verifying disc before rip'
                           : 'queued · waiting for rip worker'
                       : driveRipping
                         ? 'ripping'
@@ -4890,9 +4897,9 @@ Enter content hint (tv, movie, extras) or leave blank for unknown:`);
                   )}
                   {drive.has_disc && queuedWithoutExecutor && !interruptedQueued && !reripJob && job && (
                     <div className="rounded-lg border border-amber-400/40 bg-amber-500/15 p-3 space-y-1">
-                      <div className="font-semibold text-amber-100">{drivePreparing ? 'Queued while the drive check retries' : 'Queued and waiting for a rip worker'}</div>
+                      <div className="font-semibold text-amber-100">{drivePreparing ? 'Verifying disc before ripping' : 'Queued and waiting for a rip worker'}</div>
                       <div className="text-xs text-amber-100/80">{drivePreparing
-                        ? 'The automatic worker is retrying the execution-time read-only inventory with bounded delays. No MakeMKV rip has claimed this drive yet.'
+                        ? 'RipWeaver is verifying the disc table of contents before ripping begins. If another drive is busy, this check will wait and retry automatically. No action is needed — ripping will start as soon as verification completes. You can also click “Review queued rip” below to inspect titles or start manually.'
                         : 'No MakeMKV process has claimed this saved request yet. Automatic restart recovery checks it after the startup safety pause. If it remains here, use “Review queued rip” to inspect the exact title list and start it with the required confirmation.'}</div>
                     </div>
                   )}
@@ -5306,7 +5313,7 @@ Enter content hint (tv, movie, extras) or leave blank for unknown:`);
               <h3 className="text-xl font-bold text-white">Pipeline Queue</h3>
               <select 
                 value={queueGroupBy}
-                onChange={(e) => setQueueGroupBy(e.target.value as any)}
+                onChange={(e) => setQueueGroupBy(e.target.value as 'status' | 'disc' | 'error' | 'folder')}
                 className="bg-[var(--bg-tertiary)] border border-[var(--border-color)] text-white rounded px-3 py-1 text-sm focus:outline-none focus:border-amber-500"
               >
                 <option value="status">Group by Status</option>
@@ -5701,6 +5708,105 @@ Enter content hint (tv, movie, extras) or leave blank for unknown:`);
                       </div>
                     ) : item.review_code === 'play_all_aggregate_detected' ? (
                       <div className="mt-2">This unmatched file closely matches the combined runtime and size of already matched contiguous episodes. It is being preserved as a likely play-all aggregate and is excluded from the missing-episode count.</div>
+                    ) : ['provisional_content_identity_review_required', 'descriptive_extra_identity_review_required', 'movie_identification_required'].includes(item.review_code || '') ? (
+                      <div className="max-w-xl rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-100">
+                        <div className="font-semibold text-amber-50">Review required: name or confirm this title</div>
+                        <div className="mt-1">The staged rip has been verified and preserved. RipWeaver pauses here so you can confirm or rename this title before HandBrake transcoding and media library organization. No rerip is needed.</div>
+                        {(item.provisional_name || item.display_name) && (
+                          <div className="mt-3 rounded-lg border border-amber-300/40 bg-black/25 p-3 text-sm">
+                            <div className="font-semibold text-amber-50">Gemini suggested candidate for human review</div>
+                            <div className="mt-1 text-xs text-amber-100/80">
+                              Gemini analyzed the audio transcript and context and proposed: <span className="font-semibold text-white">“{item.provisional_name || item.display_name}”</span>
+                              {item.gemini_confidence !== null && item.gemini_confidence !== undefined ? ` · ${Math.round(item.gemini_confidence * 100)}% confidence` : ''}.
+                            </div>
+                            {item.match_summary && (
+                              <div className="mt-2 rounded bg-black/20 p-2 text-xs italic text-[var(--text-muted)]">
+                                “{item.match_summary}”
+                              </div>
+                            )}
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                className="btn btn-primary text-xs"
+                                disabled={reviewingItemId === item.media_id}
+                                onClick={() => saveManualEpisodeIdentification(item, item.provisional_name || item.display_name || undefined)}
+                              >
+                                Confirm “{item.provisional_name || item.display_name}” and continue
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-secondary text-xs"
+                                onClick={() => setRenameDrafts((current) => ({ ...current, [item.media_id]: item.provisional_name || item.display_name || '' }))}
+                              >
+                                Copy to edit box
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                        <div className="mt-3 rounded border border-blue-400/30 bg-blue-500/10 p-2 text-[11px] text-blue-200">
+                          <span className="font-semibold text-blue-100">Multi-part disc tip: </span>
+                          If this title is part of a two-sided disc or multi-part movie, Plex and Jellyfin automatically join multi-part files when named with a part suffix: e.g. <span className="font-mono text-white">The Three Musketeers (1993) - pt1</span> (for Side A) and <span className="font-mono text-white">The Three Musketeers (1993) - pt2</span> (for Side B).
+                        </div>
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          {item.staged_source_available && (
+                            <button
+                              type="button"
+                              className="btn btn-primary text-xs"
+                              disabled={openingReviewId === item.media_id}
+                              onClick={() => playReview(item.media_id)}
+                            >
+                              {openingReviewId === item.media_id ? 'Opening staged rip…' : reviewPlaybackOpened.has(item.media_id) ? 'Open staged rip again' : 'Play staged rip for review'}
+                            </button>
+                          )}
+                          <input
+                            className="input-field min-w-80 text-xs"
+                            value={renameDrafts[item.media_id] || ''}
+                            onChange={(event) => setRenameDrafts((current) => ({ ...current, [item.media_id]: event.target.value }))}
+                            placeholder={bonusReviewModes[item.media_id] ? 'Bonus feature title' : 'e.g. The Three Musketeers (1993) - pt1'}
+                            aria-label="Reviewed filename without .mkv"
+                          />
+                          <label className="flex items-center gap-1.5 text-xs text-amber-200">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(bonusReviewModes[item.media_id])}
+                              onChange={(event) => setBonusReviewModes((current) => ({ ...current, [item.media_id]: event.target.checked }))}
+                            />
+                            Bonus content (Extras)
+                          </label>
+                          <button
+                            type="button"
+                            className="btn btn-primary text-xs"
+                            disabled={reviewingItemId === item.media_id || !renameDrafts[item.media_id]?.trim()}
+                            onClick={() => saveManualEpisodeIdentification(item)}
+                          >
+                            Save reviewed name and continue
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-secondary text-xs"
+                            disabled={controlling}
+                            onClick={() => controlPipeline('resume', item.media_id)}
+                          >
+                            Retry item
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-secondary text-xs"
+                            disabled={controlling}
+                            onClick={() => dismissPipelineItems([item.media_id])}
+                          >
+                            Leave out of active queue
+                          </button>
+                          <button
+                            type="button"
+                            className="btn text-xs border border-red-400/50 bg-red-500/15 text-red-100 hover:bg-red-500/25"
+                            disabled={controlling}
+                            onClick={() => deleteQueuedStagedSource(item)}
+                          >
+                            Delete staged rip permanently
+                          </button>
+                        </div>
+                      </div>
                     ) : ['special_feature_evidence_required', 'gemini_evidence_required', 'gemini_analysis_running', 'gemini_analysis_interrupted', 'gemini_analysis_failed', 'gemini_audio_evidence_insufficient', 'gemini_catalog_unavailable', 'gemini_provider_failed', 'gemini_credential_rejected', 'gemini_rate_limited', 'gemini_provider_unavailable', 'gemini_request_rejected', 'gemini_network_failed', 'gemini_response_invalid', 'gemini_series_resolution_uncertain', 'gemini_descriptive_review_required', 'special_feature_manual_assignment_required'].includes(item.review_code || '') ? (
                       <div className="max-w-md rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-100">
                         <div>This title still needs a confident identification. It remains held; unrelated titles can continue through the queue.</div>
@@ -5823,6 +5929,23 @@ Enter content hint (tv, movie, extras) or leave blank for unknown:`);
                             <button type="button" className="btn btn-primary text-xs" disabled={submittingSeriesRecovery === item.disc_fingerprint} onClick={() => analyzeHeldItemAsTv(item)}>Analyze as TV series</button>
                           )}
                           <button type="button" className="btn btn-secondary text-xs" disabled={reviewingItemId === item.media_id || item.review_code === 'gemini_analysis_running'} onClick={() => chooseAmbiguityResolution(item.media_id, 'gemini')}>{item.review_code === 'gemini_descriptive_review_required' ? 'Retry bonus-feature analysis' : item.review_code?.includes('failed') || item.review_code?.startsWith('gemini_') ? 'Retry local evidence and Gemini' : 'Use Gemini after local evidence'}</button>
+                          <div className="mt-2 flex w-full flex-wrap items-center gap-2">
+                            <input
+                              className="input-field min-w-72 text-xs"
+                              value={renameDrafts[item.media_id] || ''}
+                              onChange={(event) => setRenameDrafts((current) => ({ ...current, [item.media_id]: event.target.value }))}
+                              placeholder={bonusReviewModes[item.media_id] ? 'Bonus feature title' : 'Reviewed title without .mkv'}
+                              aria-label="Reviewed title without .mkv"
+                            />
+                            <button
+                              type="button"
+                              className="btn btn-primary text-xs"
+                              disabled={reviewingItemId === item.media_id || !renameDrafts[item.media_id]?.trim()}
+                              onClick={() => saveManualEpisodeIdentification(item)}
+                            >
+                              Save reviewed name and continue
+                            </button>
+                          </div>
                           <button type="button" className="btn btn-secondary text-xs" disabled={reviewingItemId === item.media_id} onClick={() => chooseAmbiguityResolution(item.media_id, 'manual')}>Choose name manually</button>
                           <button type="button" className="btn btn-secondary text-xs" disabled={reviewingItemId === item.media_id} onClick={() => chooseAmbiguityResolution(item.media_id, 'hold')}>Leave on hold</button>
                           <button type="button" className="btn btn-secondary text-xs" disabled={controlling} onClick={() => dismissPipelineItems([item.media_id])}>Remove from queue — keep staged rip</button>

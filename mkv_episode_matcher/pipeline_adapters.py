@@ -488,12 +488,30 @@ class IdentifyStageAdapter:
             year = context.get("special_feature_library_year")
             feature_title = _safe_feature_component(assignment.get("matched_title"))
             if media_kind == "movie":
-                movie_name = (
-                    f"{feature_title} ({year})"
-                    if isinstance(year, int) and not isinstance(year, bool)
-                    else feature_title
+                part_match = re.search(
+                    r"(\s+-\s+(?:pt|part|cd|disc)\s*\d+)$",
+                    feature_title,
+                    flags=re.IGNORECASE,
                 )
-                relative = Path(movie_name) / f"{movie_name}.mkv"
+                if part_match:
+                    base = feature_title[: part_match.start()].strip()
+                    part_suffix = part_match.group(1)
+                else:
+                    base = feature_title.strip()
+                    part_suffix = ""
+
+                if (
+                    isinstance(year, int)
+                    and not isinstance(year, bool)
+                    and f"({year})" not in base
+                ):
+                    movie_base = f"{base} ({year})"
+                else:
+                    movie_base = base
+
+                movie_name = f"{movie_base}{part_suffix}"
+                movie_folder = movie_base
+                relative = Path(movie_folder) / f"{movie_name}.mkv"
                 identification = [
                     assignment.get("identification_method")
                     or "gemini-descriptive-movie"
