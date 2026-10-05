@@ -404,18 +404,28 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
         results.update({item.file_id: item for item in review.matches})
     for media_id, movie_match in related_matches.items():
         candidate = movie_match.candidate
+        suggested_title = (
+            f"{candidate.title} - pt{movie_match.part_number}"
+            if movie_match.part_number is not None
+            else candidate.title
+        )
+        part_desc = (
+            f" (part {movie_match.part_number})"
+            if movie_match.part_number is not None
+            else ""
+        )
         results[media_id] = GeminiDescriptiveResult(
             file_id=media_id,
             content_kind="movie",
-            suggested_title=candidate.title,
+            suggested_title=suggested_title,
             year=candidate.release_year,
             confidence=movie_match.confidence,
             evidence=(
                 "Matched ordinary movie subtitles using independent dialogue anchors.",
             ),
             summary=(
-                "TMDb runtime metadata and ordinary movie subtitles matched "
-                "independent dialogue anchors from this TV-disc title."
+                f"TMDb runtime metadata and ordinary movie subtitles matched "
+                f"independent dialogue anchors from this title{part_desc}."
             ),
         )
     applied = []
@@ -437,7 +447,11 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
                 continue
             related_movie = related_matches.get(item.media_id)
             feature_id = (
-                f"tmdb-movie-{related_movie.candidate.tmdb_id}"
+                (
+                    f"tmdb-movie-{related_movie.candidate.tmdb_id}-pt{related_movie.part_number}"
+                    if related_movie.part_number is not None
+                    else f"tmdb-movie-{related_movie.candidate.tmdb_id}"
+                )
                 if related_movie is not None
                 else f"provisional-title-{title_index:03d}"
             )
@@ -493,6 +507,7 @@ def execute_gemini_fallback(  # noqa: C901 - linear guarded workflow
             if related_movie is not None:
                 existing.update(
                     tmdb_movie_id=related_movie.candidate.tmdb_id,
+                    part_number=related_movie.part_number,
                     identification_method=(
                         "tv-related-movie-opensubtitles"
                         if tv_series_context

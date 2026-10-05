@@ -124,3 +124,64 @@ def test_related_movie_match_rejects_ambiguous_subtitle_candidates(monkeypatch):
     assert matches == {}
     assert diagnostics["feature"]["reason"] == "ambiguous_runner_up"
     assert diagnostics["feature"]["margin"] == pytest.approx(0.04)
+
+
+def test_clean_movie_search_query():
+    assert (
+        analysis._clean_movie_search_query("THREE MUSKET DISC4 SIDEA REVISED")
+        == "THREE MUSKET"
+    )
+    assert (
+        analysis._clean_movie_search_query("Lord of the Rings Disc 1 16X9")
+        == "Lord of the Rings"
+    )
+
+
+def test_related_movie_match_supports_multipart_split(monkeypatch):
+    candidates = (_movie(10057, "The Three Musketeers", 105),)
+    monkeypatch.setattr(
+        analysis, "search_movie_candidates", lambda _name, limit: candidates
+    )
+    monkeypatch.setattr(
+        "mkv_episode_matcher.backend.unmatched_disc_analysis._score_subtitle",
+        lambda _asr, _excerpts, content, _duration: (0.92, (0.92, 0.92)),
+    )
+    side_a = UnmatchedFileEvidence(
+        "Three-Musketeers-SideA--disc-01-title-000",
+        3204,
+        ("burn the musketeer flag", "surrender your commissions"),
+    )
+    side_b = UnmatchedFileEvidence(
+        "Three-Musketeers-SideB--disc-01-title-000",
+        2868,
+        ("forging a secret alliance with buckingham", "become a musketeer"),
+    )
+    provider = _SubtitleProvider({10057: "mock subtitle content"})
+
+    matches, diagnostics = analysis.match_related_tv_movies(
+        (side_a, side_b),
+        "THREE MUSKET DISC4 SIDEA REVISED",
+        Config(min_confidence=0.7),
+        SimpleNamespace(),
+        subtitle_provider=provider,
+    )
+
+    assert "Three-Musketeers-SideA--disc-01-title-000" in matches
+    assert "Three-Musketeers-SideB--disc-01-title-000" in matches
+
+    match_a = matches["Three-Musketeers-SideA--disc-01-title-000"]
+    match_b = matches["Three-Musketeers-SideB--disc-01-title-000"]
+
+    assert match_a.candidate.title == "The Three Musketeers"
+    assert match_a.part_number == 1
+    assert match_a.total_parts == 2
+
+    assert match_b.candidate.title == "The Three Musketeers"
+    assert match_b.part_number == 2
+    assert match_b.total_parts == 2
+
+    assert (
+        diagnostics["Three-Musketeers-SideA--disc-01-title-000"]["is_multipart"] is True
+    )
+    assert diagnostics["Three-Musketeers-SideA--disc-01-title-000"]["part_number"] == 1
+    assert diagnostics["Three-Musketeers-SideB--disc-01-title-000"]["part_number"] == 2

@@ -659,7 +659,15 @@ def build_descriptive_gemini_request(
             "subject and must never be a generic label such as Bonus Feature, "
             "Featurette, Extra, Special Feature, or Making Of Documentary. Provide "
             "a concise one- or two-sentence summary of what the evidence indicates "
-            "the title contains. Titles for different files must be distinct."
+            "the title contains. Titles for different files must be distinct. "
+            "If a title appears to be a portion of a feature-length film or a two-sided "
+            "disc (e.g. Side A vs Side B, Disc 1 vs Disc 2), evaluate the chronological "
+            "narrative sequence of the dialogue excerpts (e.g. opening setup and inciting "
+            "incident vs climax, resolution, and end credits) to determine whether it is "
+            "Part 1 or Part 2. Physical markers such as 'Side A' strongly indicate Part 1 "
+            "('Movie Name - pt1'), whereas 'Side B' or closing credits indicate Part 2 "
+            "('Movie Name - pt2'). Never label the beginning of a movie as Part 2 or "
+            "the conclusion of a movie as a behind-the-scenes featurette."
         ),
         "release_hint": hint,
         "files": [
